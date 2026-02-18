@@ -39,10 +39,17 @@ You receive:
 Interactive elements are indexed as [0], [1], [2], ...
 Use only those indexes for UI actions.
 
+# Set-of-Mark Visual Labels (SoM)
+The screenshot has COLORED BOUNDING BOXES with [index] labels matching the interactive elements.
+- Elements WITH a label in screenshot → use click_element with that index (preferred, more accurate)
+- Elements WITHOUT a label (not in DOM) → use click_at with x,y coordinates (only if no matching index exists)
+- Always prefer click_element over click_at when the element has a visible [index] label
+- The label color and position help you identify the exact element to interact with
+
 # Response Format (JSON ONLY)
 {
   "current_state": {
-    "evaluation_previous_goal": "Success|Failed|Unknown - short reason",
+    "evaluation_previous_goal": "Success|Failed|Unknown - MUST check screenshot for visual proof (e.g., if clicked call button, is call window visible? if not, mark as Failed)",
     "memory": "what is done and what remains",
     "next_goal": "next immediate objective"
   },
@@ -62,6 +69,7 @@ Use only those indexes for UI actions.
 - go_to_url: {"go_to_url": {"url": "https://example.com"}}
 - go_back: {"go_back": {}}
 - click_element: {"click_element": {"index": 5}}
+- click_at: {"click_at": {"x": 500, "y": 300}} // click at screen coordinates when element has no index or you don't trust the index - use with caution and always check the screenshot for context
 - input_text: {"input_text": {"index": 3, "text": "hello"}}
 - send_keys: {"send_keys": {"keys": "Enter"}}
 - switch_tab: {"switch_tab": {"tab_id": 123}}
@@ -94,6 +102,16 @@ Use only those indexes for UI actions.
    - Try scrolling to reveal more options
    - Try using search/filter instead of clicking
    - If search dropdown appeared, click on the correct result item, NOT the search box again
+10. ACTION VERIFICATION - CRITICAL:
+   - ALWAYS check the screenshot AFTER each action to verify it worked
+   - If you clicked a button but the expected UI change didn't happen (e.g., no popup, no new window, no visual feedback), the click FAILED
+   - DO NOT claim success without visual confirmation in the screenshot
+   - If click_element didn't produce expected results, try click_at with coordinates from the screenshot
+   - For video/voice calls: verify a call window actually appeared, not just that you clicked a button
+11. FALLBACK TO click_at:
+   - If click_element on an index fails 2+ times with no visual change, use click_at
+   - Look at the screenshot to estimate x,y coordinates of the target element
+   - click_at is your backup when DOM-based clicking doesn't work
 </system_instructions>
 `,
 
@@ -515,6 +533,8 @@ const AgentS = {
           return await AgentS.actions.goBack(tabId);
         case 'click_element':
           return await AgentS.actions.clickElement(params.index, tabId);
+        case 'click_at':
+          return await AgentS.actions.clickAtCoordinates(params.x, params.y, tabId);
         case 'input_text':
           return await AgentS.actions.inputText(params.index, params.text, tabId, currentExecution?.task || '');
         case 'send_keys':
@@ -583,6 +603,51 @@ const AgentS = {
           return { success: true, message: `Clicked element ${idx}` };
         },
         args: [index]
+      });
+      await new Promise(r => setTimeout(r, 500));
+      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
+    },
+
+    async clickAtCoordinates(x, y, tabId) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (clickX, clickY) => {
+          // Use coordinates directly - model estimates based on screenshot which should match viewport
+          const el = document.elementFromPoint(clickX, clickY);
+          if (!el) return { success: false, error: `No element found at (${clickX}, ${clickY})` };
+
+          const eventOptions = {
+            view: window,
+            bubbles: true,
+            cancelable: true,
+            clientX: clickX,
+            clientY: clickY,
+            screenX: clickX,
+            screenY: clickY,
+            button: 0,
+            buttons: 1
+          };
+
+          el.dispatchEvent(new MouseEvent('mousedown', eventOptions));
+          el.dispatchEvent(new MouseEvent('mouseup', eventOptions));
+          el.dispatchEvent(new MouseEvent('click', eventOptions));
+          el.click();
+
+          const tagName = el.tagName.toLowerCase();
+          const text = (el.innerText || el.textContent || '').slice(0, 50);
+          const role = el.getAttribute('role') || '';
+          const ariaLabel = el.getAttribute('aria-label') || '';
+
+          // Log viewport info for debugging
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
+
+          return {
+            success: true,
+            message: `Clicked at (${clickX}, ${clickY}) [viewport: ${vw}x${vh}] on <${tagName}>${text ? ` "${text}"` : ''}${ariaLabel ? ` [${ariaLabel}]` : ''}`
+          };
+        },
+        args: [x, y]
       });
       await new Promise(r => setTimeout(r, 500));
       return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
@@ -986,6 +1051,89 @@ const AgentS = {
     }
   },
 
+  /**
+   * Draw Set-of-Mark labels on screenshot image (not on actual page)
+   * This keeps user's view clean while giving model visual labels
+   */
+  async annotateScreenshotWithSoM(screenshotDataUrl, elements, viewportInfo = {}) {
+    try {
+      // Load the screenshot image
+      const response = await fetch(screenshotDataUrl);
+      const blob = await response.blob();
+      const bitmap = await createImageBitmap(blob);
+
+      // Create offscreen canvas
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext('2d');
+
+      // Draw original screenshot
+      ctx.drawImage(bitmap, 0, 0);
+
+      // Calculate scale factor: screenshot may be at higher resolution due to DPR
+      // Element rects are in viewport/CSS coordinates, screenshot is in physical pixels
+      const viewportWidth = viewportInfo.width || bitmap.width;
+      const dpr = bitmap.width / viewportWidth;
+      console.log('[SoM] Scale factor:', dpr, 'bitmap:', bitmap.width, 'x', bitmap.height, 'viewport:', viewportWidth);
+
+      // Colors for labels (high contrast)
+      const colors = [
+        '#FF6B35', '#00D4AA', '#FF3366', '#33CCFF', '#FFCC00',
+        '#9933FF', '#00FF66', '#FF9500', '#00CCFF', '#FF5588'
+      ];
+
+      // Draw bounding boxes and labels for each element
+      for (const el of elements) {
+        if (!el.rect) continue;
+
+        const color = colors[el.index % colors.length];
+        // Scale coordinates from viewport to screenshot pixels
+        const x = el.rect.x * dpr;
+        const y = el.rect.y * dpr;
+        const width = el.rect.width * dpr;
+        const height = el.rect.height * dpr;
+
+        // Skip very small or off-screen elements
+        if (width < 5 || height < 5) continue;
+        if (x + width < 0 || y + height < 0) continue;
+        if (x > bitmap.width || y > bitmap.height) continue;
+
+        // Draw bounding box
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(2, dpr);
+        ctx.strokeRect(x, y, width, height);
+
+        // Draw label background
+        const label = String(el.index);
+        const fontSize = Math.round(14 * dpr);
+        ctx.font = `bold ${fontSize}px Arial`;
+        const textWidth = ctx.measureText(label).width + 8 * dpr;
+        const textHeight = 18 * dpr;
+
+        let labelX = x - 1;
+        let labelY = y - textHeight - 2;
+        if (labelY < 0) labelY = y + 2; // Put inside if no room above
+
+        ctx.fillStyle = color;
+        ctx.fillRect(labelX, labelY, textWidth, textHeight);
+
+        // Draw label text
+        ctx.fillStyle = 'white';
+        ctx.fillText(label, labelX + 4 * dpr, labelY + 14 * dpr);
+      }
+
+      // Convert back to data URL
+      const annotatedBlob = await canvas.convertToBlob({ type: 'image/png' });
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(annotatedBlob);
+      });
+    } catch (e) {
+      console.error('Failed to annotate screenshot:', e);
+      return screenshotDataUrl; // Return original if annotation fails
+    }
+  },
+
   async buildDomTree(tabId, options = {}) {
     try {
       await chrome.scripting.executeScript({ target: { tabId }, files: ['lib/buildDomTree.js'] }).catch(() => {});
@@ -1000,7 +1148,8 @@ const AgentS = {
             viewportInfo: result.viewportInfo,
             url: result.url,
             title: result.title,
-            elementCount: result.elements.length
+            elementCount: result.elements.length,
+            elements: result.elements
           };
         },
         args: [options]
@@ -1458,9 +1607,10 @@ async function runExecutor() {
       }
     }
 
-    // Take screenshot if vision is enabled
+    // Take screenshot if vision is enabled, then annotate with SoM labels
     let screenshot = null;
     if (exec.settings.useVision) {
+      // Take clean screenshot (no overlays on actual page)
       screenshot = await AgentS.takeScreenshot(exec.tabId);
       if (screenshot) {
         const isValidDataUrl = screenshot.startsWith('data:image/');
@@ -1472,6 +1622,12 @@ async function runExecutor() {
         if (!isValidDataUrl) {
           console.error('[Vision] Invalid screenshot format! Expected data:image/... URL');
           screenshot = null;
+        } else if (pageState.elements && pageState.elements.length > 0) {
+          // Annotate screenshot with Set-of-Mark bounding boxes and labels
+          // This draws [0], [1], [2]... on the IMAGE, not on the actual page
+          console.log('[SoM] Annotating screenshot with', pageState.elements.length, 'element labels');
+          screenshot = await AgentS.annotateScreenshotWithSoM(screenshot, pageState.elements, pageState.viewportInfo);
+          console.log('[SoM] Annotated screenshot size:', screenshot.length);
         }
       } else {
         console.warn('[Vision] useVision is enabled but screenshot capture failed');
