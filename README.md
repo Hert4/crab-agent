@@ -65,13 +65,7 @@ Look for products with at least 4 stars and 100+ reviews.
 - **DOM Tree Builder**: Creates a structured representation of interactive elements
 - **Action System**: Handles all browser automation actions
 
-## Supported Actions
 
-- Navigation: `search_google`, `go_to_url`, `go_back`
-- Interactions: `click_element`, `input_text`, `send_keys`
-- Tabs: `switch_tab`, `open_tab`, `close_tab`
-- Scrolling: `scroll_down`, `scroll_up`, `scroll_to_text`, etc.
-- Task: `done`, `wait`, `cache_content`
 
 ## Files Structure
 
