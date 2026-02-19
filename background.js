@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Agent-S Background Service Worker
  * All-in-one file combining prompts, agent core, and execution logic
  */
@@ -41,8 +41,8 @@ Use only those indexes for UI actions.
 
 # Set-of-Mark Visual Labels (SoM)
 The screenshot has COLORED BOUNDING BOXES with [index] labels matching the interactive elements.
-- Elements WITH a label in screenshot â†’ use click_element with that index (preferred, more accurate)
-- Elements WITHOUT a label (not in DOM) â†’ use click_at with x,y coordinates (only if no matching index exists)
+- Elements WITH a label in screenshot Ã¢â€ â€™ use click_element with that index (preferred, more accurate)
+- Elements WITHOUT a label (not in DOM) Ã¢â€ â€™ use click_at with x,y coordinates (only if no matching index exists)
 - Always prefer click_element over click_at when the element has a visible [index] label
 - The label color and position help you identify the exact element to interact with
 
@@ -90,8 +90,8 @@ The screenshot has COLORED BOUNDING BOXES with [index] labels matching the inter
 4. Keep memory concise for long tasks
 5. Include exact URLs only when visible; never invent URLs
 6. IMPORTANT: For messaging/chat tasks, distinguish between SEARCH BOX and MESSAGE INPUT:
-   - Search box: placeholder contains "search", "find", etc... â†’ DO NOT type messages here
-   - Message input: placeholder contains "message", "type here", etc... â†’ Type messages HERE
+   - Search box: placeholder contains "search", "find", etc... Ã¢â€ â€™ DO NOT type messages here
+   - Message input: placeholder contains "message", "type here", etc... Ã¢â€ â€™ Type messages HERE
    - Message input is usually at the BOTTOM of the chat window
    - If you typed into wrong field, find the correct one and try again
 7. Never use done in a step where any earlier action failed
@@ -206,9 +206,9 @@ When the browser displays a raw image file (png, jpg, etc.):
 
 ## WHEN TO RESPOND DIRECTLY
 If the user's request is a simple greeting or question that doesn't require browser interaction, respond directly using "done":
-- Greetings: "Hello", "Hi", "ChÃ o" â†’ respond with a friendly greeting
-- General questions â†’ answer directly if you know
-- No web page needed â†’ use done action immediately
+- Greetings: "Hello", "Hi", "ChÃƒÂ o" Ã¢â€ â€™ respond with a friendly greeting
+- General questions Ã¢â€ â€™ answer directly if you know
+- No web page needed Ã¢â€ â€™ use done action immediately
 
 `,
 
@@ -236,7 +236,7 @@ If the user's request is a simple greeting or question that doesn't require brow
 }
 
 ## IMPORTANT
-- Simple greetings like "Hi", "Hello", "ChÃ o" should be marked done=true with a friendly response
+- Simple greetings like "Hi", "Hello", "ChÃƒÂ o" should be marked done=true with a friendly response
 - Don't fail tasks just because no webpage - some tasks don't need web interaction
 `,
 
@@ -538,7 +538,7 @@ const AgentS = {
         case 'click_at':
           return await AgentS.actions.clickAtCoordinates(params.x, params.y, tabId);
         case 'input_text':
-          return await AgentS.actions.inputText(params.index, params.text, tabId, currentExecution?.task || '');
+          return await AgentS.actions.inputText(params.index, params.text, tabId);
         case 'send_keys':
           return await AgentS.actions.sendKeys(params.keys, tabId);
         case 'switch_tab':
@@ -753,22 +753,17 @@ const AgentS = {
       return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
     },
 
-    async inputText(index, text, tabId, taskText = '') {
+    async inputText(index, text, tabId) {
       // Ensure all parameters are serializable
       const safeIndex = typeof index === 'number' ? index : parseInt(index, 10) || 0;
       const safeText = String(text || '');
-      // Sanitize taskText - only keep basic ASCII to avoid serialization issues
-      const safeTaskText = String(taskText || '').substring(0, 500).replace(/[^\x20-\x7E\s]/g, '');
-
       const result = await chrome.scripting.executeScript({
         target: { tabId },
-        func: (idx, inputText, task) => {
+        func: (idx, inputText) => {
           const normalize = value => (value == null ? '' : String(value));
           const fold = value => normalize(value).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
           const expected = normalize(inputText);
           const disabledInputTypes = new Set(['hidden', 'button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image']);
-          const taskKey = fold(task);
-          const isCommentOrMessageTask = /(comment|binh luan|nhan tin|tin nhan|message|chat|reply|tra loi)/.test(taskKey);
 
           const dispatchInputEvents = (el) => {
             try {
@@ -808,19 +803,6 @@ const AgentS = {
             return `tag=${tag} id=${id} name=${name} role=${role} aria-label=${ariaLabel} placeholder=${placeholder} class=${className}`;
           };
 
-          const isSearchLikeMeta = (el) => {
-            const attrs = [
-              normalize(el?.id || ''),
-              normalize(el?.className || ''),
-              getAttr(el, 'name'),
-              getAttr(el, 'role'),
-              getAttr(el, 'aria-label'),
-              getAttr(el, 'placeholder'),
-              normalize(el?.type || '')
-            ].join(' ');
-            return /(search|searchbox|tim kiem|tim kiem youtube)/.test(fold(attrs));
-          };
-
           const findEditableDescendant = (root) => {
             if (!(root instanceof HTMLElement)) return null;
             const selector = [
@@ -836,7 +818,7 @@ const AgentS = {
               if (isEditable(node)) return node;
             }
 
-            // Search inside Shadow DOM (for YouTube live chat, etc.)
+            // Search inside Shadow DOM (covers complex widget-based UIs)
             const searchShadow = (el) => {
               if (el.shadowRoot) {
                 const shadowNodes = el.shadowRoot.querySelectorAll(selector);
@@ -874,21 +856,6 @@ const AgentS = {
             if (isEditable(active)) return active;
             const activeDescendant = findEditableDescendant(active);
             if (activeDescendant) return activeDescendant;
-
-            // YouTube live chat fallback: search for known chat input elements
-            const ytChatContainers = document.querySelectorAll(
-              'yt-live-chat-text-input-field-renderer, #chat, #live-chat-frame, [id*="live-chat"]'
-            );
-            for (const container of ytChatContainers) {
-              // Check shadow root
-              if (container.shadowRoot) {
-                const shadowInput = container.shadowRoot.querySelector('#input, [contenteditable="true"], [contenteditable=""]');
-                if (shadowInput && isEditable(shadowInput)) return shadowInput;
-              }
-              // Check regular descendants
-              const input = container.querySelector('#input, [contenteditable="true"], [contenteditable=""], input[type="text"]');
-              if (input && isEditable(input)) return input;
-            }
 
             // Last resort: find any visible contenteditable on page
             const allEditable = document.querySelectorAll('[contenteditable="true"], [contenteditable=""]');
@@ -1046,21 +1013,10 @@ const AgentS = {
             };
           }
 
-          // Warn if this looks like a search box for message/chat tasks
-          const meta = elementMeta(target).toLowerCase();
-          const isSearchLike = /(search|tÃ¬m kiáº¿m|tim kiem|find)/.test(meta);
-          const isMessageTask = /(message|tin nháº¯n|tin nhan|chat|nháº¯n|nhan)/.test(taskKey);
-
-          if (isSearchLike && isMessageTask) {
-            return {
-              success: true,
-              message: `WARNING: Text entered into element ${idx} which looks like a SEARCH BOX (${elementMeta(target)}). If this is wrong, find the actual message input field (usually at bottom with placeholder like "Ná»™i dung tin nháº¯n" or "Type a message").`
-            };
-          }
 
           return { success: true, message: `Entered text into element ${idx}. ${elementMeta(target)}` };
         },
-        args: [safeIndex, safeText, safeTaskText]
+        args: [safeIndex, safeText]
       });
       return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
     },
@@ -1073,19 +1029,259 @@ const AgentS = {
         'ArrowUp': { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
         'ArrowDown': { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 }
       };
-      await chrome.scripting.executeScript({
+      const safeKeys = String(keys || '');
+
+      const result = await chrome.scripting.executeScript({
         target: { tabId },
-        func: (keysStr, keyMapping) => {
-          const el = document.activeElement || document.body;
-          const keyInfo = keyMapping[keysStr] || { key: keysStr, code: keysStr, keyCode: 0 };
-          const eventInit = { key: keyInfo.key, code: keyInfo.code, keyCode: keyInfo.keyCode, bubbles: true };
-          el.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-          el.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+        func: async (keysStr, keyMapping) => {
+          const normalize = value => (value == null ? '' : String(value));
+          const disabledInputTypes = new Set(['hidden', 'button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image']);
+
+          const isEditable = (el) => {
+            if (!el) return false;
+            if (el instanceof HTMLTextAreaElement) return !el.disabled && !el.readOnly;
+            if (el instanceof HTMLInputElement) {
+              const type = (el.type || '').toLowerCase();
+              return !el.disabled && !el.readOnly && !disabledInputTypes.has(type);
+            }
+            return !!(el instanceof HTMLElement && el.isContentEditable);
+          };
+
+          const isVisible = (el) => {
+            if (!(el instanceof Element)) return false;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          };
+
+          const getAllDocs = () => {
+            const docs = [document];
+            for (const frame of document.querySelectorAll('iframe')) {
+              try {
+                const frameDoc = frame.contentDocument || frame.contentWindow?.document;
+                if (frameDoc) docs.push(frameDoc);
+              } catch (e) {
+                // Cross-origin iframe
+              }
+            }
+            return docs;
+          };
+
+          const getDeepActiveElement = () => {
+            let active = document.activeElement;
+            const visited = new Set();
+            while (active && active.tagName === 'IFRAME' && !visited.has(active)) {
+              visited.add(active);
+              try {
+                const frameDoc = active.contentDocument || active.contentWindow?.document;
+                if (!frameDoc) break;
+                active = frameDoc.activeElement;
+              } catch (e) {
+                break;
+              }
+            }
+            return active || document.body;
+          };
+
+          const readElementText = (el) => {
+            if (!el) return '';
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+              return normalize(el.value);
+            }
+            if (el instanceof HTMLElement && el.isContentEditable) {
+              return normalize(el.innerText || el.textContent).replace(/\u00a0/g, ' ').trim();
+            }
+            return '';
+          };
+
+          const dispatchInputEvents = (el) => {
+            try {
+              el.dispatchEvent(new InputEvent('input', { bubbles: true, data: null, inputType: 'insertText' }));
+            } catch (e) {
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          };
+
+          const appendText = (el, text) => {
+            if (!isEditable(el)) return false;
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+              el.focus();
+              el.value = (el.value || '') + text;
+              dispatchInputEvents(el);
+              return true;
+            }
+            if (el instanceof HTMLElement && el.isContentEditable) {
+              el.focus();
+              try {
+                const selection = window.getSelection();
+                if (selection) {
+                  selection.removeAllRanges();
+                  const range = document.createRange();
+                  range.selectNodeContents(el);
+                  range.collapse(false);
+                  selection.addRange(range);
+                }
+                if (typeof document.execCommand === 'function') {
+                  document.execCommand('insertText', false, text);
+                } else {
+                  el.textContent = (el.textContent || '') + text;
+                }
+              } catch (e) {
+                el.textContent = (el.textContent || '') + text;
+              }
+              dispatchInputEvents(el);
+              return true;
+            }
+            return false;
+          };
+
+          const findEditableTarget = () => {
+            const deepActive = getDeepActiveElement();
+            if (isEditable(deepActive)) return deepActive;
+
+            const docs = getAllDocs();
+            for (const doc of docs) {
+              try {
+                const active = doc.activeElement;
+                if (isEditable(active)) return active;
+              } catch (e) {
+                // ignore
+              }
+            }
+
+            const selector = [
+              'textarea',
+              'input:not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="image"])',
+              '[contenteditable="true"]',
+              '[contenteditable=""]'
+            ].join(', ');
+
+            for (const doc of docs) {
+              try {
+                const nodes = doc.querySelectorAll(selector);
+                for (const node of nodes) {
+                  if (isEditable(node) && isVisible(node)) return node;
+                }
+              } catch (e) {
+                // ignore
+              }
+            }
+
+            return null;
+          };
+
+          const getObservationRoot = (el) => {
+            if (!(el instanceof Element)) return document.body || document.documentElement;
+            return (
+              el.closest('form, [role="form"], [role="dialog"], [role="log"], [role="feed"], section, article, main') ||
+              document.body ||
+              document.documentElement
+            );
+          };
+
+          const captureFingerprint = (root) => {
+            const text = normalize(root?.innerText || '').replace(/\s+/g, ' ').slice(0, 500);
+            const childCount = root?.querySelectorAll ? root.querySelectorAll('*').length : 0;
+            const inputCount = root?.querySelectorAll ? root.querySelectorAll('input,textarea,[contenteditable="true"],[contenteditable=""]').length : 0;
+            return { text, childCount, inputCount };
+          };
+
+          const keyInfo = keyMapping[keysStr] || null;
+          const isSpecialKey = !!keyInfo;
+          const target = findEditableTarget() || getDeepActiveElement() || document.body;
+          if (!target) return { success: false, error: 'No active target found to send keys.' };
+
+          const beforeValue = readElementText(target);
+          const beforeUrl = location.href;
+          const beforeActive = normalize((document.activeElement && document.activeElement.tagName) || '');
+          const observationRoot = getObservationRoot(target);
+          const beforeFingerprint = captureFingerprint(observationRoot);
+
+          let mutationCount = 0;
+          const observer = new MutationObserver(() => { mutationCount += 1; });
+          try {
+            observer.observe(observationRoot, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              characterData: true
+            });
+          } catch (e) {
+            // ignore observer failures
+          }
+
+          const dispatchKey = (el, info) => {
+            const eventInit = {
+              key: info.key,
+              code: info.code,
+              keyCode: info.keyCode,
+              which: info.keyCode,
+              bubbles: true,
+              cancelable: true
+            };
+            el.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+            el.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+            el.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+          };
+
+          if (isSpecialKey) {
+            if (target && typeof target.focus === 'function') target.focus();
+            dispatchKey(target, keyInfo);
+          } else if (!appendText(target, keysStr)) {
+            observer.disconnect();
+            return { success: false, error: `Cannot type "${keysStr}" because active target is not editable.` };
+          }
+
+          await new Promise(resolve => setTimeout(resolve, isSpecialKey ? 350 : 180));
+          observer.disconnect();
+
+          const afterValue = readElementText(target);
+          const afterUrl = location.href;
+          const afterActive = normalize((document.activeElement && document.activeElement.tagName) || '');
+          const afterFingerprint = captureFingerprint(observationRoot);
+
+          const valueChanged = beforeValue !== afterValue;
+          const activeChanged = beforeActive !== afterActive;
+          const urlChanged = beforeUrl !== afterUrl;
+          const scopeChanged =
+            mutationCount > 0 ||
+            beforeFingerprint.text !== afterFingerprint.text ||
+            beforeFingerprint.childCount !== afterFingerprint.childCount ||
+            beforeFingerprint.inputCount !== afterFingerprint.inputCount;
+
+          if (!isSpecialKey) {
+            const typedOk = valueChanged || afterValue.includes(keysStr);
+            if (!typedOk) {
+              return { success: false, error: `Typing "${keysStr}" had no observable effect on the focused input.` };
+            }
+            return { success: true, message: `Typed keys: ${keysStr}` };
+          }
+
+          if (keysStr === 'Enter') {
+            const hadPayload = beforeValue.trim().length > 0;
+            const verified = hadPayload
+              ? (valueChanged || activeChanged || urlChanged || scopeChanged)
+              : (activeChanged || urlChanged || scopeChanged);
+
+            if (!verified) {
+              return { success: false, error: 'Enter key had no observable effect (no input/focus/DOM/URL change).' };
+            }
+
+            const bits = [];
+            if (valueChanged) bits.push('input changed');
+            if (activeChanged) bits.push('focus changed');
+            if (urlChanged) bits.push('url changed');
+            if (scopeChanged) bits.push('local DOM changed');
+            if (bits.length === 0) bits.push('observable effect');
+
+            return { success: true, message: `Sent Enter (VERIFIED_KEY_EFFECT: ${bits.join(', ')})` };
+          }
+
+          return { success: true, message: `Sent keys: ${keysStr}` };
         },
-        args: [keys, keyMap]
+        args: [safeKeys, keyMap]
       });
-      await new Promise(r => setTimeout(r, 300));
-      return AgentS.createActionResult({ success: true, message: `Sent keys: ${keys}` });
+      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'send_keys script failed' });
     },
 
     async switchTab(tabId) {
