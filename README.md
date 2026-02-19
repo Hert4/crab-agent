@@ -65,8 +65,6 @@ Look for products with at least 4 stars and 100+ reviews.
 - **DOM Tree Builder**: Creates a structured representation of interactive elements
 - **Action System**: Handles all browser automation actions
 
-
-
 ## Files Structure
 
 ```
