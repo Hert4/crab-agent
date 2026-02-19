@@ -41,8 +41,8 @@ Use only those indexes for UI actions.
 
 # Set-of-Mark Visual Labels (SoM)
 The screenshot has COLORED BOUNDING BOXES with [index] labels matching the interactive elements.
-- Elements WITH a label in screenshot → use click_element with that index (preferred, more accurate)
-- Elements WITHOUT a label (not in DOM) → use click_at with x,y coordinates (only if no matching index exists)
+- Elements WITH a label in screenshot â†’ use click_element with that index (preferred, more accurate)
+- Elements WITHOUT a label (not in DOM) â†’ use click_at with x,y coordinates (only if no matching index exists)
 - Always prefer click_element over click_at when the element has a visible [index] label
 - The label color and position help you identify the exact element to interact with
 
@@ -90,8 +90,8 @@ The screenshot has COLORED BOUNDING BOXES with [index] labels matching the inter
 4. Keep memory concise for long tasks
 5. Include exact URLs only when visible; never invent URLs
 6. IMPORTANT: For messaging/chat tasks, distinguish between SEARCH BOX and MESSAGE INPUT:
-   - Search box: placeholder contains "search", "find", etc... → DO NOT type messages here
-   - Message input: placeholder contains "message", "type here", etc... → Type messages HERE
+   - Search box: placeholder contains "search", "find", etc... â†’ DO NOT type messages here
+   - Message input: placeholder contains "message", "type here", etc... â†’ Type messages HERE
    - Message input is usually at the BOTTOM of the chat window
    - If you typed into wrong field, find the correct one and try again
 7. Never use done in a step where any earlier action failed
@@ -110,8 +110,23 @@ The screenshot has COLORED BOUNDING BOXES with [index] labels matching the inter
    - For video/voice calls: verify a call window actually appeared, not just that you clicked a button
 11. FALLBACK TO click_at:
    - If click_element on an index fails 2+ times with no visual change, use click_at
-   - Look at the screenshot to estimate x,y coordinates of the target element
+   - IMPORTANT: x,y coordinates are PIXEL POSITIONS on screen, NOT element indices!
+   - Look at the screenshot to VISUALLY estimate where the target element is
+   - Use the @(x,y) coordinates shown in DOM list for input elements, e.g. "[450] <div> [EDITABLE INPUT] @(750,820)" means center is at x=750, y=820
+   - Typical viewport is ~1300x900 pixels. Chat input is usually near bottom (y > 700)
    - click_at is your backup when DOM-based clicking doesn't work
+12. ELEMENT NOT FOUND - CRITICAL:
+   - If you get "Element X not found", the DOM has changed - DO NOT retry same index
+   - WARNING: The element INDEX (e.g. 1020) is NOT the same as x,y COORDINATES!
+   - Look at the DOM list for elements with @(x,y) coordinates, e.g. "@(750,820)" means x=750, y=820
+   - Or look at the screenshot bounding boxes to estimate pixel position visually
+   - For chat/messaging: the input field is usually at BOTTOM of chat window (y > 700), look for "Aa" placeholder
+13. MESSAGING APPS (Facebook Messenger, Zalo, etc.):
+   - Message input field: Look for element with [EDITABLE INPUT] tag, role="textbox", or placeholder like "Aa", "Enter a message"
+   - The input is usually a <div> with contenteditable, NOT a regular <input>
+   - Click on the input field FIRST (use click_at on center of input area if click_element fails)
+   - THEN use input_text or type with send_keys
+   - After typing, press Enter or click send button
 </system_instructions>
 `,
 
@@ -191,9 +206,9 @@ When the browser displays a raw image file (png, jpg, etc.):
 
 ## WHEN TO RESPOND DIRECTLY
 If the user's request is a simple greeting or question that doesn't require browser interaction, respond directly using "done":
-- Greetings: "Hello", "Hi", "Chào" → respond with a friendly greeting
-- General questions → answer directly if you know
-- No web page needed → use done action immediately
+- Greetings: "Hello", "Hi", "ChÃ o" â†’ respond with a friendly greeting
+- General questions â†’ answer directly if you know
+- No web page needed â†’ use done action immediately
 
 `,
 
@@ -221,7 +236,7 @@ If the user's request is a simple greeting or question that doesn't require brow
 }
 
 ## IMPORTANT
-- Simple greetings like "Hi", "Hello", "Chào" should be marked done=true with a friendly response
+- Simple greetings like "Hi", "Hello", "ChÃ o" should be marked done=true with a friendly response
 - Don't fail tasks just because no webpage - some tasks don't need web interaction
 `,
 
@@ -402,20 +417,7 @@ Field relationships:
       try { return JSON.parse(objectMatch[0]); } catch (e3) {}
     }
 
-    // Try to extract action patterns from text
-    if (text.includes('search') || text.includes('tìm')) {
-      const searchMatch = text.match(/search[:\s]+["']?([^"'\n]+)["']?/i) || text.match(/tìm[:\s]+["']?([^"'\n]+)["']?/i);
-      if (searchMatch) {
-        return { current_state: { next_goal: 'search' }, action: [{ search_google: { query: searchMatch[1].trim() } }] };
-      }
-    }
-
-    if (text.includes('click') || text.includes('nhấn')) {
-      const clickMatch = text.match(/click[:\s]+(\d+)/i) || text.match(/\[(\d+)\]/);
-      if (clickMatch) {
-        return { current_state: { next_goal: 'click' }, action: [{ click_element: { index: parseInt(clickMatch[1]) } }] };
-      }
-    }
+    // Do not infer actions from free text. Only accept valid JSON responses.
 
     // If model just responds with plain text (no JSON), treat as done response
     if (text.length > 10 && !text.includes('{')) {
@@ -592,27 +594,110 @@ const AgentS = {
     },
 
     async clickElement(index, tabId) {
+      const safeIndex = typeof index === 'number' ? index : parseInt(index, 10);
+      if (!Number.isFinite(safeIndex)) {
+        return AgentS.createActionResult({ success: false, error: `Invalid element index: ${index}` });
+      }
+
       const result = await chrome.scripting.executeScript({
         target: { tabId },
         func: (idx) => {
-          if (!window.AgentSDom?.lastBuildResult) return { success: false, error: 'DOM not built' };
-          const el = window.AgentSDom.lastBuildResult.elementMap[idx];
-          if (!el) return { success: false, error: `Element ${idx} not found` };
+          const rebuildDom = () => {
+            if (!window.AgentSDom?.buildDomTree) return null;
+            const refreshed = window.AgentSDom.buildDomTree({ highlightElements: false, viewportOnly: true });
+            window.AgentSDom.lastBuildResult = refreshed;
+            return refreshed;
+          };
+
+          let domState = window.AgentSDom?.lastBuildResult || rebuildDom();
+          if (!domState) {
+            return { success: false, error: 'DOM not built. Use click_at with PIXEL coordinates from screenshot (NOT index numbers).' };
+          }
+
+          let el = domState.elementMap?.[idx];
+          if (!el) {
+            domState = rebuildDom() || domState;
+            el = domState.elementMap?.[idx];
+          }
+
+          if (!el) {
+            return {
+              success: false,
+              error: `Element ${idx} not found after DOM refresh. The page changed; get the latest index from the current DOM list.`
+            };
+          }
+
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          el.click();
-          return { success: true, message: `Clicked element ${idx}` };
+
+          const rect = el.getBoundingClientRect();
+          const clickX = Math.round(rect.x + rect.width / 2);
+          const clickY = Math.round(rect.y + rect.height / 2);
+
+          const eventOptions = {
+            view: window,
+            bubbles: true,
+            cancelable: true,
+            clientX: clickX,
+            clientY: clickY,
+            screenX: clickX,
+            screenY: clickY,
+            button: 0,
+            buttons: 1
+          };
+
+          if (typeof PointerEvent === 'function') {
+            el.dispatchEvent(new PointerEvent('pointerdown', eventOptions));
+            el.dispatchEvent(new PointerEvent('pointerup', eventOptions));
+          }
+          el.dispatchEvent(new MouseEvent('mousedown', eventOptions));
+          el.dispatchEvent(new MouseEvent('mouseup', eventOptions));
+          el.dispatchEvent(new MouseEvent('click', eventOptions));
+          if (typeof el.click === 'function') el.click();
+
+          const tag = (el.tagName || '').toLowerCase();
+          const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+          return {
+            success: true,
+            message: `Clicked element ${idx} <${tag}> "${text}" at (${clickX}, ${clickY})`
+          };
         },
-        args: [index]
+        args: [safeIndex]
       });
       await new Promise(r => setTimeout(r, 500));
-      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
+      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed. Use click_at with coordinates instead.' });
     },
 
     async clickAtCoordinates(x, y, tabId) {
+      const safeX = typeof x === 'number' ? x : parseInt(x, 10);
+      const safeY = typeof y === 'number' ? y : parseInt(y, 10);
+
+      if (!Number.isFinite(safeX) || !Number.isFinite(safeY)) {
+        return AgentS.createActionResult({ success: false, error: `Invalid click coordinates: (${x}, ${y})` });
+      }
+
       const result = await chrome.scripting.executeScript({
         target: { tabId },
-        func: (clickX, clickY) => {
-          // Use coordinates directly - model estimates based on screenshot which should match viewport
+        func: async (clickX, clickY) => {
+          const ensureMutationObserver = () => {
+            if (window.__agentSMutationObserver) return;
+            window.__agentSMutationCount = window.__agentSMutationCount || 0;
+            window.__agentSMutationObserver = new MutationObserver(() => {
+              window.__agentSMutationCount += 1;
+            });
+            window.__agentSMutationObserver.observe(document.documentElement || document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              characterData: true
+            });
+          };
+
+          ensureMutationObserver();
+
+          const beforeMutationCount = window.__agentSMutationCount || 0;
+          const beforeActive = document.activeElement;
+          const beforeHref = window.location.href;
+
           const el = document.elementFromPoint(clickX, clickY);
           if (!el) return { success: false, error: `No element found at (${clickX}, ${clickY})` };
 
@@ -628,17 +713,32 @@ const AgentS = {
             buttons: 1
           };
 
+          if (typeof PointerEvent === 'function') {
+            el.dispatchEvent(new PointerEvent('pointerdown', eventOptions));
+            el.dispatchEvent(new PointerEvent('pointerup', eventOptions));
+          }
           el.dispatchEvent(new MouseEvent('mousedown', eventOptions));
           el.dispatchEvent(new MouseEvent('mouseup', eventOptions));
           el.dispatchEvent(new MouseEvent('click', eventOptions));
-          el.click();
+          if (typeof el.click === 'function') el.click();
 
-          const tagName = el.tagName.toLowerCase();
-          const text = (el.innerText || el.textContent || '').slice(0, 50);
-          const role = el.getAttribute('role') || '';
-          const ariaLabel = el.getAttribute('aria-label') || '';
+          await new Promise(resolve => setTimeout(resolve, 150));
 
-          // Log viewport info for debugging
+          const afterMutationCount = window.__agentSMutationCount || 0;
+          const activeChanged = document.activeElement !== beforeActive;
+          const urlChanged = window.location.href !== beforeHref;
+          const domChanged = afterMutationCount !== beforeMutationCount;
+
+          if (!activeChanged && !urlChanged && !domChanged) {
+            return {
+              success: false,
+              error: `Click at (${clickX}, ${clickY}) had no observable effect (no DOM/focus/URL change). Try another target.`
+            };
+          }
+
+          const tagName = (el.tagName || '').toLowerCase();
+          const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+          const ariaLabel = el.getAttribute?.('aria-label') || '';
           const vw = window.innerWidth;
           const vh = window.innerHeight;
 
@@ -647,13 +747,19 @@ const AgentS = {
             message: `Clicked at (${clickX}, ${clickY}) [viewport: ${vw}x${vh}] on <${tagName}>${text ? ` "${text}"` : ''}${ariaLabel ? ` [${ariaLabel}]` : ''}`
           };
         },
-        args: [x, y]
+        args: [safeX, safeY]
       });
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 350));
       return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
     },
 
     async inputText(index, text, tabId, taskText = '') {
+      // Ensure all parameters are serializable
+      const safeIndex = typeof index === 'number' ? index : parseInt(index, 10) || 0;
+      const safeText = String(text || '');
+      // Sanitize taskText - only keep basic ASCII to avoid serialization issues
+      const safeTaskText = String(taskText || '').substring(0, 500).replace(/[^\x20-\x7E\s]/g, '');
+
       const result = await chrome.scripting.executeScript({
         target: { tabId },
         func: (idx, inputText, task) => {
@@ -869,9 +975,23 @@ const AgentS = {
             return true;
           };
 
-          if (!window.AgentSDom?.lastBuildResult) return { success: false, error: 'DOM not built' };
-          const rawEl = window.AgentSDom.lastBuildResult.elementMap[idx];
-          if (!rawEl) return { success: false, error: `Element ${idx} not found` };
+          const rebuildDom = () => {
+            if (!window.AgentSDom?.buildDomTree) return null;
+            const refreshed = window.AgentSDom.buildDomTree({ highlightElements: false, viewportOnly: true });
+            window.AgentSDom.lastBuildResult = refreshed;
+            return refreshed;
+          };
+
+          let domState = window.AgentSDom?.lastBuildResult || rebuildDom();
+          if (!domState) return { success: false, error: 'DOM not built. Try: 1) click_at on input field position from screenshot, 2) then send_keys to type.' };
+
+          let rawEl = domState.elementMap?.[idx];
+          if (!rawEl) {
+            domState = rebuildDom() || domState;
+            rawEl = domState.elementMap?.[idx];
+          }
+
+          if (!rawEl) return { success: false, error: `Element ${idx} not found after DOM refresh. Find the latest message input index from the current DOM list.` };
           rawEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
           rawEl.focus();
 
@@ -879,7 +999,7 @@ const AgentS = {
           if (!target) {
             return {
               success: false,
-              error: `Element ${idx} is not an editable input target`,
+              error: `Element ${idx} is not editable. SOLUTION: Find element marked [EDITABLE INPUT] in DOM list, or look at screenshot for the message input box, then click_at its position first, then try input_text or send_keys.`,
               message: elementMeta(rawEl)
             };
           }
@@ -928,19 +1048,19 @@ const AgentS = {
 
           // Warn if this looks like a search box for message/chat tasks
           const meta = elementMeta(target).toLowerCase();
-          const isSearchLike = /(search|tìm kiếm|tim kiem|find)/.test(meta);
-          const isMessageTask = /(message|tin nhắn|tin nhan|chat|nhắn|nhan)/.test(taskKey);
+          const isSearchLike = /(search|tÃ¬m kiáº¿m|tim kiem|find)/.test(meta);
+          const isMessageTask = /(message|tin nháº¯n|tin nhan|chat|nháº¯n|nhan)/.test(taskKey);
 
           if (isSearchLike && isMessageTask) {
             return {
               success: true,
-              message: `WARNING: Text entered into element ${idx} which looks like a SEARCH BOX (${elementMeta(target)}). If this is wrong, find the actual message input field (usually at bottom with placeholder like "Nội dung tin nhắn" or "Type a message").`
+              message: `WARNING: Text entered into element ${idx} which looks like a SEARCH BOX (${elementMeta(target)}). If this is wrong, find the actual message input field (usually at bottom with placeholder like "Ná»™i dung tin nháº¯n" or "Type a message").`
             };
           }
 
           return { success: true, message: `Entered text into element ${idx}. ${elementMeta(target)}` };
         },
-        args: [index, text, taskText]
+        args: [safeIndex, safeText, safeTaskText]
       });
       return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
     },
@@ -1043,10 +1163,50 @@ const AgentS = {
 
   async takeScreenshot(tabId) {
     try {
+      // First check if the tab URL is a valid web page that can be captured
+      let tab;
+      try {
+        tab = await chrome.tabs.get(tabId);
+      } catch (e) {
+        // If we can't get the tab, try to get active tab
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        tab = activeTab;
+      }
+
+      const tabUrl = tab?.url || '';
+      // Chrome restricts screenshot capture for special URLs
+      const restrictedPrefixes = [
+        'devtools://',
+        'chrome://',
+        'chrome-extension://',
+        'edge://',
+        'about:',
+        'view-source:',
+        'file://' // file:// URLs may also have restrictions
+      ];
+
+      const isRestricted = restrictedPrefixes.some(prefix => tabUrl.startsWith(prefix));
+      if (isRestricted) {
+        console.log(`[Screenshot] Skipping capture for restricted URL: ${tabUrl.substring(0, 50)}`);
+        return null;
+      }
+
+      // Also skip if URL is empty or not http/https
+      if (!tabUrl.startsWith('http://') && !tabUrl.startsWith('https://')) {
+        console.log(`[Screenshot] Skipping capture for non-web URL: ${tabUrl.substring(0, 50)}`);
+        return null;
+      }
+
       // Use PNG format with no quality loss for better vision recognition
       return await chrome.tabs.captureVisibleTab(null, { format: 'png' });
     } catch (e) {
-      console.error('Screenshot failed:', e);
+      // Log specific error message for debugging
+      const errMsg = e?.message || String(e);
+      if (errMsg.includes('Cannot access') || errMsg.includes('permission')) {
+        console.log(`[Screenshot] Cannot capture - restricted page: ${errMsg}`);
+      } else {
+        console.error('[Screenshot] Capture failed:', errMsg);
+      }
       return null;
     }
   },
@@ -1630,7 +1790,7 @@ async function runExecutor() {
           console.log('[SoM] Annotated screenshot size:', screenshot.length);
         }
       } else {
-        console.warn('[Vision] useVision is enabled but screenshot capture failed');
+        console.log('[Vision] Screenshot capture skipped (restricted page or capture unavailable). Continuing with DOM-only mode.');
       }
     }
 
@@ -1843,16 +2003,30 @@ async function runPlanner() {
       };
     } catch (e) {}
 
+    // Take screenshot for planner if vision is enabled
+    let plannerScreenshot = null;
+    if (exec.settings.useVision) {
+      plannerScreenshot = await AgentS.takeScreenshot(exec.tabId);
+      if (plannerScreenshot && pageState.elements?.length > 0) {
+        plannerScreenshot = await AgentS.annotateScreenshotWithSoM(plannerScreenshot, pageState.elements, pageState.viewportInfo);
+      }
+    }
+
+    let userContent = AgentSPrompts.buildPlannerUserMessage(exec.task, pageState, exec.actionHistory, exec.step, exec.maxSteps, tabContext);
+    if (plannerScreenshot) {
+      userContent = `[Screenshot attached for visual verification]\n\n${userContent}`;
+    }
+
     const plannerMsgs = [
       { role: 'system', content: AgentSPrompts.plannerSystem },
-      { role: 'user', content: AgentSPrompts.buildPlannerUserMessage(exec.task, pageState, exec.actionHistory, exec.step, exec.maxSteps, tabContext) }
+      { role: 'user', content: userContent, images: plannerScreenshot ? [plannerScreenshot] : [] }
     ];
-    const response = await AgentS.callLLM(plannerMsgs, exec.settings, false);
+    const response = await AgentS.callLLM(plannerMsgs, exec.settings, exec.settings.useVision, plannerScreenshot);
     const parsed = AgentSPrompts.parseResponse(response);
     if (!AgentSPrompts.validatePlannerResponse(parsed).valid) return null;
     exec.eventManager.emit({ state: AgentS.ExecutionState.STEP_OK, actor: AgentS.Actors.PLANNER, taskId: exec.taskId, step: exec.step, details: { observation: parsed.observation, done: parsed.done } });
     return parsed;
-  } catch (e) { return null; }
+  } catch (e) { console.error('Planner error:', e); return null; }
 }
 
 async function handleFollowUpTask(task) {
@@ -1915,3 +2089,4 @@ async function loadSettings() {
 }
 
 console.log('Agent-S background service worker loaded');
+
