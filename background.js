@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Agent-S Background Service Worker
  * All-in-one file combining prompts, agent core, and execution logic
  */
@@ -41,8 +41,8 @@ Use only those indexes for UI actions.
 
 # Set-of-Mark Visual Labels (SoM)
 The screenshot has COLORED BOUNDING BOXES with [index] labels matching the interactive elements.
-- Elements WITH a label in screenshot Ã¢â€ â€™ use click_element with that index (preferred, more accurate)
-- Elements WITHOUT a label (not in DOM) Ã¢â€ â€™ use click_at with x,y coordinates (only if no matching index exists)
+- Elements WITH a label in screenshot ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ use click_element with that index (preferred, more accurate)
+- Elements WITHOUT a label (not in DOM) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ use click_at with x,y coordinates (only if no matching index exists)
 - Always prefer click_element over click_at when the element has a visible [index] label
 - The label color and position help you identify the exact element to interact with
 
@@ -90,8 +90,8 @@ The screenshot has COLORED BOUNDING BOXES with [index] labels matching the inter
 4. Keep memory concise for long tasks
 5. Include exact URLs only when visible; never invent URLs
 6. IMPORTANT: For messaging/chat tasks, distinguish between SEARCH BOX and MESSAGE INPUT:
-   - Search box: placeholder contains "search", "find", etc... Ã¢â€ â€™ DO NOT type messages here
-   - Message input: placeholder contains "message", "type here", etc... Ã¢â€ â€™ Type messages HERE
+   - Search box: placeholder contains "search", "find", etc... ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ DO NOT type messages here
+   - Message input: placeholder contains "message", "type here", etc... ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Type messages HERE
    - Message input is usually at the BOTTOM of the chat window
    - If you typed into wrong field, find the correct one and try again
 7. Never use done in a step where any earlier action failed
@@ -206,9 +206,9 @@ When the browser displays a raw image file (png, jpg, etc.):
 
 ## WHEN TO RESPOND DIRECTLY
 If the user's request is a simple greeting or question that doesn't require browser interaction, respond directly using "done":
-- Greetings: "Hello", "Hi", "ChÃƒÂ o" Ã¢â€ â€™ respond with a friendly greeting
-- General questions Ã¢â€ â€™ answer directly if you know
-- No web page needed Ã¢â€ â€™ use done action immediately
+- Greetings: "Hello", "Hi", "ChÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â o" ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ respond with a friendly greeting
+- General questions ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ answer directly if you know
+- No web page needed ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ use done action immediately
 
 `,
 
@@ -236,7 +236,7 @@ If the user's request is a simple greeting or question that doesn't require brow
 }
 
 ## IMPORTANT
-- Simple greetings like "Hi", "Hello", "ChÃƒÂ o" should be marked done=true with a friendly response
+- Simple greetings like "Hi", "Hello", "ChÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â o" should be marked done=true with a friendly response
 - Don't fail tasks just because no webpage - some tasks don't need web interaction
 `,
 
@@ -536,7 +536,11 @@ const AgentS = {
         case 'click_element':
           return await AgentS.actions.clickElement(params.index, tabId);
         case 'click_at':
-          return await AgentS.actions.clickAtCoordinates(params.x, params.y, tabId);
+          return await AgentS.actions.clickAtCoordinates(
+            params.x,
+            params.y,
+            tabId
+          );
         case 'input_text':
           return await AgentS.actions.inputText(params.index, params.text, tabId);
         case 'send_keys':
@@ -692,64 +696,108 @@ const AgentS = {
             });
           };
 
+
           ensureMutationObserver();
 
-          const beforeMutationCount = window.__agentSMutationCount || 0;
-          const beforeActive = document.activeElement;
-          const beforeHref = window.location.href;
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
+          const dpr = window.devicePixelRatio || 1;
+          const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+          // Scale coordinates by DPR since model sees screenshot at DPR resolution
+          const baseX = clamp(Math.round(clickX / dpr), 0, Math.max(0, vw - 1));
+          const baseY = clamp(Math.round(clickY / dpr), 0, Math.max(0, vh - 1));
 
-          const el = document.elementFromPoint(clickX, clickY);
-          if (!el) return { success: false, error: `No element found at (${clickX}, ${clickY})` };
+          // Get all elements at this point (stacking order, topmost first)
+          const elementsAtPoint = document.elementsFromPoint(baseX, baseY);
+          if (!elementsAtPoint || elementsAtPoint.length === 0) {
+            return { success: false, error: `No element found at (${baseX}, ${baseY})` };
+          }
+
+          // Find the best clickable target - prefer buttons, links, svg, or elements with click handlers
+          const isLikelyClickable = (el) => {
+            if (!el) return false;
+            const tag = (el.tagName || '').toLowerCase();
+            if (['button', 'a', 'input', 'select', 'svg', 'img', 'i', 'span'].includes(tag)) return true;
+            if (el.onclick || el.getAttribute?.('onclick')) return true;
+            if (el.getAttribute?.('role') === 'button') return true;
+            if (el.getAttribute?.('tabindex')) return true;
+            // Check for ID or class patterns suggesting interactivity
+            const id = (el.id || '').toLowerCase();
+            const cls = (el.className || '').toString().toLowerCase();
+            if (id && (id.includes('launcher') || id.includes('btn') || id.includes('button') || id.includes('menu') || id.includes('toggle'))) return true;
+            if (cls.includes('icon-') || cls.includes('btn') || cls.includes('button') || cls.includes('clickable') || cls.includes('launcher')) return true;
+            const style = window.getComputedStyle(el);
+            if (style.cursor === 'pointer') return true;
+            return false;
+          };
+
+          // Find best target: prefer clickable elements, fallback to topmost
+          let target = elementsAtPoint[0];
+          for (const el of elementsAtPoint) {
+            if (isLikelyClickable(el)) {
+              target = el;
+              break;
+            }
+          }
+
+          const startMutationCount = window.__agentSMutationCount || 0;
+          const startActive = document.activeElement;
+          const startHref = window.location.href;
 
           const eventOptions = {
             view: window,
             bubbles: true,
             cancelable: true,
-            clientX: clickX,
-            clientY: clickY,
-            screenX: clickX,
-            screenY: clickY,
+            composed: true,
+            clientX: baseX,
+            clientY: baseY,
+            screenX: baseX,
+            screenY: baseY,
             button: 0,
             buttons: 1
           };
 
-          if (typeof PointerEvent === 'function') {
-            el.dispatchEvent(new PointerEvent('pointerdown', eventOptions));
-            el.dispatchEvent(new PointerEvent('pointerup', eventOptions));
-          }
-          el.dispatchEvent(new MouseEvent('mousedown', eventOptions));
-          el.dispatchEvent(new MouseEvent('mouseup', eventOptions));
-          el.dispatchEvent(new MouseEvent('click', eventOptions));
-          if (typeof el.click === 'function') el.click();
-
-          await new Promise(resolve => setTimeout(resolve, 150));
-
-          const afterMutationCount = window.__agentSMutationCount || 0;
-          const activeChanged = document.activeElement !== beforeActive;
-          const urlChanged = window.location.href !== beforeHref;
-          const domChanged = afterMutationCount !== beforeMutationCount;
-
-          if (!activeChanged && !urlChanged && !domChanged) {
-            return {
-              success: false,
-              error: `Click at (${clickX}, ${clickY}) had no observable effect (no DOM/focus/URL change). Try another target.`
-            };
+          // For Angular/React: dispatch events on ALL elements at point (from innermost to outermost)
+          // This helps trigger framework event listeners that might be on parent elements
+          const clickedElements = [];
+          for (const el of elementsAtPoint.slice(0, 5)) { // Limit to top 5 elements
+            if (typeof PointerEvent === 'function') {
+              el.dispatchEvent(new PointerEvent('pointerdown', eventOptions));
+              el.dispatchEvent(new PointerEvent('pointerup', eventOptions));
+            }
+            el.dispatchEvent(new MouseEvent('mousedown', eventOptions));
+            el.dispatchEvent(new MouseEvent('mouseup', eventOptions));
+            el.dispatchEvent(new MouseEvent('click', eventOptions));
+            clickedElements.push((el.tagName || '').toLowerCase());
           }
 
-          const tagName = (el.tagName || '').toLowerCase();
-          const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-          const ariaLabel = el.getAttribute?.('aria-label') || '';
-          const vw = window.innerWidth;
-          const vh = window.innerHeight;
+          // Also try native click on the best target
+          if (typeof target.click === 'function') target.click();
 
+          await new Promise(resolve => setTimeout(resolve, 140));
+
+          const endMutationCount = window.__agentSMutationCount || 0;
+          const activeChanged = document.activeElement !== startActive;
+          const urlChanged = window.location.href !== startHref;
+          const domChanged = endMutationCount !== startMutationCount;
+
+          const tagName = (target.tagName || '').toLowerCase();
+          const text = (target.innerText || target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+          const ariaLabel = target.getAttribute?.('aria-label') || '';
+          const effectBits = [];
+          if (activeChanged) effectBits.push('focus');
+          if (urlChanged) effectBits.push('url');
+          if (domChanged) effectBits.push('dom');
+
+          const targetId = target.id ? `#${target.id}` : '';
           return {
             success: true,
-            message: `Clicked at (${clickX}, ${clickY}) [viewport: ${vw}x${vh}] on <${tagName}>${text ? ` "${text}"` : ''}${ariaLabel ? ` [${ariaLabel}]` : ''}`
+            message: `Clicked (${baseX}, ${baseY}) [dpr:${dpr.toFixed(2)}] target:<${tagName}${targetId}> clicked:[${clickedElements.join(',')}] [effect:${effectBits.join('+') || 'none'}]`
           };
         },
         args: [safeX, safeY]
       });
-      await new Promise(r => setTimeout(r, 350));
+      await new Promise(r => setTimeout(r, 250));
       return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
     },
 
