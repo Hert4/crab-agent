@@ -14,6 +14,87 @@ let contextRules = [];
 let executionTimer = null;
 let executionStartTime = null;
 let editingRuleIndex = null;
+let pendingImages = [];
+let processCrabTimer = null;
+let processCrabFrameIndex = 0;
+let processCrabMood = 'thinking';
+let thinkingCrabTimer = null;
+let thinkingCrabFrameIndex = 0;
+let thinkingCrabMood = 'thinking';
+
+const MAX_IMAGE_ATTACHMENTS = 4;
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+const PROCESS_CRAB_FRAMES = [
+  buildCrabFrame({ offset: 4, eyes: 'neutral', legs: 'right' }),
+  buildCrabFrame({ offset: 3, eyes: 'neutral', legs: 'left' }),
+  buildCrabFrame({ offset: 4, eyes: 'focused', legs: 'right' }),
+  buildCrabFrame({ offset: 5, eyes: 'neutral', legs: 'left' })
+];
+const PROCESS_CRAB_BUBBLE_DOTS = ['.', '..', '...'];
+
+function buildCrabFrame(options = {}) {
+  const {
+    offset = 4,
+    eyes = 'neutral',
+    legs = 'right'
+  } = options;
+  const full = '\u2588';
+  const left = '\u258C';
+  const right = '\u2590';
+  const top = '\u2580';
+
+  let eyePattern = `${left}${right}${full}${full}${left}${right}`;
+  if (eyes === 'focused') {
+    eyePattern = `${right}${left}${full}${full}${right}${left}`;
+  } else if (eyes === 'closed') {
+    eyePattern = `${top}${top}${full}${full}${top}${top}`;
+  } else if (eyes === 'alert') {
+    eyePattern = `\u259D${top}${full}${full}${top}\u2598`;
+  } else if (eyes === 'happy') {
+    eyePattern = '\u259B \u259C\u259B \u259C';
+  }
+
+  let legPattern = '\u2590\u2590  \u258C\u258C';
+  if (legs === 'left') {
+    legPattern = '\u258C\u258C  \u2590\u2590';
+  } else if (legs === 'wide') {
+    legPattern = '\u2590\u2590      \u258C\u258C';
+  }
+
+  const line1 = `${' '.repeat(offset)}${full.repeat(8)}`;
+  const line2 = `${' '.repeat(offset)}${full}${eyePattern}${full}`;
+  const line3 = `${' '.repeat(Math.max(0, offset - 2))}${full.repeat(12)}`;
+  const line4 = `${' '.repeat(offset)}${full.repeat(8)}`;
+  const line5 = `${' '.repeat(offset + 1)}${legPattern}`;
+  return [line1, line2, line3, line4, line5].join('\n');
+}
+
+const THINKING_CRAB_STATES = {
+  thinking: [
+    { art: buildCrabFrame({ offset: 4, eyes: 'neutral', legs: 'right' }), bubble: 'thinking.' },
+    { art: buildCrabFrame({ offset: 3, eyes: 'neutral', legs: 'left' }), bubble: 'thinking..' },
+    { art: buildCrabFrame({ offset: 4, eyes: 'focused', legs: 'right' }), bubble: 'thinking...' },
+    { art: buildCrabFrame({ offset: 5, eyes: 'neutral', legs: 'left' }), bubble: 'thinking..' }
+  ],
+  planning: [
+    { art: buildCrabFrame({ offset: 4, eyes: 'focused', legs: 'right' }), bubble: 'planning.' },
+    { art: buildCrabFrame({ offset: 4, eyes: 'focused', legs: 'left' }), bubble: 'planning..' },
+    { art: buildCrabFrame({ offset: 5, eyes: 'focused', legs: 'right' }), bubble: 'planning...' }
+  ],
+  working: [
+    { art: buildCrabFrame({ offset: 4, eyes: 'happy', legs: 'wide' }), bubble: 'working!' },
+    { art: buildCrabFrame({ offset: 3, eyes: 'happy', legs: 'left' }), bubble: 'working!!' },
+    { art: buildCrabFrame({ offset: 5, eyes: 'happy', legs: 'right' }), bubble: 'working!' }
+  ],
+  paused: [
+    { art: buildCrabFrame({ offset: 4, eyes: 'closed', legs: 'right' }), bubble: 'paused.' },
+    { art: buildCrabFrame({ offset: 4, eyes: 'closed', legs: 'left' }), bubble: 'paused..' }
+  ],
+  stopped: [
+    { art: buildCrabFrame({ offset: 4, eyes: 'alert', legs: 'right' }), bubble: 'stopped.' },
+    { art: buildCrabFrame({ offset: 4, eyes: 'alert', legs: 'left' }), bubble: 'stopped..' }
+  ]
+};
 
 // DOM Elements
 const elements = {
@@ -45,6 +126,9 @@ const elements = {
   executionBar: document.getElementById('executionBar'),
   executionText: document.getElementById('executionText'),
   executionStep: document.getElementById('executionStep'),
+  processCrab: document.getElementById('processCrab'),
+  processCrabArt: document.getElementById('processCrabArt'),
+  processCrabBubble: document.getElementById('processCrabBubble'),
 
   // Settings
   settingsBackBtn: document.getElementById('settingsBackBtn'),
@@ -67,6 +151,9 @@ const elements = {
   // Options buttons
   modelBtn: document.getElementById('modelBtn'),
   visionBtn: document.getElementById('visionBtn'),
+  attachBtn: document.getElementById('attachBtn'),
+  imageInput: document.getElementById('imageInput'),
+  attachmentPreview: document.getElementById('attachmentPreview'),
   openTabBtn: document.getElementById('openTabBtn'),
 
   // Modals
@@ -145,6 +232,8 @@ async function init() {
 
   // Setup event listeners
   setupEventListeners();
+  renderAttachmentPreview();
+  renderProcessCrab(true);
 
   // Start heartbeat
   setInterval(sendHeartbeat, 30000);
@@ -212,7 +301,7 @@ function handleExecutionEvent(event) {
       currentTaskId = taskId;
       console.log('TASK_START - showing execution bar');
       showExecutionBar();
-      if (elements.executionText) elements.executionText.textContent = 'Starting task...';
+      setExecutionText('Starting task...');
       startTimer();
       break;
 
@@ -244,16 +333,16 @@ function handleExecutionEvent(event) {
       break;
 
     case 'TASK_PAUSE':
-      elements.executionText.textContent = 'Paused';
+      setExecutionText('Paused');
       break;
 
     case 'STEP_START':
       showExecutionBar(); // Ensure bar is visible
-      if (elements.executionText) elements.executionText.textContent = 'Analyzing page...';
+      setExecutionText('Analyzing page...');
       break;
 
     case 'STEP_OK':
-      elements.executionText.textContent = 'Step completed';
+      setExecutionText('Step completed');
       break;
 
     case 'STEP_FAIL':
@@ -261,7 +350,7 @@ function handleExecutionEvent(event) {
       break;
 
     case 'ACT_START':
-      elements.executionText.textContent = `${details?.action}: ${details?.goal || ''}`;
+      setExecutionText(`${details?.action}: ${details?.goal || ''}`);
       addActionMessage(details?.action, details?.params, 'start');
       break;
 
@@ -275,12 +364,12 @@ function handleExecutionEvent(event) {
 
     case 'THINKING':
       showExecutionBar(); // Make sure execution bar is visible during thinking
-      if (elements.executionText) elements.executionText.textContent = details?.message || 'Thinking...';
-      showThinkingIndicator();
+      setExecutionText(details?.message || 'Thinking...');
+      showThinkingIndicator(details?.message || 'Thinking...');
       break;
 
     case 'PLANNING':
-      elements.executionText.textContent = 'Evaluating progress...';
+      setExecutionText('Evaluating progress...');
       break;
   }
 }
@@ -299,10 +388,12 @@ function setupEventListeners() {
       if (tabName === 'tasks') {
         elements.taskList.classList.remove('hidden');
         elements.contextRulesContent.classList.add('hidden');
+        triggerAnimation(elements.taskList, 'view-enter');
       } else if (tabName === 'context') {
         elements.taskList.classList.add('hidden');
         elements.contextRulesContent.classList.remove('hidden');
         renderContextRules();
+        triggerAnimation(elements.contextRulesContent, 'view-enter');
       }
     });
   });
@@ -347,6 +438,15 @@ function setupEventListeners() {
     elements.chatInput.style.height = 'auto';
     elements.chatInput.style.height = Math.min(elements.chatInput.scrollHeight, 120) + 'px';
   });
+
+  // Image attachments
+  if (elements.attachBtn && elements.imageInput) {
+    elements.attachBtn.addEventListener('click', () => {
+      elements.imageInput.click();
+    });
+
+    elements.imageInput.addEventListener('change', handleImageSelection);
+  }
 
   // Cancel button
   elements.cancelBtn.addEventListener('click', () => {
@@ -448,16 +548,27 @@ function setupEventListeners() {
     elements.ruleDomainInput.value = '';
     elements.ruleContextInput.value = '';
     elements.ruleModal.classList.add('active');
+    triggerAnimation(elements.ruleModal.querySelector('.modal'), 'view-enter');
   });
 
   elements.ruleModalSave.addEventListener('click', saveRule);
   elements.ruleModalCancel.addEventListener('click', () => {
     elements.ruleModal.classList.remove('active');
   });
+  elements.ruleModal.addEventListener('click', (e) => {
+    if (e.target === elements.ruleModal) {
+      elements.ruleModal.classList.remove('active');
+    }
+  });
 
   // Model modal
   elements.modelModalCancel.addEventListener('click', () => {
     elements.modelModal.classList.remove('active');
+  });
+  elements.modelModal.addEventListener('click', (e) => {
+    if (e.target === elements.modelModal) {
+      elements.modelModal.classList.remove('active');
+    }
   });
 
   // Export data
@@ -482,6 +593,19 @@ function showView(view) {
   elements.listView.classList.toggle('hidden', view !== 'list');
   elements.chatView.classList.toggle('active', view === 'chat');
   elements.settingsPanel.classList.toggle('active', view === 'settings');
+
+  const targetView = view === 'list'
+    ? elements.listView
+    : view === 'chat'
+      ? elements.chatView
+      : elements.settingsPanel;
+  triggerAnimation(targetView, 'view-enter');
+
+  if (view === 'settings') {
+    elements.settingsPanel.querySelectorAll('.settings-section').forEach((section, index) => {
+      section.style.setProperty('--stagger-delay', `${Math.min(index * 26, 180)}ms`);
+    });
+  }
 }
 
 /**
@@ -500,6 +624,7 @@ function startNewTask() {
   elements.chatMessages.innerHTML = '';
   elements.chatInput.value = '';
   elements.chatInput.placeholder = 'What would you like me to do?';
+  clearPendingImages();
 
   showView('chat');
   elements.chatInput.focus();
@@ -516,7 +641,7 @@ function openTask(task) {
   // Render existing messages
   for (const msg of task.messages) {
     if (msg.role === 'user') {
-      addUserMessage(msg.content, false);
+      addUserMessage(msg.content, false, msg.images || []);
     } else if (msg.role === 'assistant') {
       addAssistantMessage(msg.content, false);
     } else if (msg.role === 'system') {
@@ -527,6 +652,7 @@ function openTask(task) {
   }
 
   elements.chatInput.placeholder = 'Ask for follow-up changes...';
+  clearPendingImages();
   showView('chat');
   scrollToBottom();
 }
@@ -536,7 +662,8 @@ function openTask(task) {
  */
 async function sendMessage() {
   const text = elements.chatInput.value.trim();
-  if (!text) return;
+  const images = pendingImages.map(image => image.dataUrl);
+  if (!text && images.length === 0) return;
 
   // Check if API key is set
   if (!settings.apiKey && settings.provider !== 'ollama') {
@@ -544,14 +671,17 @@ async function sendMessage() {
     return;
   }
 
+  const taskText = text || `Analyze the attached image${images.length > 1 ? 's' : ''}.`;
+
   // Add user message
-  addUserMessage(text);
+  addUserMessage(taskText, true, images);
   elements.chatInput.value = '';
   elements.chatInput.style.height = 'auto';
 
   // Update task title if it's the first message
   if (currentTask.messages.length === 1) {
-    currentTask.title = text.substring(0, 50) + (text.length > 50 ? '...' : '');
+    const titleBase = text || `Image Task (${images.length})`;
+    currentTask.title = titleBase.substring(0, 50) + (titleBase.length > 50 ? '...' : '');
     elements.chatTitle.textContent = currentTask.title;
   }
 
@@ -565,23 +695,48 @@ async function sendMessage() {
 
   port.postMessage({
     type: isFollowUp ? 'follow_up_task' : 'new_task',
-    task: text,
+    task: taskText,
+    images,
     settings: {
       ...settings,
+      useVision: settings.useVision || images.length > 0,
       model: effectiveModel,
       maxSteps: parseInt(elements.maxStepsInput.value) || 100,
       planningInterval: parseInt(elements.planningIntervalInput.value) || 3
     }
   });
+
+  clearPendingImages();
 }
 
 /**
  * Add a user message to chat
  */
-function addUserMessage(content, save = true) {
+function addUserMessage(content, save = true, images = []) {
   const messageDiv = document.createElement('div');
   messageDiv.className = 'message user';
-  messageDiv.textContent = content;
+  if (content) {
+    const textDiv = document.createElement('div');
+    textDiv.className = 'message-text';
+    textDiv.textContent = content;
+    messageDiv.appendChild(textDiv);
+  }
+
+  if (images.length > 0) {
+    const imageContainer = document.createElement('div');
+    imageContainer.className = 'message-attachments';
+    images.forEach((src, index) => {
+      const image = document.createElement('img');
+      image.className = 'message-attachment-image';
+      image.src = src;
+      image.alt = `Attachment ${index + 1}`;
+      image.loading = 'lazy';
+      imageContainer.appendChild(image);
+    });
+    messageDiv.appendChild(imageContainer);
+  }
+
+  triggerAnimation(messageDiv, 'message-enter');
   elements.chatMessages.appendChild(messageDiv);
   scrollToBottom();
 
@@ -599,6 +754,7 @@ function addAssistantMessage(content, save = true) {
   const messageDiv = document.createElement('div');
   messageDiv.className = 'message assistant';
   messageDiv.innerHTML = formatMarkdown(content);
+  triggerAnimation(messageDiv, 'message-enter');
   elements.chatMessages.appendChild(messageDiv);
   scrollToBottom();
 
@@ -612,12 +768,9 @@ function addAssistantMessage(content, save = true) {
  */
 function addSystemMessage(content, type = 'info', save = true) {
   const messageDiv = document.createElement('div');
-  messageDiv.className = 'message system';
-  if (type === 'error') {
-    messageDiv.style.backgroundColor = 'rgba(239, 68, 68, 0.2)';
-    messageDiv.style.borderLeft = '3px solid #ef4444';
-  }
+  messageDiv.className = `message system ${type === 'error' ? 'error' : ''}`.trim();
   messageDiv.textContent = content;
+  triggerAnimation(messageDiv, 'message-enter');
   elements.chatMessages.appendChild(messageDiv);
   scrollToBottom();
 
@@ -659,6 +812,7 @@ function addActionMessage(action, params, status, message = '', save = true) {
       <span class="action-message"></span>
     `;
 
+    triggerAnimation(actionDiv, 'message-enter');
     elements.chatMessages.appendChild(actionDiv);
     scrollToBottom();
   }
@@ -678,18 +832,35 @@ function addActionMessage(action, params, status, message = '', save = true) {
 /**
  * Show thinking indicator
  */
-function showThinkingIndicator() {
-  if (document.querySelector('.thinking-indicator')) return;
+function showThinkingIndicator(message = 'Thinking...') {
+  let indicator = document.querySelector('.thinking-indicator');
+  if (!indicator) {
+    indicator = document.createElement('div');
+    indicator.className = 'thinking-indicator';
+    indicator.innerHTML = `
+      <div class="thinking-crab" aria-hidden="true">
+        <div class="thinking-crab-bubble"></div>
+        <pre class="thinking-crab-art"></pre>
+      </div>
+      <div class="thinking-meta">
+        <div class="loading-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <span class="thinking-text"></span>
+      </div>
+    `;
+    triggerAnimation(indicator, 'message-enter');
+    elements.chatMessages.appendChild(indicator);
+  }
 
-  const indicator = document.createElement('div');
-  indicator.className = 'thinking-indicator';
-  indicator.innerHTML = `
-    <div class="loading-dots">
-      <span></span><span></span><span></span>
-    </div>
-    <span class="thinking-text">Thinking...</span>
-  `;
-  elements.chatMessages.appendChild(indicator);
+  const textEl = indicator.querySelector('.thinking-text');
+  if (textEl) {
+    textEl.textContent = message;
+  }
+
+  thinkingCrabMood = getCrabMoodFromText(message);
+  startThinkingCrabAnimation();
+  renderThinkingCrab();
   scrollToBottom();
 }
 
@@ -697,10 +868,158 @@ function showThinkingIndicator() {
  * Remove thinking indicator
  */
 function removeThinkingIndicator() {
+  stopThinkingCrabAnimation();
   const indicator = document.querySelector('.thinking-indicator');
   if (indicator) {
     indicator.remove();
   }
+}
+
+/**
+ * Update execution text and sync crab mood text
+ */
+function setExecutionText(text) {
+  if (elements.executionText) {
+    elements.executionText.textContent = text;
+  }
+  updateProcessCrabMood(text);
+  updateThinkingIndicatorFromStatus(text);
+}
+
+/**
+ * Convert execution status text into crab mood key
+ */
+function getCrabMoodFromText(text) {
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) {
+    return 'thinking';
+  }
+  if (normalized.includes('pause')) {
+    return 'paused';
+  }
+  if (normalized.includes('cancel') || normalized.includes('fail') || normalized.includes('error')) {
+    return 'stopped';
+  }
+  if (normalized.includes('plan') || normalized.includes('evaluat')) {
+    return 'planning';
+  }
+  if (normalized.includes('step') || normalized.includes('action') || normalized.includes('working')) {
+    return 'working';
+  }
+  return 'thinking';
+}
+
+/**
+ * Convert execution status text into a short process-bar mood label
+ */
+function updateProcessCrabMood(text) {
+  const mood = getCrabMoodFromText(text);
+  if (mood === 'planning') processCrabMood = 'planning';
+  else if (mood === 'working') processCrabMood = 'working';
+  else if (mood === 'paused') processCrabMood = 'paused';
+  else if (mood === 'stopped') processCrabMood = 'stopped';
+  else processCrabMood = 'thinking';
+  renderProcessCrab();
+}
+
+/**
+ * Keep thinking indicator in sync with current status text
+ */
+function updateThinkingIndicatorFromStatus(text) {
+  const indicator = document.querySelector('.thinking-indicator');
+  if (!indicator) return;
+
+  const textEl = indicator.querySelector('.thinking-text');
+  if (textEl && text) {
+    textEl.textContent = text;
+  }
+  thinkingCrabMood = getCrabMoodFromText(text);
+  renderThinkingCrab();
+}
+
+/**
+ * Start crab animation loop in thinking indicator
+ */
+function startThinkingCrabAnimation() {
+  if (thinkingCrabTimer) return;
+  thinkingCrabFrameIndex = 0;
+  renderThinkingCrab();
+  thinkingCrabTimer = setInterval(() => {
+    thinkingCrabFrameIndex++;
+    renderThinkingCrab();
+  }, 280);
+}
+
+/**
+ * Stop crab animation loop in thinking indicator
+ */
+function stopThinkingCrabAnimation() {
+  if (thinkingCrabTimer) {
+    clearInterval(thinkingCrabTimer);
+    thinkingCrabTimer = null;
+  }
+  thinkingCrabFrameIndex = 0;
+}
+
+/**
+ * Render crab inside thinking indicator
+ */
+function renderThinkingCrab() {
+  const indicator = document.querySelector('.thinking-indicator');
+  if (!indicator) return;
+
+  const artEl = indicator.querySelector('.thinking-crab-art');
+  const bubbleEl = indicator.querySelector('.thinking-crab-bubble');
+  if (!artEl || !bubbleEl) return;
+
+  const moodFrames = THINKING_CRAB_STATES[thinkingCrabMood] || THINKING_CRAB_STATES.thinking;
+  const frame = moodFrames[thinkingCrabFrameIndex % moodFrames.length];
+  artEl.textContent = frame.art;
+  bubbleEl.textContent = frame.bubble;
+}
+
+/**
+ * Start crab animation loop during execution bar display
+ */
+function startProcessCrabAnimation() {
+  if (processCrabTimer) return;
+  processCrabFrameIndex = 0;
+  renderProcessCrab();
+  processCrabTimer = setInterval(() => {
+    processCrabFrameIndex = (processCrabFrameIndex + 1) % PROCESS_CRAB_FRAMES.length;
+    renderProcessCrab();
+  }, 280);
+}
+
+/**
+ * Stop crab animation loop
+ */
+function stopProcessCrabAnimation() {
+  if (processCrabTimer) {
+    clearInterval(processCrabTimer);
+    processCrabTimer = null;
+  }
+  processCrabFrameIndex = 0;
+  processCrabMood = 'waiting';
+  renderProcessCrab(true);
+}
+
+/**
+ * Render crab frame and bubble text
+ */
+function renderProcessCrab(resetBubble = false) {
+  if (!elements.processCrabArt || !elements.processCrabBubble) return;
+
+  const frame = PROCESS_CRAB_FRAMES[processCrabFrameIndex % PROCESS_CRAB_FRAMES.length];
+  elements.processCrabArt.textContent = frame;
+
+  if (resetBubble) {
+    elements.processCrabBubble.textContent = 'idle';
+    return;
+  }
+
+  const dot = PROCESS_CRAB_BUBBLE_DOTS[processCrabFrameIndex % PROCESS_CRAB_BUBBLE_DOTS.length];
+  elements.processCrabBubble.textContent = `${processCrabMood}${dot}`;
 }
 
 /**
@@ -712,6 +1031,7 @@ function showExecutionBar() {
     elements.executionBar.classList.add('active');
     console.log('Execution bar classes:', elements.executionBar.className);
   }
+  startProcessCrabAnimation();
   // Disable send button during execution
   if (elements.sendBtn) {
     elements.sendBtn.disabled = true;
@@ -725,6 +1045,7 @@ function hideExecutionBar() {
   if (elements.executionBar) {
     elements.executionBar.classList.remove('active');
   }
+  stopProcessCrabAnimation();
   // Re-enable send button
   if (elements.sendBtn) {
     elements.sendBtn.disabled = false;
@@ -904,12 +1225,13 @@ function showModelModal() {
         <div class="task-title">${m.name}</div>
         <div class="task-preview">${m.id}</div>
       </div>
-      ${m.id === settings.model ? '<span style="color: var(--accent-blue);">✓</span>' : ''}
+      ${m.id === settings.model ? '<span style="color: var(--accent-blue);">&#10003;</span>' : ''}
     </div>
   `).join('');
 
   // Add click handlers
-  elements.modelList.querySelectorAll('.task-item').forEach(item => {
+  elements.modelList.querySelectorAll('.task-item').forEach((item, index) => {
+    item.style.setProperty('--stagger-delay', `${Math.min(index * 20, 180)}ms`);
     item.addEventListener('click', () => {
       settings.model = item.dataset.model;
       elements.modelSelect.value = settings.model;
@@ -920,6 +1242,7 @@ function showModelModal() {
   });
 
   elements.modelModal.classList.add('active');
+  triggerAnimation(elements.modelModal.querySelector('.modal'), 'view-enter');
 }
 
 /**
@@ -989,7 +1312,8 @@ function renderTasks(filter = '') {
   }).join('');
 
   // Add click handlers
-  elements.taskList.querySelectorAll('.task-item').forEach(item => {
+  elements.taskList.querySelectorAll('.task-item').forEach((item, index) => {
+    item.style.setProperty('--stagger-delay', `${Math.min(index * 28, 280)}ms`);
     item.addEventListener('click', () => {
       const taskId = item.dataset.taskId;
       const task = tasks.find(t => t.id === taskId);
@@ -1033,6 +1357,10 @@ function renderContextRules() {
   `).join('');
 
   // Add click handlers
+  elements.rulesList.querySelectorAll('.rule-item').forEach((item, index) => {
+    item.style.setProperty('--stagger-delay', `${Math.min(index * 24, 220)}ms`);
+  });
+
   elements.rulesList.querySelectorAll('.rule-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1060,6 +1388,7 @@ function editRule(index) {
   elements.ruleDomainInput.value = rule.domain;
   elements.ruleContextInput.value = rule.context;
   elements.ruleModal.classList.add('active');
+  triggerAnimation(elements.ruleModal.querySelector('.modal'), 'view-enter');
 }
 
 /**
@@ -1121,6 +1450,152 @@ async function exportData() {
 }
 
 /**
+ * Restart a CSS animation class on an element
+ */
+function triggerAnimation(element, className) {
+  if (!element || !className) return;
+  element.classList.remove(className);
+  // Force reflow to replay animation class
+  void element.offsetWidth;
+  element.classList.add(className);
+}
+
+/**
+ * Handle image file selection
+ */
+async function handleImageSelection(event) {
+  const files = Array.from(event.target.files || []);
+  if (files.length === 0) return;
+
+  const availableSlots = MAX_IMAGE_ATTACHMENTS - pendingImages.length;
+  if (availableSlots <= 0) {
+    addSystemMessage(`You can only attach up to ${MAX_IMAGE_ATTACHMENTS} images per message.`, 'error', false);
+    event.target.value = '';
+    return;
+  }
+
+  for (const file of files.slice(0, availableSlots)) {
+    if (!file.type.startsWith('image/')) {
+      addSystemMessage(`"${file.name}" is not a valid image file.`, 'error', false);
+      continue;
+    }
+
+    if (file.size > MAX_IMAGE_SIZE_BYTES) {
+      addSystemMessage(`"${file.name}" exceeds the 5 MB size limit.`, 'error', false);
+      continue;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      pendingImages.push({
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name,
+        size: file.size,
+        dataUrl
+      });
+    } catch (error) {
+      console.error('Failed to read image file:', error);
+      addSystemMessage(`Could not read "${file.name}". Please try a different image.`, 'error', false);
+    }
+  }
+
+  if (files.length > availableSlots) {
+    addSystemMessage(`Only ${MAX_IMAGE_ATTACHMENTS} images can be attached per message.`, 'info', false);
+  }
+
+  renderAttachmentPreview();
+  event.target.value = '';
+}
+
+/**
+ * Convert a File object to base64 data URL
+ */
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('Invalid image format'));
+        return;
+      }
+      resolve(reader.result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Render selected image previews
+ */
+function renderAttachmentPreview() {
+  if (!elements.attachmentPreview) return;
+
+  if (pendingImages.length === 0) {
+    elements.attachmentPreview.classList.add('hidden');
+    elements.attachmentPreview.innerHTML = '';
+    if (elements.attachBtn) {
+      elements.attachBtn.classList.remove('active');
+    }
+    return;
+  }
+
+  elements.attachmentPreview.classList.remove('hidden');
+  if (elements.attachBtn) {
+    elements.attachBtn.classList.add('active');
+  }
+
+  elements.attachmentPreview.innerHTML = pendingImages.map((image, index) => `
+    <div class="attachment-chip" data-image-id="${image.id}">
+      <img class="attachment-thumb" src="${image.dataUrl}" alt="${escapeHtml(image.name)}">
+      <button type="button" class="attachment-remove-btn" data-index="${index}" aria-label="Remove image">&times;</button>
+      <div class="attachment-meta">${escapeHtml(image.name)} - ${formatFileSize(image.size)}</div>
+    </div>
+  `).join('');
+
+  elements.attachmentPreview.querySelectorAll('.attachment-chip').forEach((item, index) => {
+    item.style.setProperty('--stagger-delay', `${Math.min(index * 24, 120)}ms`);
+  });
+
+  elements.attachmentPreview.querySelectorAll('.attachment-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const index = parseInt(btn.dataset.index, 10);
+      removePendingImage(index);
+    });
+  });
+}
+
+/**
+ * Remove one pending image by index
+ */
+function removePendingImage(index) {
+  if (Number.isNaN(index) || index < 0 || index >= pendingImages.length) return;
+  pendingImages.splice(index, 1);
+  renderAttachmentPreview();
+}
+
+/**
+ * Clear all pending image attachments
+ */
+function clearPendingImages() {
+  pendingImages = [];
+  if (elements.imageInput) {
+    elements.imageInput.value = '';
+  }
+  renderAttachmentPreview();
+}
+
+/**
+ * Human-readable file size
+ */
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
  * Send heartbeat to keep connection alive
  */
 function sendHeartbeat() {
@@ -1154,3 +1629,4 @@ function escapeHtml(text) {
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', init);
+

@@ -93,6 +93,10 @@
 
       <!-- Execution Status Bar -->
       <div class="execution-bar" id="executionBar">
+        <div class="process-crab" id="processCrab" aria-hidden="true">
+          <div class="process-crab-bubble" id="processCrabBubble">thinking...</div>
+          <pre class="process-crab-art" id="processCrabArt"></pre>
+        </div>
         <div class="execution-spinner"></div>
         <span class="execution-text" id="executionText">Thinking...</span>
         <span class="execution-step" id="executionStep">Step 1/100</span>
@@ -114,8 +118,14 @@
           <div class="chat-options">
             <button class="option-btn" id="modelBtn">GPT-4o</button>
             <button class="option-btn" id="visionBtn">Vision: ON</button>
-            <button class="option-btn" id="attachBtn">+</button>
+            <button class="option-btn attach-btn" id="attachBtn" title="Attach images" aria-label="Attach images">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21.44 11.05l-8.49 8.49a6 6 0 1 1-8.49-8.49l8.49-8.49a4 4 0 1 1 5.66 5.66l-8.5 8.49a2 2 0 0 1-2.83-2.83l7.78-7.78"></path>
+              </svg>
+            </button>
           </div>
+          <div class="attachment-preview hidden" id="attachmentPreview"></div>
+          <input type="file" class="image-input" id="imageInput" accept="image/*" multiple>
         </div>
       </div>
     </div>

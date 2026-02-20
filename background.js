@@ -206,9 +206,9 @@ When the browser displays a raw image file (png, jpg, etc.):
 
 ## WHEN TO RESPOND DIRECTLY
 If the user's request is a simple greeting or question that doesn't require browser interaction, respond directly using "done":
-- Greetings: "Hello", "Hi", "ChÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â o" ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ respond with a friendly greeting
-- General questions ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ answer directly if you know
-- No web page needed ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ use done action immediately
+- Greetings respond with a friendly greeting
+- General questions that don't require web interaction respond with a helpful answer
+- No web page needed use done action immediately
 
 `,
 
@@ -236,7 +236,8 @@ If the user's request is a simple greeting or question that doesn't require brow
 }
 
 ## IMPORTANT
-- Simple greetings like "Hi", "Hello", "ChÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â o" should be marked done=true with a friendly response
+- Simple greetings or non-web tasks should be marked done=true with a friendly response
+- If the request of user is unclear ask for clarification instead of refusing
 - Don't fail tasks just because no webpage - some tasks don't need web interaction
 `,
 
@@ -487,13 +488,17 @@ const AgentS = {
 
   MessageManager: class {
     constructor(maxTokens = 128000) { this.messages = []; this.maxTokens = maxTokens; }
-    initTaskMessages(systemPrompt, taskPrompt, exampleOutput) {
+    initTaskMessages(systemPrompt, taskPrompt, exampleOutput, taskImages = []) {
       this.messages = [{ role: 'system', content: systemPrompt }];
       if (exampleOutput) {
         this.messages.push({ role: 'user', content: 'Example task' });
         this.messages.push({ role: 'assistant', content: JSON.stringify(exampleOutput, null, 2) });
       }
-      this.messages.push({ role: 'user', content: taskPrompt });
+      const taskMessage = { role: 'user', content: taskPrompt };
+      if (Array.isArray(taskImages) && taskImages.length > 0) {
+        taskMessage.images = taskImages;
+      }
+      this.messages.push(taskMessage);
     }
     addStateMessage(content, images = []) {
       const message = { role: 'user', content };
@@ -603,6 +608,14 @@ const AgentS = {
         return AgentS.createActionResult({ success: false, error: `Invalid element index: ${index}` });
       }
 
+      // Log tab info for debugging
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        console.log('[clickElement] Executing in tab:', { tabId, index: safeIndex, url: tab?.url?.substring(0, 60), title: tab?.title?.substring(0, 30) });
+      } catch (e) {
+        console.warn('[clickElement] Failed to get tab info:', e.message);
+      }
+
       const result = await chrome.scripting.executeScript({
         target: { tabId },
         func: (idx) => {
@@ -625,9 +638,12 @@ const AgentS = {
           }
 
           if (!el) {
+            // Get info about available elements to help model
+            const maxIdx = domState.elements ? domState.elements.length - 1 : 0;
+            const pageUrl = window.location.hostname;
             return {
               success: false,
-              error: `Element ${idx} not found after DOM refresh. The page changed; get the latest index from the current DOM list.`
+              error: `Element ${idx} not found on ${pageUrl} (max index: ${maxIdx}). The page DOM has changed. DO NOT retry with same index. Look at the FRESH element list in this step and find the correct element by its text/attributes, not by memorized index.`
             };
           }
 
@@ -677,6 +693,14 @@ const AgentS = {
 
       if (!Number.isFinite(safeX) || !Number.isFinite(safeY)) {
         return AgentS.createActionResult({ success: false, error: `Invalid click coordinates: (${x}, ${y})` });
+      }
+
+      // Log tab info for debugging
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        console.log('[clickAt] Executing in tab:', { tabId, url: tab?.url?.substring(0, 60), title: tab?.title?.substring(0, 30) });
+      } catch (e) {
+        console.warn('[clickAt] Failed to get tab info:', e.message);
       }
 
       const result = await chrome.scripting.executeScript({
@@ -790,9 +814,10 @@ const AgentS = {
           if (domChanged) effectBits.push('dom');
 
           const targetId = target.id ? `#${target.id}` : '';
+          const pageHost = window.location.hostname;
           return {
             success: true,
-            message: `Clicked (${baseX}, ${baseY}) [dpr:${dpr.toFixed(2)}] target:<${tagName}${targetId}> clicked:[${clickedElements.join(',')}] [effect:${effectBits.join('+') || 'none'}]`
+            message: `Clicked (${baseX}, ${baseY}) [dpr:${dpr.toFixed(2)}] on ${pageHost} target:<${tagName}${targetId}> clicked:[${clickedElements.join(',')}] [effect:${effectBits.join('+') || 'none'}]`
           };
         },
         args: [safeX, safeY]
@@ -1333,19 +1358,106 @@ const AgentS = {
     },
 
     async switchTab(tabId) {
+      // Track repeated switch attempts to same tab
+      AgentS._switchTabAttempts = AgentS._switchTabAttempts || {};
+      AgentS._switchTabAttempts[tabId] = (AgentS._switchTabAttempts[tabId] || 0) + 1;
+      const attempts = AgentS._switchTabAttempts[tabId];
+
+      // Check if already on this tab
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (activeTab && activeTab.id === tabId) {
+          console.log('[switchTab] Already on tab', tabId, '- no switch needed (attempt', attempts, ')');
+          const tabInfo = `${activeTab.title || 'Unknown'} (${activeTab.url || 'no url'})`;
+
+          // Give increasingly strong messages based on attempts
+          let message;
+          if (attempts <= 2) {
+            message = `Already on tab ${tabId}: ${tabInfo}. You are on the correct tab - proceed with your action on current page elements.`;
+          } else if (attempts <= 4) {
+            message = `STOP! Already on tab ${tabId}: ${tabInfo}. You've tried switching ${attempts} times. The switch is NOT needed. Look at the element list in THIS step and click using THOSE indices.`;
+          } else {
+            message = `BLOCKED: You've attempted switch_tab to ${tabId} ${attempts} times. You ARE on ${tabInfo}. STOP trying to switch. Use the elements visible in the current DOM. If you can't find what you need, try scroll_down or scroll_up.`;
+          }
+
+          return AgentS.createActionResult({
+            success: true,
+            message,
+            newTabId: tabId
+          });
+        }
+      } catch (e) {
+        console.warn('[switchTab] Failed to check active tab:', e.message);
+      }
+
+      // Reset counter when actually switching to a different tab
+      AgentS._switchTabAttempts = {};
+
       await chrome.tabs.update(tabId, { active: true });
-      return AgentS.createActionResult({ success: true, message: `Switched to tab ${tabId}` });
+      // Wait for the tab to be ready and page to stabilize
+      await AgentS.actions.waitForPageLoad(tabId);
+
+      // Additional wait for dynamic pages (like Facebook) to fully render
+      // This is crucial for pages with heavy JS that load content dynamically
+      await new Promise(r => setTimeout(r, 1500));
+
+      // Pre-inject the DOM tree script to ensure it's ready for next buildDomTree call
+      try {
+        await chrome.scripting.executeScript({ target: { tabId }, files: ['lib/buildDomTree.js'] });
+        console.log('[switchTab] Pre-injected buildDomTree script for tab', tabId);
+      } catch (e) {
+        console.warn('[switchTab] Failed to pre-inject script for tab', tabId, ':', e.message);
+      }
+
+      // Verify the script is working by doing a quick DOM check
+      try {
+        const testResult = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            if (!window.AgentSDom) return { error: 'AgentSDom not loaded' };
+            return { url: window.location.href, title: document.title, ready: true };
+          }
+        });
+        console.log('[switchTab] Tab verification:', testResult[0]?.result);
+      } catch (e) {
+        console.warn('[switchTab] Tab verification failed:', e.message);
+      }
+
+      // Get tab info to include in message so model knows where it is now
+      let tabInfo = '';
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        tabInfo = ` - Now on: ${tab.title || 'Unknown'} (${tab.url || 'no url'})`;
+      } catch (e) {}
+      return AgentS.createActionResult({
+        success: true,
+        message: `Switched to tab ${tabId}${tabInfo}. IMPORTANT: Previous element indices are INVALID. Use the NEW element list from this step.`,
+        newTabId: tabId
+      });
     },
 
     async openTab(url) {
       if (!url.startsWith('http')) url = 'https://' + url;
       const tab = await chrome.tabs.create({ url });
       await AgentS.actions.waitForPageLoad(tab.id);
-      return AgentS.createActionResult({ success: true, message: `Opened: ${url}` });
+      // Pre-inject the DOM tree script to ensure it's ready for next buildDomTree call
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/buildDomTree.js'] });
+        console.log('[openTab] Pre-injected buildDomTree script for tab', tab.id);
+      } catch (e) {
+        console.warn('[openTab] Failed to pre-inject script for tab', tab.id, ':', e.message);
+      }
+      return AgentS.createActionResult({ success: true, message: `Opened: ${url}`, newTabId: tab.id });
     },
 
     async closeTab(tabId) {
       await chrome.tabs.remove(tabId);
+      // After closing, get the new active tab so exec.tabId can be updated
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab) {
+        await AgentS.actions.waitForPageLoad(activeTab.id);
+        return AgentS.createActionResult({ success: true, message: `Closed tab ${tabId}`, newTabId: activeTab.id });
+      }
       return AgentS.createActionResult({ success: true, message: `Closed tab ${tabId}` });
     },
 
@@ -1389,6 +1501,20 @@ const AgentS = {
     },
 
     async waitForPageLoad(tabId, timeout = 10000) {
+      // First check if tab is already complete (important for switch_tab to existing tabs)
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.status === 'complete') {
+          // Tab already loaded, just wait a bit for any dynamic content
+          await new Promise(r => setTimeout(r, 500));
+          return;
+        }
+      } catch (e) {
+        // Tab doesn't exist or can't be accessed
+        return;
+      }
+
+      // Tab is still loading, wait for complete event
       return new Promise(resolve => {
         let resolved = false;
         const timeoutId = setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, timeout);
@@ -1538,13 +1664,27 @@ const AgentS = {
     }
   },
 
-  async buildDomTree(tabId, options = {}) {
+  async buildDomTree(tabId, options = {}, retryCount = 0) {
+    const maxRetries = 2;
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['lib/buildDomTree.js'] }).catch(() => {});
+      // Inject the buildDomTree script - with retry on failure
+      try {
+        await chrome.scripting.executeScript({ target: { tabId }, files: ['lib/buildDomTree.js'] });
+        console.log('[buildDomTree] Script injected successfully for tab', tabId);
+      } catch (injectError) {
+        console.warn('[buildDomTree] Script injection failed for tab', tabId, ':', injectError.message);
+        // Wait a bit and retry if this is a new/switching tab
+        if (retryCount < maxRetries) {
+          console.log('[buildDomTree] Retrying after delay... (attempt', retryCount + 1, ')');
+          await new Promise(r => setTimeout(r, 500));
+          return await this.buildDomTree(tabId, options, retryCount + 1);
+        }
+      }
+
       const result = await chrome.scripting.executeScript({
         target: { tabId },
         func: (opts) => {
-          if (!window.AgentSDom) return { error: 'AgentSDom not loaded' };
+          if (!window.AgentSDom) return { error: 'AgentSDom not loaded - script may not be injected' };
           const result = window.AgentSDom.buildDomTree(opts);
           window.AgentSDom.lastBuildResult = result;
           return {
@@ -1558,8 +1698,25 @@ const AgentS = {
         },
         args: [options]
       });
-      return result[0]?.result || { error: 'Failed to build DOM tree' };
+
+      const domResult = result[0]?.result;
+
+      // If AgentSDom not loaded, retry with delay
+      if (domResult?.error?.includes('AgentSDom not loaded') && retryCount < maxRetries) {
+        console.log('[buildDomTree] AgentSDom not loaded, retrying... (attempt', retryCount + 1, ')');
+        await new Promise(r => setTimeout(r, 500));
+        return await this.buildDomTree(tabId, options, retryCount + 1);
+      }
+
+      return domResult || { error: 'Failed to build DOM tree' };
     } catch (e) {
+      console.error('[buildDomTree] Error for tab', tabId, ':', e.message);
+      // Retry on error for switching tabs
+      if (retryCount < maxRetries) {
+        console.log('[buildDomTree] Retrying after error... (attempt', retryCount + 1, ')');
+        await new Promise(r => setTimeout(r, 500));
+        return await this.buildDomTree(tabId, options, retryCount + 1);
+      }
       return { error: e.message };
     }
   },
@@ -1816,8 +1973,8 @@ chrome.runtime.onConnect.addListener((port) => {
     port.onMessage.addListener(async (message) => {
       try {
         switch (message.type) {
-          case 'new_task': await handleNewTask(message.task, message.settings); break;
-          case 'follow_up_task': await handleFollowUpTask(message.task); break;
+          case 'new_task': await handleNewTask(message.task, message.settings, message.images || []); break;
+          case 'follow_up_task': await handleFollowUpTask(message.task, message.images || []); break;
           case 'cancel_task': handleCancelTask(); break;
           case 'pause_task': handlePauseTask(); break;
           case 'resume_task': handleResumeTask(); break;
@@ -1841,11 +1998,14 @@ function sendToPanel(message) {
   if (sidePanel) try { sidePanel.postMessage(message); } catch (e) {}
 }
 
-async function handleNewTask(task, settings) {
+async function handleNewTask(task, settings, images = []) {
   if (currentExecution) {
     currentExecution.cancelled = true;
     await new Promise(r => setTimeout(r, 500));
   }
+
+  // Reset switch tab attempt counter for new task
+  AgentS._switchTabAttempts = {};
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) { sendToPanel({ type: 'error', error: 'No active tab' }); return; }
@@ -1859,7 +2019,8 @@ async function handleNewTask(task, settings) {
     cancelled: false, paused: false, step: 0,
     maxSteps: settings.maxSteps || 100, planningInterval: settings.planningInterval || 3,
     consecutiveFailures: 0, maxFailures: settings.maxFailures || 3,
-    memory: '', actionHistory: [], contextRules: ''
+    memory: '', actionHistory: [], contextRules: '',
+    taskImages: Array.isArray(images) ? images : []
   };
 
   eventManager.subscribe('*', (event) => sendToPanel({ type: 'execution_event', ...event }));
@@ -1896,7 +2057,13 @@ async function runExecutor() {
   const useSimpleMode = ['ollama'].includes(exec.settings.provider);
   const systemPrompt = useSimpleMode ? AgentSPrompts.navigatorSystem : AgentSPrompts.navigatorSystemFull;
   // Skip example for simple mode to reduce token usage
-  exec.messageManager.initTaskMessages(systemPrompt, exec.task, useSimpleMode ? null : AgentSPrompts.navigatorExample);
+  exec.messageManager.initTaskMessages(
+    systemPrompt,
+    exec.task,
+    useSimpleMode ? null : AgentSPrompts.navigatorExample,
+    exec.taskImages || []
+  );
+  exec.taskImages = [];
   let lastActionResult = null;
 
   while (exec.step < exec.maxSteps && !exec.cancelled) {
@@ -1973,11 +2140,13 @@ async function runExecutor() {
     }
 
     // Build DOM tree without highlighting (cleaner view)
+    console.log('[DOM] Building DOM tree for exec.tabId:', exec.tabId, 'currentTab.id:', currentTab?.id, 'currentTab.url:', currentTab?.url?.substring(0, 50));
     const pageState = await AgentS.buildDomTree(exec.tabId, { highlightElements: false, viewportOnly: true });
     console.log('[DOM] Built DOM tree:', {
+      execTabId: exec.tabId,
       elementCount: pageState.elementCount,
-      url: pageState.url?.substring(0, 50),
-      title: pageState.title?.substring(0, 30),
+      url: pageState.url?.substring(0, 80),
+      title: pageState.title?.substring(0, 50),
       textPreview: pageState.textRepresentation?.substring(0, 300)
     });
 
@@ -2135,15 +2304,29 @@ async function runExecutor() {
       const actionParams = JSON.stringify(action[actionName]);
 
       // Stuck detection: check if same action repeated 3+ times
-      const recentActions = exec.actionHistory.slice(-3);
+      const recentActions = exec.actionHistory.slice(-5);
       const sameActionCount = recentActions.filter(a =>
         a.action === actionName && JSON.stringify(a.params || {}) === actionParams
       ).length;
 
       if (sameActionCount >= 2) {
         console.warn(`[Stuck] Same action "${actionName}" repeated ${sameActionCount + 1} times. Injecting hint.`);
-        // Add hint to memory so model knows it's stuck
         exec.memory = (exec.memory || '') + `\n[WARNING: You've tried "${actionName}" ${sameActionCount + 1} times with same params. This approach isn't working. Try a DIFFERENT action or element.]`;
+      }
+
+      // Enhanced stuck detection: switch_tab loop or click failures after switch
+      const last5Actions = exec.actionHistory.slice(-5);
+      const switchCount = last5Actions.filter(a => a.action === 'switch_tab').length;
+      const failedClicks = last5Actions.filter(a => (a.action === 'click_element' || a.action === 'click_at') && !a.success).length;
+
+      if (switchCount >= 3) {
+        console.warn('[Stuck] Too many switch_tab attempts. Forcing model to use current page.');
+        exec.memory = (exec.memory || '') + `\n[CRITICAL: You've switched tabs ${switchCount} times. STOP switching. You ARE on the correct tab. Look at the CURRENT element list and use those indices. The element indices you remember from before are INVALID - use ONLY indices from the current DOM list shown above.]`;
+      }
+
+      if (failedClicks >= 2 && switchCount >= 1) {
+        console.warn('[Stuck] Click failures after tab switch. Advising to scroll or use different approach.');
+        exec.memory = (exec.memory || '') + `\n[HINT: Multiple clicks failed after tab switch. The element might not be visible. Try: 1) scroll_down to find it, 2) use click_at with coordinates from screenshot, 3) look for element with different text/index in current DOM.]`;
       }
 
       exec.eventManager.emit({ state: AgentS.ExecutionState.ACT_START, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { action: actionName, params: action[actionName], goal: parsed.current_state?.next_goal } });
@@ -2175,6 +2358,25 @@ async function runExecutor() {
       const result = await AgentS.executeAction(action, pageState, exec.tabId);
       exec.actionHistory.push({ action: actionName, params: action[actionName], success: result.success, details: result.message || result.error });
       exec.eventManager.emit({ state: result.success ? AgentS.ExecutionState.ACT_OK : AgentS.ExecutionState.ACT_FAIL, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { action: actionName, success: result.success, message: result.message, error: result.error } });
+
+      // Update exec.tabId when switching/opening/closing tabs so subsequent actions use the correct tab
+      if (result.success && result.newTabId && (actionName === 'switch_tab' || actionName === 'open_tab' || actionName === 'close_tab')) {
+        console.log('[Tab] Updating exec.tabId after tab change:', { action: actionName, oldTabId: exec.tabId, newTabId: result.newTabId });
+        const oldTabId = exec.tabId;
+        exec.tabId = result.newTabId;
+
+        // Add memory note and reload context rules for new tab
+        try {
+          const newTab = await chrome.tabs.get(result.newTabId);
+          const newUrl = newTab?.url || '';
+          exec.memory += `\n[TAB CHANGED: Now on tab ${result.newTabId} - ${newUrl}. Previous DOM/screenshot info was from old tab ${oldTabId}. Focus on current page state.]`;
+          // Reload context rules for new domain
+          await loadContextRules(newUrl);
+          console.log('[Tab] Context updated for new tab:', { newTabId: result.newTabId, url: newUrl });
+        } catch (e) {
+          console.error('[Tab] Failed to update context for new tab:', e);
+        }
+      }
 
       if (result.includeInMemory && result.extractedContent) exec.memory += '\n' + result.extractedContent;
 
@@ -2273,13 +2475,16 @@ async function runPlanner() {
   } catch (e) { console.error('Planner error:', e); return null; }
 }
 
-async function handleFollowUpTask(task) {
+async function handleFollowUpTask(task, images = []) {
   if (currentExecution && !currentExecution.cancelled) {
     currentExecution.task += '\n\nFollow-up: ' + task;
     currentExecution.memory += '\n[Follow-up]: ' + task;
+    if (Array.isArray(images) && images.length > 0) {
+      currentExecution.memory += `\n[Follow-up includes ${images.length} image attachment(s)]`;
+    }
   } else {
     const settings = currentExecution?.settings || await loadSettings();
-    await handleNewTask(task, settings);
+    await handleNewTask(task, settings, images);
   }
 }
 
