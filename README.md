@@ -217,5 +217,3 @@ crab-agent/
 - Delete selected tasks or clear all history.
 - Export backup data before deletion if needed.
 
-git config --global user.name "posunsd"
-git config --global user.email "ductransa04@gmail.com"
