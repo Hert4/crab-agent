@@ -526,6 +526,8 @@ function setupEventListeners() {
     settings.useVision = !settings.useVision;
     elements.visionBtn.textContent = `Vision: ${settings.useVision ? 'ON' : 'OFF'}`;
     elements.visionBtn.classList.toggle('active', settings.useVision);
+    // Sync with settings panel toggle
+    elements.visionToggle.classList.toggle('active', settings.useVision);
     saveSettings();
   });
 
