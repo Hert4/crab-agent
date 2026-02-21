@@ -1,110 +1,223 @@
-# Agent-S - AI Browser Agent
-
-A powerful AI-powered browser automation extension built with vanilla JavaScript. No build step required! Just plug in and use it !!!
-
-## Features
-
-- **AI-Powered Navigation**: Automatically navigate and interact with web pages using natural language commands
-- **Multiple LLM Providers**: Support for OpenAI, Anthropic (Claude), Google (Gemini), OpenRouter, and Ollama
-- **Visual Understanding**: Optional screenshot analysis for better context (Vision mode)
-- **Chat History**: Full conversation history with searchable task list
-- **Context Rules**: Domain-specific instructions that automatically apply when visiting matching sites
-- **Planner + Navigator**: Dual-agent architecture for intelligent task planning and execution
-
-## Installation
-
-1. Open Chrome and go to `chrome://extensions/`
-2. Enable "Developer mode" (toggle in top-right corner)
-3. Click "Load unpacked"
-4. Select the `agent-s` folder
-5. Click the Agent-S icon in your toolbar to open the side panel
-
-## Setup
-
-1. Click the settings icon (gear) in the chat header
-2. Select your LLM provider (OpenAI, Anthropic, etc.)
-
-> The demo that I have made only test on OpenAI Compatible. Recommend using the MLLM. Pure text might not a *good* idea.
-
-3. Enter your API key
-4. Choose your preferred model
-5. Adjust other settings as needed
-
-## Usage
-
-### Basic Commands
-
-Just type what you want the agent to do:
-
-- "Search for the latest news about AI"
-- "Fill out this form with my information"
-- "Find and click the login button"
-- "Scroll down and find the pricing section"
-- "Extract all product names from this page"
-
-### Context Rules
-
-Add domain-specific instructions that automatically apply:
-
-1. Go to "Context Rules" tab
-2. Click "Add New Rule"
-3. Enter a domain pattern (e.g., `*.amazon.com`)
-4. Add your custom instructions
-
-Example rule:
-```
-Domain: *.amazon.com
-Context: When searching for products, always sort by customer reviews.
-Look for products with at least 4 stars and 100+ reviews.
-```
-
-## Architecture
-
-- **Navigator Agent**: Executes browser interactions (clicks, typing, scrolling)
-- **Planner Agent**: Evaluates progress and determines next steps
-- **DOM Tree Builder**: Creates a structured representation of interactive elements
-- **Action System**: Handles all browser automation actions
-
-## Files Structure
+# Agent-S
 
 ```
+     ████████
+     █▌▐██▌▐█
+   ████████████
+     ████████
+      ▐▐  ▌▌
+```
+
+Agent-S is a Chrome Extension that uses large language models (LLMs) to automate browser actions from natural language instructions.
+
+This project runs with plain JavaScript and does not require a build step.
+
+## 1. Purpose
+
+- Control the browser with natural-language requests.
+- Combine DOM analysis and screenshots to improve action accuracy.
+- Store task history and support follow-up instructions.
+- Customize behavior per domain using Context Rules.
+
+## 2. Current Features
+
+- Side panel chat interface for interacting with the agent.
+- Multi-provider and multi-model support:
+  - OpenAI
+  - OpenAI Compatible
+  - Anthropic
+  - Google Gemini
+  - OpenRouter
+  - Ollama
+- Vision mode (send screenshots to the model).
+- Periodic planner checks based on step intervals.
+- Follow-up interrupt while running: users can send a new instruction during execution.
+- Image attachments in prompts:
+  - Up to 4 images per message.
+  - Up to 5 MB per image.
+- Task history management:
+  - Search tasks.
+  - Delete a single task.
+  - Clear all history.
+- Context Rules by domain (exact match or wildcard such as `*.example.com`).
+- Local data export to JSON.
+
+## 3. Main Architecture
+
+### 3.1 `background.js`
+
+- Central service worker.
+- Responsible for:
+  - Navigator and Planner system prompts.
+  - Browser action execution on tabs.
+  - LLM provider API integration.
+  - Step loop control, failure counting, planner interval, cancel/pause/resume handling.
+
+### 3.2 `sidepanel.html` and `sidepanel.js`
+
+- Side panel UI and interaction logic.
+- Responsible for:
+  - Chat input and output.
+  - Settings management.
+  - Context rule management.
+  - Task list.
+  - Data export and clear operations.
+
+### 3.3 `content.js`
+
+- Bridge between background worker and web pages.
+- Receives messages and performs page-level element interactions.
+
+### 3.4 `lib/buildDomTree.js`
+
+- Builds an interactive DOM tree and element index mapping.
+- Enables model actions such as `click_element` and `input_text`.
+
+## 4. Install the Extension
+
+1. Open `chrome://extensions`.
+2. Enable `Developer mode`.
+3. Click `Load unpacked`.
+4. Select the `agent-s` folder.
+5. Open Agent-S from the Chrome side panel.
+
+## 5. Configuration
+
+In the Settings panel:
+
+- `LLM Provider`: choose the model provider.
+- `API Key`: required for cloud providers; optional for local Ollama.
+- `Model`: choose model per provider.
+- `Base URL`: used for OpenAI Compatible, Ollama, or custom endpoints.
+- `Use Vision`: enable or disable screenshot input.
+- `Max Steps`: max execution steps per task.
+- `Planning Interval`: planner check interval.
+- `Allowed Domains`, `Blocked Domains`: currently stored in settings.
+
+Runtime default values:
+
+- `provider`: `openai`
+- `model`: `gpt-4o`
+- `useVision`: `true`
+- `maxSteps`: `100`
+- `planningInterval`: `3`
+- `maxFailures`: `3`
+- `maxInputTokens`: `128000`
+
+Technical note:
+
+- `allowedDomains`, `blockedDomains`, and `autoScroll` are available in UI/settings and stored locally.
+- If you need strict policy enforcement at execution time, verify how these fields are applied in the executor path.
+
+## 6. Usage
+
+### 6.1 Start a New Task
+
+- Enter your request in the chat input.
+- The agent analyzes the page state and executes multiple steps until completion or failure.
+
+### 6.2 Follow-up During Execution
+
+- You can send a new instruction while a task is running.
+- The system treats it as a priority update and replans subsequent steps.
+
+### 6.3 Cancel a Task
+
+- Click `Cancel` in the execution bar.
+
+### 6.4 Context Rules
+
+- Open the `CONTEXT RULES` tab.
+- Add rules by domain.
+- Matching rules are injected into context when tasks run on that domain.
+
+## 7. Supported Browser Actions
+
+- `search_google`
+- `go_to_url`
+- `go_back`
+- `click_element`
+- `click_at`
+- `input_text`
+- `send_keys`
+- `switch_tab`
+- `open_tab`
+- `close_tab`
+- `scroll_down`
+- `scroll_up`
+- `scroll_to_top`
+- `scroll_to_bottom`
+- `scroll_to_text`
+- `wait`
+- `done`
+
+## 8. Local Data Storage
+
+Data is stored in `chrome.storage.local`:
+
+- `settings`
+- `tasks`
+- `contextRules`
+
+Export creates a JSON file containing those fields and `exportedAt`.
+
+## 9. Extension Permissions and Purpose
+
+In `manifest.json`:
+
+- `tabs`, `activeTab`: read and switch working tabs.
+- `scripting`: inject scripts for DOM and action execution.
+- `storage`: persist settings, history, and context rules.
+- `debugger`, `webNavigation`: navigation tracking and advanced flow handling.
+- `sidePanel`: host the side panel UI.
+- `host_permissions: <all_urls>`: allow actions on websites requested by the user.
+
+## 10. Actual Folder Structure
+
+```text
 agent-s/
-├── manifest.json       # Extension manifest
-├── background.js       # Service worker (main agent logic)
-├── sidepanel.html      # Side panel UI
-├── sidepanel.js        # UI logic
-├── content.js          # Content script
-├── lib/
-│   ├── agent.js        # Core agent system
-│   ├── prompts.js      # System prompts
-│   └── buildDomTree.js # DOM tree builder
-├── styles/
-│   └── main.css        # Styling
-└── icons/              # Extension icons
+|- manifest.json
+|- background.js
+|- content.js
+|- sidepanel.html
+|- sidepanel.js
+|- README.md
+|- lib/
+|  |- buildDomTree.js
+|- styles/
+|  |- main.css
+|- icons/
+|  |- icon16.png
+|  |- icon48.png
+|  |- icon128.png
 ```
 
-## Tips
+## 11. Troubleshooting
 
-1. **Be specific**: Clear instructions get better results
-2. **Use vision mode**: Enable for complex visual pages
-3. **Check progress**: Watch the execution bar for real-time status
-4. **Add context rules**: Customize behavior for frequently used sites
-5. **Review history**: Learn from past tasks to improve future commands
+### 11.1 Missing API Key Error
 
-## Troubleshooting
+- Check the current provider.
+- If you are not using local Ollama, provide a valid API key.
 
-- **"Please set your API key"**: Go to settings and add your API key
-- **Actions failing**: Try enabling Vision mode for better element detection
-- **Slow execution**: Reduce max steps or use a faster model
-- **Element not found**: The page may have changed; try refreshing
+### 11.2 Agent Clicks the Wrong Element
 
-## Privacy
+- Enable Vision.
+- Use less ambiguous prompts.
+- Send follow-up instructions to clarify the latest target.
 
-- API keys are stored locally in Chrome storage
-- No data is sent to any server except your chosen LLM provider
-- All processing happens locally in your browser
+### 11.3 Task Stops After Repeated Failures
 
-## License
+- Increase `Max Steps` for longer workflows.
+- Check whether the page layout/DOM changes too quickly.
+- Try a stronger reasoning model.
 
-MIT License
+### 11.4 Task History Is Too Large
 
+- Search tasks.
+- Delete selected tasks or clear all history.
+- Export backup data before deletion if needed.
+
+## 12. Notes
+
+- This README documents the current implementation in the `agent-s` folder.
+- If you change prompts, actions, or schemas in `background.js`, update this document to keep behavior and docs aligned.
