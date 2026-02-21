@@ -82,6 +82,7 @@ body {
 
 /* Root layout */
 .app-container {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -107,6 +108,10 @@ body {
 .chat-container,
 .settings-panel {
   display: none;
+}
+
+.chat-container {
+  position: relative;
 }
 
 .chat-container.active,
@@ -357,6 +362,32 @@ body {
   flex-shrink: 0;
 }
 
+.task-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.task-item:hover .task-delete-btn {
+  opacity: 1;
+}
+
+.task-delete-btn:hover {
+  background: rgba(229, 77, 46, 0.1);
+  color: var(--accent-danger);
+}
+
 /* Chat */
 .chat-messages {
   flex: 1;
@@ -471,10 +502,10 @@ body {
 /* Thinking */
 .thinking-indicator {
   display: inline-flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 14px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
   border: 1px solid var(--border-color);
   background: linear-gradient(180deg, #f8fbf8 0%, #eff3ef 100%);
   color: var(--text-secondary);
@@ -482,15 +513,46 @@ body {
   animation: bubbleIn 0.24s var(--ease-spring) both;
 }
 
-.thinking-crab {
-  position: relative;
-  width: 120px;
-  min-width: 120px;
-  padding-top: 12px;
-  animation: crabFloat 1.15s ease-in-out infinite;
+.thinking-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.thinking-crab-art {
+.thinking-indicator .loading-dots span {
+  background: #3a5a38;
+}
+
+/* Mascot crab */
+.mascot-crab-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 12px 0;
+}
+
+.mascot-crab {
+  position: relative;
+  width: 138px;
+  border: 1px solid rgba(33, 60, 32, 0.2);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(241, 246, 241, 0.93) 100%);
+  box-shadow: var(--shadow-md);
+  padding: 12px 8px 6px;
+  pointer-events: none;
+  transform-origin: center;
+  animation: bubbleIn 0.28s var(--ease-spring) both;
+}
+
+.mascot-crab.busy {
+  border-color: rgba(33, 60, 32, 0.28);
+  box-shadow: 0 10px 24px rgba(33, 60, 32, 0.18);
+}
+
+.mascot-crab-art {
   margin: 0;
   white-space: pre;
   font-family:
@@ -501,45 +563,34 @@ body {
   font-size: 8px;
   line-height: 1.05;
   color: #244124;
-  text-shadow: 0 0 10px rgba(33, 60, 32, 0.18);
+  text-shadow: 0 0 10px rgba(33, 60, 32, 0.17);
+  animation: crabFloat 1.55s ease-in-out infinite;
 }
 
-.thinking-crab-bubble {
+.mascot-crab.busy .mascot-crab-art {
+  animation-duration: 1.2s;
+}
+
+.mascot-crab-bubble {
   position: absolute;
-  top: 0;
-  left: 58px;
-  max-width: 66px;
+  top: 4px;
+  right: 8px;
+  max-width: 92px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   border: 1px solid rgba(33, 60, 32, 0.22);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.88);
   color: #244124;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 700;
   line-height: 1;
-  padding: 3px 6px;
+  padding: 4px 7px;
 }
 
-.thinking-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.thinking-text {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-style: italic;
-  white-space: nowrap;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.thinking-meta .loading-dots span {
-  background: #3a5a38;
+.mascot-crab-bubble:empty {
+  display: none;
 }
 
 /* Execution status */
@@ -568,53 +619,6 @@ body {
   pointer-events: auto;
   transform: translateY(0);
   padding: 10px 16px;
-}
-
-.process-crab {
-  position: relative;
-  width: 122px;
-  min-width: 122px;
-  flex-shrink: 0;
-  opacity: 0.96;
-  padding-top: 10px;
-}
-
-.execution-bar.active .process-crab {
-  animation: crabFloat 1.1s ease-in-out infinite;
-}
-
-.process-crab-art {
-  margin: 0;
-  white-space: pre;
-  font-family:
-    "Cascadia Mono",
-    "Consolas",
-    "Menlo",
-    monospace;
-  font-size: 7.8px;
-  line-height: 1.05;
-  letter-spacing: 0.2px;
-  color: rgba(255, 255, 255, 0.96);
-  text-shadow: 0 0 8px rgba(255, 255, 255, 0.24);
-}
-
-.process-crab-bubble {
-  position: absolute;
-  top: 0;
-  left: 58px;
-  max-width: 66px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.95);
-  font-size: 8px;
-  font-weight: 700;
-  line-height: 1;
-  padding: 3px 6px;
-  backdrop-filter: blur(2px);
 }
 
 .execution-spinner {
@@ -1339,6 +1343,15 @@ body {
 }
 
 @media (max-width: 420px) {
+  .mascot-crab-row {
+    padding: 4px 8px 0;
+  }
+
+  .mascot-crab {
+    transform: scale(0.9);
+    transform-origin: top right;
+  }
+
   .chat-messages {
     padding: 12px;
   }

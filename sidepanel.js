@@ -15,84 +15,107 @@ let executionTimer = null;
 let executionStartTime = null;
 let editingRuleIndex = null;
 let pendingImages = [];
-let processCrabTimer = null;
-let processCrabFrameIndex = 0;
-let processCrabMood = 'thinking';
-let thinkingCrabTimer = null;
-let thinkingCrabFrameIndex = 0;
-let thinkingCrabMood = 'thinking';
+let mascotCrabTimer = null;
+let mascotCrabFrameIndex = 0;
+let mascotCrabMood = 'neutral';
+let mascotCrabSuccessStreak = 0;
+let mascotCrabErrorStreak = 0;
+let mascotCrabFood = 100;
+let mascotCrabLastActivityAt = Date.now();
+let mascotCrabEnergyTimer = null;
+let mascotCrabSettleTimer = null;
+let mascotCrabMoodHoldUntil = 0;
+let isExecutionActive = false;
 
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
-const PROCESS_CRAB_FRAMES = [
-  buildCrabFrame({ offset: 4, eyes: 'neutral', legs: 'right' }),
-  buildCrabFrame({ offset: 3, eyes: 'neutral', legs: 'left' }),
-  buildCrabFrame({ offset: 4, eyes: 'focused', legs: 'right' }),
-  buildCrabFrame({ offset: 5, eyes: 'neutral', legs: 'left' })
-];
-const PROCESS_CRAB_BUBBLE_DOTS = ['.', '..', '...'];
+const MASCOT_CRAB_FRAME_INTERVAL_MS = 500;
+const CRAB_ENERGY_TICK_MS = 15000;
+const CRAB_IDLE_TIRED_MS = 90000;
 
 function buildCrabFrame(options = {}) {
   const {
-    offset = 4,
+    offset = 0,
     eyes = 'neutral',
     legs = 'right'
   } = options;
-  const full = '\u2588';
-  const left = '\u258C';
-  const right = '\u2590';
-  const top = '\u2580';
+  const baseOffset = Math.max(0, offset);
+  const topPad = ' '.repeat(4 + baseOffset);
+  const bodyPad = ' '.repeat(2 + baseOffset);
+  const legPad = ' '.repeat(5 + baseOffset);
 
-  let eyePattern = `${left}${right}${full}${full}${left}${right}`;
-  if (eyes === 'focused') {
-    eyePattern = `${right}${left}${full}${full}${right}${left}`;
-  } else if (eyes === 'closed') {
-    eyePattern = `${top}${top}${full}${full}${top}${top}`;
-  } else if (eyes === 'alert') {
-    eyePattern = `\u259D${top}${full}${full}${top}\u2598`;
+  let eyePattern = '\u258C\u2590\u2588\u2588\u258C\u2590';
+  if (eyes === 'blink') {
+    eyePattern = '\u2580\u2580\u2588\u2588\u2580\u2580';
   } else if (eyes === 'happy') {
-    eyePattern = '\u259B \u259C\u259B \u259C';
+    eyePattern = '\u259D\u2598\u2588\u2588\u259D\u2598';
+  } else if (eyes === 'curious') {
+    eyePattern = '\u258C\u258C\u2588\u2588\u2590\u2590';
+  } else if (eyes === 'angry') {
+    eyePattern = '\u2590\u258C\u2588\u2588\u2590\u258C';
+  } else if (eyes === 'tired') {
+    eyePattern = '\u2594\u2594\u2588\u2588\u2594\u2594';
   }
 
   let legPattern = '\u2590\u2590  \u258C\u258C';
   if (legs === 'left') {
     legPattern = '\u258C\u258C  \u2590\u2590';
   } else if (legs === 'wide') {
-    legPattern = '\u2590\u2590      \u258C\u258C';
+    legPattern = '\u2590\u2590    \u258C\u258C';
+  } else if (legs === 'tucked') {
+    legPattern = ' \u2590\u2590\u258C\u258C';
   }
 
-  const line1 = `${' '.repeat(offset)}${full.repeat(8)}`;
-  const line2 = `${' '.repeat(offset)}${full}${eyePattern}${full}`;
-  const line3 = `${' '.repeat(Math.max(0, offset - 2))}${full.repeat(12)}`;
-  const line4 = `${' '.repeat(offset)}${full.repeat(8)}`;
-  const line5 = `${' '.repeat(offset + 1)}${legPattern}`;
+  const line1 = `${topPad}\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588`;
+  const line2 = `${topPad}\u2588${eyePattern}\u2588`;
+  const line3 = `${bodyPad}\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588`;
+  const line4 = `${topPad}\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588`;
+  const line5 = `${legPad}${legPattern}`;
   return [line1, line2, line3, line4, line5].join('\n');
 }
 
-const THINKING_CRAB_STATES = {
+const MASCOT_CRAB_STATES = {
+  neutral: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'neutral', legs: 'right' }), bubble: '' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'blink', legs: 'left' }), bubble: '' }
+  ],
+  happy: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'happy', legs: 'wide' }), bubble: 'nice!' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'happy', legs: 'right' }), bubble: 'saved!' }
+  ],
+  excited: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'happy', legs: 'wide' }), bubble: 'lets go!' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'curious', legs: 'wide' }), bubble: 'all green!' },
+    { art: buildCrabFrame({ offset: 0, eyes: 'happy', legs: 'left' }), bubble: 'more!' }
+  ],
+  curious: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'curious', legs: 'right' }), bubble: 'hmm?' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'curious', legs: 'left' }), bubble: 'exploring...' }
+  ],
   thinking: [
-    { art: buildCrabFrame({ offset: 4, eyes: 'neutral', legs: 'right' }), bubble: 'thinking.' },
-    { art: buildCrabFrame({ offset: 3, eyes: 'neutral', legs: 'left' }), bubble: 'thinking..' },
-    { art: buildCrabFrame({ offset: 4, eyes: 'focused', legs: 'right' }), bubble: 'thinking...' },
-    { art: buildCrabFrame({ offset: 5, eyes: 'neutral', legs: 'left' }), bubble: 'thinking..' }
+    { art: buildCrabFrame({ offset: 0, eyes: 'neutral', legs: 'right' }), bubble: 'thinking...' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'blink', legs: 'left' }), bubble: 'reading...' },
+    { art: buildCrabFrame({ offset: 0, eyes: 'curious', legs: 'right' }), bubble: 'searching...' }
   ],
-  planning: [
-    { art: buildCrabFrame({ offset: 4, eyes: 'focused', legs: 'right' }), bubble: 'planning.' },
-    { art: buildCrabFrame({ offset: 4, eyes: 'focused', legs: 'left' }), bubble: 'planning..' },
-    { art: buildCrabFrame({ offset: 5, eyes: 'focused', legs: 'right' }), bubble: 'planning...' }
+  sad: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'tired', legs: 'tucked' }), bubble: 'oops...' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'tired', legs: 'tucked' }), bubble: 'retry?' }
   ],
-  working: [
-    { art: buildCrabFrame({ offset: 4, eyes: 'happy', legs: 'wide' }), bubble: 'working!' },
-    { art: buildCrabFrame({ offset: 3, eyes: 'happy', legs: 'left' }), bubble: 'working!!' },
-    { art: buildCrabFrame({ offset: 5, eyes: 'happy', legs: 'right' }), bubble: 'working!' }
+  angry: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'angry', legs: 'wide' }), bubble: 'grrr' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'angry', legs: 'left' }), bubble: 'again?!' }
   ],
-  paused: [
-    { art: buildCrabFrame({ offset: 4, eyes: 'closed', legs: 'right' }), bubble: 'paused.' },
-    { art: buildCrabFrame({ offset: 4, eyes: 'closed', legs: 'left' }), bubble: 'paused..' }
+  tired: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'tired', legs: 'tucked' }), bubble: 'sleepy...' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'blink', legs: 'tucked' }), bubble: 'low energy' }
   ],
-  stopped: [
-    { art: buildCrabFrame({ offset: 4, eyes: 'alert', legs: 'right' }), bubble: 'stopped.' },
-    { art: buildCrabFrame({ offset: 4, eyes: 'alert', legs: 'left' }), bubble: 'stopped..' }
+  hungry: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'neutral', legs: 'tucked' }), bubble: 'snack?' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'curious', legs: 'tucked' }), bubble: 'hungry...' }
+  ],
+  surprised: [
+    { art: buildCrabFrame({ offset: 0, eyes: 'curious', legs: 'wide' }), bubble: 'whoa!' },
+    { art: buildCrabFrame({ offset: 1, eyes: 'curious', legs: 'right' }), bubble: 'unexpected!' }
   ]
 };
 
@@ -126,9 +149,9 @@ const elements = {
   executionBar: document.getElementById('executionBar'),
   executionText: document.getElementById('executionText'),
   executionStep: document.getElementById('executionStep'),
-  processCrab: document.getElementById('processCrab'),
-  processCrabArt: document.getElementById('processCrabArt'),
-  processCrabBubble: document.getElementById('processCrabBubble'),
+  mascotCrab: document.getElementById('mascotCrab'),
+  mascotCrabArt: document.getElementById('mascotCrabArt'),
+  mascotCrabBubble: document.getElementById('mascotCrabBubble'),
 
   // Settings
   settingsBackBtn: document.getElementById('settingsBackBtn'),
@@ -172,14 +195,23 @@ const elements = {
 // Model options by provider
 const modelsByProvider = {
   openai: [
+    { id: 'gpt-5.2', name: 'GPT-5.2 (Latest)' },
+    { id: 'gpt-5', name: 'GPT-5' },
+    { id: 'o3', name: 'o3 (Reasoning)' },
+    { id: 'o3-mini', name: 'o3-mini' },
+    { id: 'o1', name: 'o1' },
+    { id: 'o1-mini', name: 'o1-mini' },
     { id: 'gpt-4o', name: 'GPT-4o' },
     { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
     { id: 'gpt-4-turbo', name: 'GPT-4 Turbo' },
     { id: 'gpt-4', name: 'GPT-4' },
-    { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo' }
+    { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo' },
+    { id: 'codex', name: 'Codex (Code)' }
   ],
   'openai-compatible': [
     { id: 'custom', name: 'Custom Model' },
+    { id: 'gpt-5.2', name: 'GPT-5.2' },
+    { id: 'gpt-5', name: 'GPT-5' },
     { id: 'gpt-4o', name: 'GPT-4o' },
     { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
     { id: 'llama-3.1-70b', name: 'Llama 3.1 70B' },
@@ -190,19 +222,28 @@ const modelsByProvider = {
     { id: 'deepseek-coder', name: 'DeepSeek Coder' }
   ],
   anthropic: [
+    { id: 'claude-sonnet-4-5-20250514', name: 'Claude 4.5 Sonnet' },
     { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
     { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus' },
     { id: 'claude-3-sonnet-20240229', name: 'Claude 3 Sonnet' },
     { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku' }
   ],
   google: [
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+    { id: 'gemini-2.0-pro', name: 'Gemini 2.0 Pro' },
     { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
     { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
     { id: 'gemini-pro', name: 'Gemini Pro' }
   ],
   openrouter: [
+    { id: 'openai/gpt-5.2', name: 'GPT-5.2' },
+    { id: 'openai/gpt-5', name: 'GPT-5' },
+    { id: 'openai/o3', name: 'o3' },
+    { id: 'openai/o3-mini', name: 'o3-mini' },
+    { id: 'anthropic/claude-sonnet-4-5', name: 'Claude 4.5 Sonnet' },
     { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
     { id: 'openai/gpt-4o', name: 'GPT-4o' },
+    { id: 'google/gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
     { id: 'google/gemini-pro-1.5', name: 'Gemini 1.5 Pro' },
     { id: 'meta-llama/llama-3.1-405b-instruct', name: 'Llama 3.1 405B' }
   ],
@@ -233,7 +274,7 @@ async function init() {
   // Setup event listeners
   setupEventListeners();
   renderAttachmentPreview();
-  renderProcessCrab(true);
+  initMascotCrab();
 
   // Start heartbeat
   setInterval(sendHeartbeat, 30000);
@@ -302,6 +343,7 @@ function handleExecutionEvent(event) {
       console.log('TASK_START - showing execution bar');
       showExecutionBar();
       setExecutionText('Starting task...');
+      notifyCrabActivity('thinking');
       startTimer();
       break;
 
@@ -329,20 +371,24 @@ function handleExecutionEvent(event) {
       stopTimer();
       removeThinkingIndicator();
       addSystemMessage('Task cancelled by user');
+      setMascotCrabMood('sad', 2200);
       saveCurrentTask();
       break;
 
     case 'TASK_PAUSE':
       setExecutionText('Paused');
+      setMascotCrabMood('tired', 2600);
       break;
 
     case 'STEP_START':
       showExecutionBar(); // Ensure bar is visible
       setExecutionText('Analyzing page...');
+      notifyCrabActivity('thinking');
       break;
 
     case 'STEP_OK':
       setExecutionText('Step completed');
+      registerCrabSuccess('step completed');
       break;
 
     case 'STEP_FAIL':
@@ -366,10 +412,12 @@ function handleExecutionEvent(event) {
       showExecutionBar(); // Make sure execution bar is visible during thinking
       setExecutionText(details?.message || 'Thinking...');
       showThinkingIndicator(details?.message || 'Thinking...');
+      notifyCrabActivity('thinking', details?.message || 'thinking');
       break;
 
     case 'PLANNING':
       setExecutionText('Evaluating progress...');
+      notifyCrabActivity('curious', details?.message || 'planning');
       break;
   }
 }
@@ -437,6 +485,7 @@ function setupEventListeners() {
   elements.chatInput.addEventListener('input', () => {
     elements.chatInput.style.height = 'auto';
     elements.chatInput.style.height = Math.min(elements.chatInput.scrollHeight, 120) + 'px';
+    notifyCrabActivity('user');
   });
 
   // Image attachments
@@ -451,8 +500,7 @@ function setupEventListeners() {
   // Cancel button
   elements.cancelBtn.addEventListener('click', () => {
     console.log('Cancel button clicked');
-    port.postMessage({ type: 'cancel_task' });
-    hideExecutionBar();
+    requestTaskCancellation();
   });
 
   // Open in new tab button
@@ -657,6 +705,16 @@ function openTask(task) {
   scrollToBottom();
 }
 
+function requestTaskCancellation() {
+  if (!port) return;
+  port.postMessage({ type: 'cancel_task' });
+
+  if (isExecutionActive) {
+    setExecutionText('Stopping task...');
+    showThinkingIndicator('Stopping task...');
+  }
+}
+
 /**
  * Send a message
  */
@@ -664,6 +722,7 @@ async function sendMessage() {
   const text = elements.chatInput.value.trim();
   const images = pendingImages.map(image => image.dataUrl);
   if (!text && images.length === 0) return;
+  notifyCrabActivity('user');
 
   // Check if API key is set
   if (!settings.apiKey && settings.provider !== 'ollama') {
@@ -686,7 +745,7 @@ async function sendMessage() {
   }
 
   // Send to background
-  const isFollowUp = currentTask.messages.length > 1;
+  const isFollowUp = isExecutionActive || currentTask.messages.length > 1;
 
   // Use customModel if provider is openai-compatible and model is "custom"
   const effectiveModel = (settings.provider === 'openai-compatible' && settings.model === 'custom')
@@ -705,6 +764,7 @@ async function sendMessage() {
       planningInterval: parseInt(elements.planningIntervalInput.value) || 3
     }
   });
+  notifyCrabActivity('thinking', taskText);
 
   clearPendingImages();
 }
@@ -761,6 +821,9 @@ function addAssistantMessage(content, save = true) {
   if (save && currentTask) {
     currentTask.messages.push({ role: 'assistant', content, timestamp: Date.now() });
   }
+  if (save) {
+    registerCrabSuccess(content || 'assistant response');
+  }
 }
 
 /**
@@ -777,6 +840,14 @@ function addSystemMessage(content, type = 'info', save = true) {
   if (save && currentTask) {
     currentTask.messages.push({ role: 'system', content, type, timestamp: Date.now() });
   }
+
+  if (save) {
+    if (type === 'error') {
+      registerCrabError(content || 'error');
+    } else {
+      notifyCrabActivity('user');
+    }
+  }
 }
 
 /**
@@ -789,6 +860,13 @@ function addActionMessage(action, params, status, message = '', save = true) {
     lastAction.className = `action-status ${status}`;
     if (message) {
       lastAction.querySelector('.action-message').textContent = message;
+    }
+    if (save) {
+      if (status === 'success') {
+        registerCrabSuccess(message || action || 'action success');
+      } else if (status === 'error') {
+        registerCrabError(message || action || 'action failed');
+      }
     }
     return;
   }
@@ -827,6 +905,16 @@ function addActionMessage(action, params, status, message = '', save = true) {
       timestamp: Date.now()
     });
   }
+
+  if (save) {
+    if (status === 'start') {
+      notifyCrabActivity('thinking', action || 'action start');
+    } else if (status === 'success') {
+      registerCrabSuccess(message || action || 'action success');
+    } else if (status === 'error') {
+      registerCrabError(message || action || 'action failed');
+    }
+  }
 }
 
 /**
@@ -838,16 +926,10 @@ function showThinkingIndicator(message = 'Thinking...') {
     indicator = document.createElement('div');
     indicator.className = 'thinking-indicator';
     indicator.innerHTML = `
-      <div class="thinking-crab" aria-hidden="true">
-        <div class="thinking-crab-bubble"></div>
-        <pre class="thinking-crab-art"></pre>
+      <div class="loading-dots">
+        <span></span><span></span><span></span>
       </div>
-      <div class="thinking-meta">
-        <div class="loading-dots">
-          <span></span><span></span><span></span>
-        </div>
-        <span class="thinking-text"></span>
-      </div>
+      <span class="thinking-text"></span>
     `;
     triggerAnimation(indicator, 'message-enter');
     elements.chatMessages.appendChild(indicator);
@@ -858,9 +940,7 @@ function showThinkingIndicator(message = 'Thinking...') {
     textEl.textContent = message;
   }
 
-  thinkingCrabMood = getCrabMoodFromText(message);
-  startThinkingCrabAnimation();
-  renderThinkingCrab();
+  notifyCrabActivity('thinking', message);
   scrollToBottom();
 }
 
@@ -868,7 +948,6 @@ function showThinkingIndicator(message = 'Thinking...') {
  * Remove thinking indicator
  */
 function removeThinkingIndicator() {
-  stopThinkingCrabAnimation();
   const indicator = document.querySelector('.thinking-indicator');
   if (indicator) {
     indicator.remove();
@@ -882,44 +961,8 @@ function setExecutionText(text) {
   if (elements.executionText) {
     elements.executionText.textContent = text;
   }
-  updateProcessCrabMood(text);
   updateThinkingIndicatorFromStatus(text);
-}
-
-/**
- * Convert execution status text into crab mood key
- */
-function getCrabMoodFromText(text) {
-  const normalized = String(text || '').toLowerCase();
-  if (!normalized) {
-    return 'thinking';
-  }
-  if (normalized.includes('pause')) {
-    return 'paused';
-  }
-  if (normalized.includes('cancel') || normalized.includes('fail') || normalized.includes('error')) {
-    return 'stopped';
-  }
-  if (normalized.includes('plan') || normalized.includes('evaluat')) {
-    return 'planning';
-  }
-  if (normalized.includes('step') || normalized.includes('action') || normalized.includes('working')) {
-    return 'working';
-  }
-  return 'thinking';
-}
-
-/**
- * Convert execution status text into a short process-bar mood label
- */
-function updateProcessCrabMood(text) {
-  const mood = getCrabMoodFromText(text);
-  if (mood === 'planning') processCrabMood = 'planning';
-  else if (mood === 'working') processCrabMood = 'working';
-  else if (mood === 'paused') processCrabMood = 'paused';
-  else if (mood === 'stopped') processCrabMood = 'stopped';
-  else processCrabMood = 'thinking';
-  renderProcessCrab();
+  updateMascotCrabFromStatus(text);
 }
 
 /**
@@ -933,93 +976,269 @@ function updateThinkingIndicatorFromStatus(text) {
   if (textEl && text) {
     textEl.textContent = text;
   }
-  thinkingCrabMood = getCrabMoodFromText(text);
-  renderThinkingCrab();
 }
 
 /**
- * Start crab animation loop in thinking indicator
+ * Infer mascot mood from text context
  */
-function startThinkingCrabAnimation() {
-  if (thinkingCrabTimer) return;
-  thinkingCrabFrameIndex = 0;
-  renderThinkingCrab();
-  thinkingCrabTimer = setInterval(() => {
-    thinkingCrabFrameIndex++;
-    renderThinkingCrab();
-  }, 280);
-}
+function getMascotCrabMoodFromText(text) {
+  const normalized = String(text || '').toLowerCase();
+  if (!normalized) return null;
 
-/**
- * Stop crab animation loop in thinking indicator
- */
-function stopThinkingCrabAnimation() {
-  if (thinkingCrabTimer) {
-    clearInterval(thinkingCrabTimer);
-    thinkingCrabTimer = null;
+  if (normalized.includes('git commit') || normalized.includes('unexpected') || normalized.includes('surpris')) {
+    return 'surprised';
   }
-  thinkingCrabFrameIndex = 0;
-}
-
-/**
- * Render crab inside thinking indicator
- */
-function renderThinkingCrab() {
-  const indicator = document.querySelector('.thinking-indicator');
-  if (!indicator) return;
-
-  const artEl = indicator.querySelector('.thinking-crab-art');
-  const bubbleEl = indicator.querySelector('.thinking-crab-bubble');
-  if (!artEl || !bubbleEl) return;
-
-  const moodFrames = THINKING_CRAB_STATES[thinkingCrabMood] || THINKING_CRAB_STATES.thinking;
-  const frame = moodFrames[thinkingCrabFrameIndex % moodFrames.length];
-  artEl.textContent = frame.art;
-  bubbleEl.textContent = frame.bubble;
-}
-
-/**
- * Start crab animation loop during execution bar display
- */
-function startProcessCrabAnimation() {
-  if (processCrabTimer) return;
-  processCrabFrameIndex = 0;
-  renderProcessCrab();
-  processCrabTimer = setInterval(() => {
-    processCrabFrameIndex = (processCrabFrameIndex + 1) % PROCESS_CRAB_FRAMES.length;
-    renderProcessCrab();
-  }, 280);
-}
-
-/**
- * Stop crab animation loop
- */
-function stopProcessCrabAnimation() {
-  if (processCrabTimer) {
-    clearInterval(processCrabTimer);
-    processCrabTimer = null;
+  if (normalized.includes('tests passing') || normalized.includes('test passed') || normalized.includes('all green')) {
+    return 'excited';
   }
-  processCrabFrameIndex = 0;
-  processCrabMood = 'waiting';
-  renderProcessCrab(true);
+  if (normalized.includes('saved') || normalized.includes('success')) {
+    return 'happy';
+  }
+  if (normalized.includes('plan') || normalized.includes('explore') || normalized.includes('investigat')) {
+    return 'curious';
+  }
+  if (
+    normalized.includes('think') ||
+    normalized.includes('analyz') ||
+    normalized.includes('read') ||
+    normalized.includes('search') ||
+    normalized.includes('command') ||
+    normalized.includes('run')
+  ) {
+    return 'thinking';
+  }
+  if (normalized.includes('pause') || normalized.includes('idle') || normalized.includes('wait')) {
+    return 'tired';
+  }
+  return null;
 }
 
 /**
- * Render crab frame and bubble text
+ * Sync mascot mood from execution status text
  */
-function renderProcessCrab(resetBubble = false) {
-  if (!elements.processCrabArt || !elements.processCrabBubble) return;
+function updateMascotCrabFromStatus(text) {
+  const mood = getMascotCrabMoodFromText(text);
+  if (!mood) return;
 
-  const frame = PROCESS_CRAB_FRAMES[processCrabFrameIndex % PROCESS_CRAB_FRAMES.length];
-  elements.processCrabArt.textContent = frame;
-
-  if (resetBubble) {
-    elements.processCrabBubble.textContent = 'idle';
+  if (mood === 'surprised') {
+    setMascotCrabMood('surprised', 1800);
+    settleMascotCrabMood(1800);
     return;
   }
 
-  const dot = PROCESS_CRAB_BUBBLE_DOTS[processCrabFrameIndex % PROCESS_CRAB_BUBBLE_DOTS.length];
-  elements.processCrabBubble.textContent = `${processCrabMood}${dot}`;
+  if (mood === 'excited') {
+    setMascotCrabMood('excited', 2400);
+    settleMascotCrabMood();
+    return;
+  }
+
+  if (mood === 'happy') {
+    setMascotCrabMood('happy', 2000);
+    settleMascotCrabMood();
+    return;
+  }
+
+  if (mood === 'curious' || mood === 'thinking') {
+    setMascotCrabMood(mood);
+    return;
+  }
+
+  if (!isExecutionActive && mood === 'tired') {
+    setMascotCrabMood('tired', 1500);
+  }
+}
+
+/**
+ * Initialize mascot crab systems
+ */
+function initMascotCrab() {
+  if (!elements.mascotCrab || !elements.mascotCrabArt || !elements.mascotCrabBubble) return;
+
+  setMascotCrabMood('neutral');
+  startMascotCrabAnimation();
+
+  if (mascotCrabEnergyTimer) {
+    clearInterval(mascotCrabEnergyTimer);
+  }
+  mascotCrabEnergyTimer = setInterval(updateMascotCrabEnergy, CRAB_ENERGY_TICK_MS);
+}
+
+/**
+ * Set mascot mood and optional hold duration
+ */
+function setMascotCrabMood(mood, holdMs = 0) {
+  const safeMood = MASCOT_CRAB_STATES[mood] ? mood : 'neutral';
+  if (holdMs > 0) {
+    mascotCrabMoodHoldUntil = Date.now() + holdMs;
+  } else if (Date.now() >= mascotCrabMoodHoldUntil) {
+    mascotCrabMoodHoldUntil = 0;
+  }
+
+  if (mascotCrabMood !== safeMood) {
+    mascotCrabMood = safeMood;
+    mascotCrabFrameIndex = 0;
+  }
+  renderMascotCrab();
+}
+
+/**
+ * Start mascot animation loop
+ */
+function startMascotCrabAnimation() {
+  if (mascotCrabTimer) return;
+  mascotCrabFrameIndex = 0;
+  renderMascotCrab();
+  mascotCrabTimer = setInterval(() => {
+    mascotCrabFrameIndex++;
+    renderMascotCrab();
+  }, MASCOT_CRAB_FRAME_INTERVAL_MS);
+}
+
+/**
+ * Render mascot crab frame and bubble
+ */
+function renderMascotCrab() {
+  if (!elements.mascotCrabArt || !elements.mascotCrabBubble) return;
+
+  const frames = MASCOT_CRAB_STATES[mascotCrabMood] || MASCOT_CRAB_STATES.neutral;
+  if (!frames.length) return;
+  const frame = frames[mascotCrabFrameIndex % frames.length];
+
+  elements.mascotCrabArt.textContent = frame.art;
+  elements.mascotCrabBubble.textContent = frame.bubble;
+}
+
+/**
+ * Return mascot mood to baseline after short bursts
+ */
+function settleMascotCrabMood(delayMs = 2200) {
+  if (mascotCrabSettleTimer) {
+    clearTimeout(mascotCrabSettleTimer);
+  }
+  mascotCrabSettleTimer = setTimeout(() => {
+    if (isExecutionActive) {
+      setMascotCrabMood('thinking');
+      return;
+    }
+
+    if (mascotCrabFood <= 18) {
+      setMascotCrabMood('hungry');
+      return;
+    }
+
+    const idleMs = Date.now() - mascotCrabLastActivityAt;
+    if (idleMs >= CRAB_IDLE_TIRED_MS) {
+      setMascotCrabMood('tired');
+      return;
+    }
+
+    setMascotCrabMood('neutral');
+  }, Math.max(400, delayMs));
+}
+
+/**
+ * Register success events for mood transitions
+ */
+function registerCrabSuccess(contextText = '') {
+  mascotCrabLastActivityAt = Date.now();
+  mascotCrabFood = Math.min(100, mascotCrabFood + 10);
+  mascotCrabSuccessStreak += 1;
+  mascotCrabErrorStreak = 0;
+
+  const normalized = String(contextText || '').toLowerCase();
+  if (mascotCrabSuccessStreak >= 3 || normalized.includes('test pass') || normalized.includes('all green')) {
+    setMascotCrabMood('excited', 2600);
+  } else {
+    setMascotCrabMood('happy', 2200);
+  }
+  settleMascotCrabMood();
+}
+
+/**
+ * Register error events for mood transitions
+ */
+function registerCrabError(contextText = '') {
+  mascotCrabLastActivityAt = Date.now();
+  mascotCrabFood = Math.max(0, mascotCrabFood - 14);
+  mascotCrabErrorStreak += 1;
+  mascotCrabSuccessStreak = 0;
+
+  const normalized = String(contextText || '').toLowerCase();
+  if (mascotCrabErrorStreak >= 2 || normalized.includes('repeated') || normalized.includes('again')) {
+    setMascotCrabMood('angry', 3000);
+  } else {
+    setMascotCrabMood('sad', 2400);
+  }
+  settleMascotCrabMood();
+}
+
+/**
+ * Track generic activity and context transitions
+ */
+function notifyCrabActivity(type = 'neutral', text = '') {
+  mascotCrabLastActivityAt = Date.now();
+
+  if (type === 'user') {
+    mascotCrabFood = Math.min(100, mascotCrabFood + 2);
+    if (!isExecutionActive && (mascotCrabMood === 'tired' || mascotCrabMood === 'hungry')) {
+      setMascotCrabMood('curious', 1400);
+      settleMascotCrabMood(1400);
+    }
+    return;
+  }
+
+  if (type === 'thinking') {
+    setMascotCrabMood('thinking');
+    return;
+  }
+
+  if (type === 'curious') {
+    setMascotCrabMood('curious');
+    return;
+  }
+
+  const normalized = String(text || '').toLowerCase();
+  if (normalized.includes('git commit') || normalized.includes('unexpected')) {
+    setMascotCrabMood('surprised', 1800);
+    settleMascotCrabMood(1800);
+    return;
+  }
+
+  if (type === 'surprised') {
+    setMascotCrabMood('surprised', 1800);
+    settleMascotCrabMood(1800);
+    return;
+  }
+
+  if (!isExecutionActive) {
+    setMascotCrabMood('neutral');
+  }
+}
+
+/**
+ * Apply tired/hungry transitions over time
+ */
+function updateMascotCrabEnergy() {
+  mascotCrabFood = Math.max(0, mascotCrabFood - (isExecutionActive ? 2 : 1));
+
+  if (Date.now() < mascotCrabMoodHoldUntil) {
+    return;
+  }
+
+  if (mascotCrabFood <= 18) {
+    setMascotCrabMood('hungry', 1200);
+    return;
+  }
+
+  const idleMs = Date.now() - mascotCrabLastActivityAt;
+  if (!isExecutionActive && idleMs >= CRAB_IDLE_TIRED_MS) {
+    setMascotCrabMood('tired', 1200);
+    return;
+  }
+
+  if (!isExecutionActive && (mascotCrabMood === 'thinking' || mascotCrabMood === 'curious')) {
+    setMascotCrabMood('neutral');
+  }
 }
 
 /**
@@ -1031,10 +1250,14 @@ function showExecutionBar() {
     elements.executionBar.classList.add('active');
     console.log('Execution bar classes:', elements.executionBar.className);
   }
-  startProcessCrabAnimation();
-  // Disable send button during execution
+  isExecutionActive = true;
+  if (elements.mascotCrab) {
+    elements.mascotCrab.classList.add('busy');
+  }
+  notifyCrabActivity('thinking');
+  // Keep send enabled so users can interrupt with follow-up instructions.
   if (elements.sendBtn) {
-    elements.sendBtn.disabled = true;
+    elements.sendBtn.disabled = false;
   }
 }
 
@@ -1045,7 +1268,11 @@ function hideExecutionBar() {
   if (elements.executionBar) {
     elements.executionBar.classList.remove('active');
   }
-  stopProcessCrabAnimation();
+  isExecutionActive = false;
+  if (elements.mascotCrab) {
+    elements.mascotCrab.classList.remove('busy');
+  }
+  settleMascotCrabMood(1200);
   // Re-enable send button
   if (elements.sendBtn) {
     elements.sendBtn.disabled = false;
@@ -1307,14 +1534,21 @@ function renderTasks(filter = '') {
           <div class="task-preview">${escapeHtml(preview)}</div>
         </div>
         <span class="task-time">${timeAgo}</span>
+        <button class="task-delete-btn" data-task-id="${task.id}" title="Delete conversation">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+        </button>
       </div>
     `;
   }).join('');
 
-  // Add click handlers
+  // Add click handlers for task items
   elements.taskList.querySelectorAll('.task-item').forEach((item, index) => {
     item.style.setProperty('--stagger-delay', `${Math.min(index * 28, 280)}ms`);
-    item.addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
+      // Don't open task if clicking delete button
+      if (e.target.closest('.task-delete-btn')) return;
       const taskId = item.dataset.taskId;
       const task = tasks.find(t => t.id === taskId);
       if (task) {
@@ -1322,6 +1556,35 @@ function renderTasks(filter = '') {
       }
     });
   });
+
+  // Add click handlers for delete buttons
+  elements.taskList.querySelectorAll('.task-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const taskId = btn.dataset.taskId;
+      await deleteTask(taskId);
+    });
+  });
+}
+
+/**
+ * Delete a single task
+ */
+async function deleteTask(taskId) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return;
+
+  // Confirm deletion
+  if (!confirm(`Delete "${task.title}"?`)) return;
+
+  // Remove from array
+  tasks = tasks.filter(t => t.id !== taskId);
+
+  // Save to storage
+  await chrome.storage.local.set({ tasks });
+
+  // Re-render
+  renderTasks(elements.searchInput.value);
 }
 
 /**
@@ -1629,4 +1892,3 @@ function escapeHtml(text) {
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', init);
-
