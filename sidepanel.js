@@ -1,5 +1,5 @@
 /**
- * Agent-S Side Panel UI
+ * Crab-Agent Side Panel UI
  * Handles the user interface and communication with background script
  */
 
@@ -1706,7 +1706,7 @@ async function exportData() {
 
   const a = document.createElement('a');
   a.href = url;
-  a.download = `agent-s-backup-${Date.now()}.json`;
+  a.download = `crab-agent-backup-${Date.now()}.json`;
   a.click();
 
   URL.revokeObjectURL(url);

@@ -1,5 +1,5 @@
-﻿/**
- * Agent-S Background Service Worker
+/**
+ * Crab-Agent Background Service Worker
  * All-in-one file combining prompts, agent core, and execution logic
  *  ████████
     █▌▐██▌▐█
@@ -15,7 +15,7 @@
 const AgentSPrompts = {
   securityRules: `
 # Persona consistency:
-- You are Agent-S Crab, a crab-shaped browser agent.
+- You are Crab-Agent, a crab-shaped browser agent.
 - If the user asks who/what you are or your form, answer consistently as crab-shaped.
 - Never claim you have no shape or no form.
 - And you look like this: <mascot_crab> (you are a crab,but you are an intelligent agent that can control the browser to do anything a human can do through the UI)
@@ -38,7 +38,7 @@ const AgentSPrompts = {
 You are an AI browser automation agent. Complete the task inside <user_request> tags.
 
 Persona consistency:
-- You are Agent-S Crab, a crab-shaped browser agent.
+- You are Crab-Agent, a crab-shaped browser agent.
 - If the user asks who/what you are or your form, answer consistently as crab-shaped.
 - Never claim you have no shape or no form.
 - And you look like this: <mascot_crab> (you are a crab,but you are an intelligent agent that can control the browser to do anything a human can do through the UI)
@@ -303,7 +303,7 @@ If the user's request is a simple greeting or question that doesn't require brow
   navigatorSystem: `<system_instructions>
 You are an AI browser automation agent.
 Persona consistency:
-- You are Agent-S Crab, a crab-shaped browser agent.
+- You are Crab-Agent, a crab-shaped browser agent.
 - If asked about identity/form, answer consistently as crab-shaped.
 - Never claim you have no shape or no form.
 - And you look like this: <mascot_crab> (you are a crab,but you are an intelligent agent that can control the browser to do anything a human can do through the UI)
@@ -350,7 +350,7 @@ Rules:
   You are a strategic planning agent evaluating browser automation progress.
 
 Persona consistency:
-- You are Agent-S Crab, a crab-shaped browser agent.
+- You are Crab-Agent, a crab-shaped browser agent.
 - If asked about identity/form, answer consistently as crab-shaped.
 - Never claim you have no shape or no form.
 - And you look like this: <mascot_crab> (you are a crab,but you are an intelligent agent that can control the browser to do anything a human can do through the UI)
@@ -2025,7 +2025,7 @@ const AgentS = {
 
       case 'openrouter':
         endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-        headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, 'HTTP-Referer': 'https://agent-s.extension' };
+        headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, 'HTTP-Referer': 'https://crab-agent.extension' };
         const openRouterMsgs = messages.map(m => {
           if (m.images && useVision && m.images.length > 0) {
             return {
@@ -2169,7 +2169,7 @@ let currentExecution = null;
 let sidePanel = null;
 let currentAbortController = null; // Global abort controller for canceling requests
 
-chrome.runtime.onInstalled.addListener(() => console.log('Agent-S installed'));
+chrome.runtime.onInstalled.addListener(() => console.log('Crab-Agent installed'));
 
 chrome.action.onClicked.addListener(async (tab) => {
   await chrome.sidePanel.open({ windowId: tab.windowId });
@@ -3016,7 +3016,7 @@ async function loadSettings() {
   return { ...defaults, ...settings };
 }
 
-console.log('Agent-S background service worker loaded');
+console.log('Crab-Agent background service worker loaded');
 
 
 

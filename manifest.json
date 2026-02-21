@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Agent-S",
+  "name": "Crab-Agent",
   "version": "1.0.0",
   "description": "AI Browser Agent - Autonomous web navigation powered by LLM",
   "icons": {
@@ -31,7 +31,7 @@
       "16": "icons/icon16.png",
       "48": "icons/icon48.png"
     },
-    "default_title": "Open Agent-S"
+    "default_title": "Open Crab-Agent"
   },
   "content_scripts": [
     {

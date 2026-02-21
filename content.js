@@ -1,5 +1,5 @@
 /**
- * Agent-S Content Script
+ * Crab-Agent Content Script
  * Injected into web pages to enable DOM interaction
  */
 
@@ -12,7 +12,7 @@
   }
   window.__agentSContentScriptInjected = true;
 
-  console.log('Agent-S content script loaded');
+  console.log('Crab-Agent content script loaded');
 
   // Inject the buildDomTree script
   function injectScript(src) {
@@ -350,7 +350,7 @@
       });
 
     } catch (error) {
-      console.error('Agent-S content script initialization error:', error);
+      console.error('Crab-Agent content script initialization error:', error);
     }
   });
 

@@ -1,4 +1,4 @@
-# Agent-S
+# Crab-Agent
 
 ```
      ████████
@@ -8,7 +8,7 @@
       ▐▐  ▌▌
 ```
 
-Agent-S is a Chrome Extension that uses large language models (LLMs) to automate browser actions from natural language instructions.
+Crab-Agent is a Chrome Extension that uses large language models (LLMs) to automate browser actions from natural language instructions.
 
 This project runs with plain JavaScript and does not require a build step.
 
@@ -78,8 +78,8 @@ This project runs with plain JavaScript and does not require a build step.
 1. Open `chrome://extensions`.
 2. Enable `Developer mode`.
 3. Click `Load unpacked`.
-4. Select the `agent-s` folder.
-5. Open Agent-S from the Chrome side panel.
+4. Select the `crab-agent` folder.
+5. Open Crab-Agent from the Chrome side panel.
 
 ## 5. Configuration
 
@@ -175,7 +175,7 @@ In `manifest.json`:
 ## 10. Actual Folder Structure
 
 ```text
-agent-s/
+crab-agent/
 |- manifest.json
 |- background.js
 |- content.js
@@ -219,5 +219,5 @@ agent-s/
 
 ## 12. Notes
 
-- This README documents the current implementation in the `agent-s` folder.
+- This README documents the current implementation in the `crab-agent` folder.
 - If you change prompts, actions, or schemas in `background.js`, update this document to keep behavior and docs aligned.
