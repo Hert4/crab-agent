@@ -536,6 +536,8 @@ function setupEventListeners() {
     elements.visionToggle.classList.toggle('active');
     settings.useVision = elements.visionToggle.classList.contains('active');
     elements.visionBtn.textContent = `Vision: ${settings.useVision ? 'ON' : 'OFF'}`;
+    // Sync with chat option button
+    elements.visionBtn.classList.toggle('active', settings.useVision);
     saveSettings();
   });
 
