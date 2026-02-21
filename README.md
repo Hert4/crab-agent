@@ -217,7 +217,5 @@ crab-agent/
 - Delete selected tasks or clear all history.
 - Export backup data before deletion if needed.
 
-## 12. Notes
-
-- This README documents the current implementation in the `crab-agent` folder.
-- If you change prompts, actions, or schemas in `background.js`, update this document to keep behavior and docs aligned.
+git config --global user.name "posunsd"
+git config --global user.email "ductransa04@gmail.com"
