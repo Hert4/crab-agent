@@ -106,13 +106,32 @@ Nói cách khác:
 ## 6.2 Sơ đồ 
 ```mermaid
 flowchart LR
-    A[Build DOM] --> B[textRepresentation + elements]
-    B --> C[User message text]
-    B --> D[Annotate screenshot with SoM]
-    D --> E[Image attachment]
-    C --> F[LLM request]
-    E --> F
-    F --> G[Model action JSON]
+    %% =========================
+    %% Stage 1: DOM Processing
+    %% =========================
+    subgraph S1[Stage 1: DOM Acquisition & Processing]
+        A[DOM Construction] --> B[DOM Parsing & Text Extraction]
+        B --> B1[Structured Text Representation]
+        B --> B2[UI Element Metadata Extraction]
+    end
+
+    %% =========================
+    %% Stage 2: Multimodal Input Preparation
+    %% =========================
+    subgraph S2[Stage 2: Multimodal Input Preparation]
+        B1 --> C[User Message Synthesis]
+        B2 --> D[Screen Annotation with Set-of-Marks (SoM)]
+        D --> E[Annotated Screenshot Generation]
+    end
+
+    %% =========================
+    %% Stage 3: LLM Interaction
+    %% =========================
+    subgraph S3[Stage 3: LLM Inference Pipeline]
+        C --> F[LLM Request Construction]
+        E --> F
+        F --> G[Model Action Output (JSON)]
+    end
 ```
 
 
