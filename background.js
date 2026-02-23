@@ -368,6 +368,7 @@ Responsibilities:
 6. For user-requested posting/commenting actions, plan execution steps instead of refusing
 7. For messaging tasks with a named recipient, keep next steps focused on the exact target conversation; if uncertain, first re-select the recipient thread
 8. If task asks to send/reply a message, do not mark done until the message is actually sent in UI (typed in message input and submitted).
+9. Response in user language
 
 CRITICAL: When giving next_steps, be VERY SPECIFIC:
 - Reference exact element indices from the DOM: "Click element [15] which shows <result text>"
@@ -442,7 +443,7 @@ Field relationships:
       .map(tab => `- {id: ${tab.id}, url: ${tab.url || ''}, title: ${tab.title || ''}}`)
       .join('\n') || '- none';
     const conversationFocusHint = this.buildConversationFocusHint(conversationFocus, pageState);
-    const quotedMatch = String(task || '').match(/["â€œâ€'`]+([^"â€œâ€'`]{1,280})["â€œâ€'`]+/);
+    const quotedMatch = String(task ?? '').match(/["\u201C\u201D'`]+([^"\u201C\u201D'`]{1,280})["\u201C\u201D'`]+/u); // get text in quotes, support unicode quotes
     const quotedText = quotedMatch ? String(quotedMatch[1] || '').trim() : '';
     const exactMessageHint = quotedText ? `Send this quoted message exactly as written: "${quotedText}".` : '';
 
@@ -503,7 +504,7 @@ Field relationships:
       .map(tab => `- {id: ${tab.id}, url: ${tab.url || ''}, title: ${tab.title || ''}}`)
       .join('\n') || '- none';
     const conversationFocusHint = this.buildConversationFocusHint(conversationFocus, pageState);
-    const quotedMatch = String(task || '').match(/["â€œâ€'`]+([^"â€œâ€'`]{1,280})["â€œâ€'`]+/);
+    const quotedMatch = String(task ?? '').match(/["\u201C\u201D'`]+([^"\u201C\u201D'`]{1,280})["\u201C\u201D'`]+/u); // get text in quotes, support unicode quotes
     const quotedText = quotedMatch ? String(quotedMatch[1] || '').trim() : '';
 
     let message = `<nano_user_request>\n${task}\n</nano_user_request>\n\n`;
@@ -755,6 +756,62 @@ const AgentS = {
   },
 
   actions: {
+    async dispatchTrustedClick(tabId, x, y) {
+      const target = { tabId };
+      const px = Math.round(x);
+      const py = Math.round(y);
+      let attachedByAgent = false;
+
+      try {
+        try {
+          await chrome.debugger.attach(target, '1.3');
+          attachedByAgent = true;
+        } catch (attachError) {
+          const attachMsg = String(attachError?.message || attachError || '');
+          const alreadyAttached = /already attached|another debugger/i.test(attachMsg);
+          if (!alreadyAttached) {
+            return { ok: false, error: `Debugger attach failed: ${attachMsg}` };
+          }
+        }
+
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          x: px,
+          y: py,
+          button: 'none',
+          buttons: 0,
+          pointerType: 'mouse'
+        });
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x: px,
+          y: py,
+          button: 'left',
+          buttons: 1,
+          clickCount: 1,
+          pointerType: 'mouse'
+        });
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: px,
+          y: py,
+          button: 'left',
+          buttons: 0,
+          clickCount: 1,
+          pointerType: 'mouse'
+        });
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: `Trusted click failed: ${error?.message || String(error)}` };
+      } finally {
+        if (attachedByAgent) {
+          try {
+            await chrome.debugger.detach(target);
+          } catch (detachError) {}
+        }
+      }
+    },
+
     async searchGoogle(query, tabId) {
       await chrome.tabs.update(tabId, { url: `https://www.google.com/search?q=${encodeURIComponent(query)}` });
       await AgentS.actions.waitForPageLoad(tabId);
@@ -797,6 +854,50 @@ const AgentS = {
             window.AgentSDom.lastBuildResult = refreshed;
             return refreshed;
           };
+          const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          const activeSignature = (node) => {
+            if (!node || !node.tagName) return '';
+            const tag = (node.tagName || '').toLowerCase();
+            const id = node.id ? `#${node.id}` : '';
+            const name = typeof node.getAttribute === 'function' && node.getAttribute('name')
+              ? `[name="${node.getAttribute('name')}"]`
+              : '';
+            return `${tag}${id}${name}`;
+          };
+          const collectEffects = (target, baseline) => {
+            const bits = [];
+            if ((window.__agentSMutationCount || 0) !== baseline.mutationCount) bits.push('dom');
+            if (window.location.href !== baseline.href) bits.push('url');
+            if (activeSignature(document.activeElement) !== baseline.active) bits.push('focus');
+            if (target) {
+              const endExpanded = target.getAttribute?.('aria-expanded');
+              const endPressed = target.getAttribute?.('aria-pressed');
+              const endClass = typeof target.className === 'string' ? target.className : String(target.className || '');
+              if (endExpanded !== baseline.expanded || endPressed !== baseline.pressed || endClass !== baseline.className) {
+                bits.push('state');
+              }
+            }
+            return bits;
+          };
+          const isPotentialActionNode = (node) => {
+            if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+            const tag = (node.tagName || '').toLowerCase();
+            if (['button', 'a', 'summary', 'input', 'select', 'option', 'label'].includes(tag)) return true;
+            const role = (node.getAttribute?.('role') || '').toLowerCase();
+            if (['button', 'link', 'tab', 'menuitem', 'option', 'switch', 'checkbox', 'radio'].includes(role)) return true;
+            if (node.onclick || node.getAttribute?.('onclick')) return true;
+            const tabIndexAttr = node.getAttribute?.('tabindex');
+            if (tabIndexAttr !== null && tabIndexAttr !== '-1') return true;
+            return false;
+          };
+          const resolveActionTarget = (node) => {
+            let current = node;
+            while (current && current !== document.body) {
+              if (isPotentialActionNode(current)) return current;
+              current = current.parentElement;
+            }
+            return node;
+          };
 
           const ensureMutationObserver = () => {
             if (window.__agentSMutationObserver) return;
@@ -832,15 +933,21 @@ const AgentS = {
               error: `Element ${idx} not found on ${pageUrl} (max index: ${maxIdx}). The page DOM has changed. DO NOT retry with same index. Look at the FRESH element list in this step and find the correct element by its text/attributes, not by memorized index.`
             };
           }
+          const targetEl = resolveActionTarget(el);
 
           ensureMutationObserver();
-          const startMutationCount = window.__agentSMutationCount || 0;
-          const startActive = document.activeElement;
-          const startHref = window.location.href;
+          const baseline = {
+            mutationCount: window.__agentSMutationCount || 0,
+            href: window.location.href,
+            active: activeSignature(document.activeElement),
+            expanded: targetEl.getAttribute?.('aria-expanded'),
+            pressed: targetEl.getAttribute?.('aria-pressed'),
+            className: typeof targetEl.className === 'string' ? targetEl.className : String(targetEl.className || '')
+          };
 
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          targetEl.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
 
-          const rect = el.getBoundingClientRect();
+          const rect = targetEl.getBoundingClientRect();
           const clickX = Math.round(rect.x + rect.width / 2);
           const clickY = Math.round(rect.y + rect.height / 2);
 
@@ -857,36 +964,190 @@ const AgentS = {
           };
 
           if (typeof PointerEvent === 'function') {
-            el.dispatchEvent(new PointerEvent('pointerdown', eventOptions));
-            el.dispatchEvent(new PointerEvent('pointerup', eventOptions));
+            targetEl.dispatchEvent(new PointerEvent('pointerdown', eventOptions));
+            targetEl.dispatchEvent(new PointerEvent('pointerup', eventOptions));
           }
-          el.dispatchEvent(new MouseEvent('mousedown', eventOptions));
-          el.dispatchEvent(new MouseEvent('mouseup', eventOptions));
-          el.dispatchEvent(new MouseEvent('click', eventOptions));
-          if (typeof el.click === 'function') el.click();
+          targetEl.dispatchEvent(new MouseEvent('mousedown', eventOptions));
+          targetEl.dispatchEvent(new MouseEvent('mouseup', eventOptions));
+          targetEl.dispatchEvent(new MouseEvent('click', eventOptions));
+          if (typeof targetEl.click === 'function') targetEl.click();
 
-          await new Promise(resolve => setTimeout(resolve, 140));
+          let effectBits = collectEffects(targetEl, baseline);
+          for (let i = 0; i < 4 && effectBits.length === 0; i++) {
+            await sleep(120);
+            effectBits = collectEffects(targetEl, baseline);
+          }
+          const mutationDelta = Math.max(0, (window.__agentSMutationCount || 0) - baseline.mutationCount);
 
-          const endMutationCount = window.__agentSMutationCount || 0;
-          const activeChanged = document.activeElement !== startActive;
-          const urlChanged = window.location.href !== startHref;
-          const domChanged = endMutationCount !== startMutationCount;
-          const effectBits = [];
-          if (activeChanged) effectBits.push('focus');
-          if (urlChanged) effectBits.push('url');
-          if (domChanged) effectBits.push('dom');
-
-          const tag = (el.tagName || '').toLowerCase();
-          const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+          const tag = (targetEl.tagName || '').toLowerCase();
+          const text = (targetEl.innerText || targetEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+          const href = tag === 'a'
+            ? String(targetEl.getAttribute?.('href') || targetEl.href || '')
+            : '';
           return {
             success: true,
-            message: `Clicked element ${idx} <${tag}> "${text}" at (${clickX}, ${clickY}) [effect:${effectBits.join('+') || 'none'}]`
+            index: idx,
+            clickX,
+            clickY,
+            tag,
+            text,
+            href,
+            effectBits,
+            baseline,
+            mutationDelta
           };
         },
         args: [safeIndex]
       });
-      await new Promise(r => setTimeout(r, 500));
-      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed. Use click_at with coordinates instead.' });
+      const baseResult = result[0]?.result || { success: false, error: 'Script failed. Use click_at with coordinates instead.' };
+      if (!baseResult.success) {
+        await new Promise(r => setTimeout(r, 250));
+        return AgentS.createActionResult(baseResult);
+      }
+
+      let effectBits = Array.isArray(baseResult.effectBits) ? [...baseResult.effectBits] : [];
+      let clickMode = 'dom';
+      let mutationDelta = Number(baseResult.mutationDelta || 0);
+      let trustedError = null;
+      const isAnchorLikePreRetry = String(baseResult.tag || '').toLowerCase() === 'a';
+      const hasStrongEffectPreRetry = effectBits.includes('url') || effectBits.includes('state');
+      const domOnlyLowSignalPreRetry = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      const shouldRetryWithTrusted =
+        effectBits.length === 0 ||
+        (isAnchorLikePreRetry && !hasStrongEffectPreRetry) ||
+        domOnlyLowSignalPreRetry;
+
+      if (shouldRetryWithTrusted) {
+        const trusted = await AgentS.actions.dispatchTrustedClick(tabId, baseResult.clickX, baseResult.clickY);
+        if (trusted.ok) {
+          clickMode = 'trusted';
+          const trustedVerify = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: async (idx, baseline, clickX, clickY) => {
+              const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+              const rebuildDom = () => {
+                if (!window.AgentSDom?.buildDomTree) return null;
+                const refreshed = window.AgentSDom.buildDomTree({ highlightElements: false, viewportOnly: true });
+                window.AgentSDom.lastBuildResult = refreshed;
+                return refreshed;
+              };
+              const activeSignature = (node) => {
+                if (!node || !node.tagName) return '';
+                const tag = (node.tagName || '').toLowerCase();
+                const id = node.id ? `#${node.id}` : '';
+                const name = typeof node.getAttribute === 'function' && node.getAttribute('name')
+                  ? `[name="${node.getAttribute('name')}"]`
+                  : '';
+                return `${tag}${id}${name}`;
+              };
+              const collectEffects = (target, base) => {
+                const bits = [];
+                if ((window.__agentSMutationCount || 0) !== base.mutationCount) bits.push('dom');
+                if (window.location.href !== base.href) bits.push('url');
+                if (activeSignature(document.activeElement) !== base.active) bits.push('focus');
+                if (target) {
+                  const endExpanded = target.getAttribute?.('aria-expanded');
+                  const endPressed = target.getAttribute?.('aria-pressed');
+                  const endClass = typeof target.className === 'string' ? target.className : String(target.className || '');
+                  if (endExpanded !== base.expanded || endPressed !== base.pressed || endClass !== base.className) {
+                    bits.push('state');
+                  }
+                }
+                return bits;
+              };
+
+              let domState = window.AgentSDom?.lastBuildResult || rebuildDom();
+              let el = domState?.elementMap?.[idx];
+              if (!el) {
+                domState = rebuildDom() || domState;
+                el = domState?.elementMap?.[idx];
+              }
+              if (!el) el = document.elementFromPoint(clickX, clickY);
+
+              let bits = collectEffects(el, baseline || { mutationCount: 0, href: window.location.href, active: '' });
+              for (let i = 0; i < 4 && bits.length === 0; i++) {
+                await sleep(120);
+                bits = collectEffects(el, baseline || { mutationCount: 0, href: window.location.href, active: '' });
+              }
+              const mutationDelta = Math.max(0, (window.__agentSMutationCount || 0) - Number(baseline?.mutationCount || 0));
+
+              const tag = (el?.tagName || '').toLowerCase();
+              const text = (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+              const href = tag === 'a'
+                ? String(el?.getAttribute?.('href') || el?.href || '')
+                : '';
+              return { effectBits: bits, tag, text, mutationDelta, href };
+            },
+            args: [safeIndex, baseResult.baseline, baseResult.clickX, baseResult.clickY]
+          });
+          const verified = trustedVerify?.[0]?.result;
+          if (Array.isArray(verified?.effectBits)) {
+            effectBits = verified.effectBits;
+          }
+          if (verified?.tag) baseResult.tag = verified.tag;
+          if (verified?.text !== undefined) baseResult.text = verified.text;
+          if (verified?.href) baseResult.href = verified.href;
+          if (Number.isFinite(Number(verified?.mutationDelta))) mutationDelta = Number(verified.mutationDelta);
+        } else {
+          trustedError = trusted.error;
+        }
+      }
+
+      const trustedSuffix = clickMode === 'trusted' ? ' [trusted]' : '';
+      const trustedErrSuffix = trustedError ? ` [trusted_error:${trustedError}]` : '';
+      const effectLabel = effectBits.join('+') || 'none';
+      const isAnchorLike = String(baseResult.tag || '').toLowerCase() === 'a';
+      const anchorHasStrongEffect = effectBits.includes('url') || effectBits.includes('state');
+      const domOnlyLowSignal = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      await new Promise(r => setTimeout(r, 350));
+      if (isAnchorLike && !anchorHasStrongEffect) {
+        const href = String(baseResult.href || '').trim();
+        const canNavigateByHref = /^https?:\/\//i.test(href);
+        if (canNavigateByHref) {
+          try {
+            await chrome.tabs.update(tabId, { url: href });
+            await AgentS.actions.waitForPageLoad(tabId);
+            return AgentS.createActionResult({
+              success: true,
+              message: `Anchor click fallback navigated directly to href: ${href}`
+            });
+          } catch (navErr) {
+            const navMsg = String(navErr?.message || navErr || '');
+            const noAnchorEffectMsg = `Anchor click on element ${safeIndex} did not navigate or change selected state at (${baseResult.clickX}, ${baseResult.clickY}). href fallback failed: ${navMsg}.${trustedSuffix}${trustedErrSuffix}`;
+            return AgentS.createActionResult({
+              success: false,
+              error: noAnchorEffectMsg,
+              message: noAnchorEffectMsg
+            });
+          }
+        }
+        const noAnchorEffectMsg = `Anchor click on element ${safeIndex} did not navigate or change selected state at (${baseResult.clickX}, ${baseResult.clickY}). UI likely unchanged.${trustedSuffix}${trustedErrSuffix}`;
+        return AgentS.createActionResult({
+          success: false,
+          error: noAnchorEffectMsg,
+          message: noAnchorEffectMsg
+        });
+      }
+      if (domOnlyLowSignal) {
+        const lowSignalMsg = `Click on element ${safeIndex} only caused low-signal DOM noise (delta=${mutationDelta}) at (${baseResult.clickX}, ${baseResult.clickY}). UI likely unchanged.${trustedSuffix}${trustedErrSuffix}`;
+        return AgentS.createActionResult({
+          success: false,
+          error: lowSignalMsg,
+          message: lowSignalMsg
+        });
+      }
+      if (effectBits.length === 0) {
+        const noEffectMsg = `Click on element ${safeIndex} had no observable effect at (${baseResult.clickX}, ${baseResult.clickY}). UI did not change.${trustedSuffix}${trustedErrSuffix}`;
+        return AgentS.createActionResult({
+          success: false,
+          error: noEffectMsg,
+          message: noEffectMsg
+        });
+      }
+      return AgentS.createActionResult({
+        success: true,
+        message: `Clicked element ${safeIndex} <${baseResult.tag || ''}> "${baseResult.text || ''}" at (${baseResult.clickX}, ${baseResult.clickY}) [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}`
+      });
     },
 
     async clickAtCoordinates(x, y, tabId) {
@@ -908,6 +1169,50 @@ const AgentS = {
       const result = await chrome.scripting.executeScript({
         target: { tabId },
         func: async (clickX, clickY) => {
+          const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          const activeSignature = (node) => {
+            if (!node || !node.tagName) return '';
+            const tag = (node.tagName || '').toLowerCase();
+            const id = node.id ? `#${node.id}` : '';
+            const name = typeof node.getAttribute === 'function' && node.getAttribute('name')
+              ? `[name="${node.getAttribute('name')}"]`
+              : '';
+            return `${tag}${id}${name}`;
+          };
+          const collectEffects = (target, baseline) => {
+            const bits = [];
+            if ((window.__agentSMutationCount || 0) !== baseline.mutationCount) bits.push('dom');
+            if (window.location.href !== baseline.href) bits.push('url');
+            if (activeSignature(document.activeElement) !== baseline.active) bits.push('focus');
+            if (target) {
+              const endExpanded = target.getAttribute?.('aria-expanded');
+              const endPressed = target.getAttribute?.('aria-pressed');
+              const endClass = typeof target.className === 'string' ? target.className : String(target.className || '');
+              if (endExpanded !== baseline.expanded || endPressed !== baseline.pressed || endClass !== baseline.className) {
+                bits.push('state');
+              }
+            }
+            return bits;
+          };
+          const isPotentialActionNode = (node) => {
+            if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+            const tag = (node.tagName || '').toLowerCase();
+            if (['button', 'a', 'summary', 'input', 'select', 'option', 'label'].includes(tag)) return true;
+            const role = (node.getAttribute?.('role') || '').toLowerCase();
+            if (['button', 'link', 'tab', 'menuitem', 'option', 'switch', 'checkbox', 'radio'].includes(role)) return true;
+            if (node.onclick || node.getAttribute?.('onclick')) return true;
+            const tabIndexAttr = node.getAttribute?.('tabindex');
+            if (tabIndexAttr !== null && tabIndexAttr !== '-1') return true;
+            return false;
+          };
+          const resolveActionTarget = (node) => {
+            let current = node;
+            while (current && current !== document.body) {
+              if (isPotentialActionNode(current)) return current;
+              current = current.parentElement;
+            }
+            return node;
+          };
           const ensureMutationObserver = () => {
             if (window.__agentSMutationObserver) return;
             window.__agentSMutationCount = window.__agentSMutationCount || 0;
@@ -943,7 +1248,7 @@ const AgentS = {
           const isLikelyClickable = (el) => {
             if (!el) return false;
             const tag = (el.tagName || '').toLowerCase();
-            if (['button', 'a', 'input', 'select', 'svg', 'img', 'i', 'span'].includes(tag)) return true;
+            if (['button', 'a', 'input', 'select', 'summary'].includes(tag)) return true;
             if (el.onclick || el.getAttribute?.('onclick')) return true;
             if (el.getAttribute?.('role') === 'button') return true;
             if (el.getAttribute?.('tabindex')) return true;
@@ -965,10 +1270,16 @@ const AgentS = {
               break;
             }
           }
+          target = resolveActionTarget(target);
 
-          const startMutationCount = window.__agentSMutationCount || 0;
-          const startActive = document.activeElement;
-          const startHref = window.location.href;
+          const baseline = {
+            mutationCount: window.__agentSMutationCount || 0,
+            href: window.location.href,
+            active: activeSignature(document.activeElement),
+            expanded: target.getAttribute?.('aria-expanded'),
+            pressed: target.getAttribute?.('aria-pressed'),
+            className: typeof target.className === 'string' ? target.className : String(target.className || '')
+          };
 
           const eventOptions = {
             view: window,
@@ -1000,32 +1311,179 @@ const AgentS = {
           // Also try native click on the best target
           if (typeof target.click === 'function') target.click();
 
-          await new Promise(resolve => setTimeout(resolve, 140));
-
-          const endMutationCount = window.__agentSMutationCount || 0;
-          const activeChanged = document.activeElement !== startActive;
-          const urlChanged = window.location.href !== startHref;
-          const domChanged = endMutationCount !== startMutationCount;
+          let effectBits = collectEffects(target, baseline);
+          for (let i = 0; i < 4 && effectBits.length === 0; i++) {
+            await sleep(120);
+            effectBits = collectEffects(target, baseline);
+          }
+          const mutationDelta = Math.max(0, (window.__agentSMutationCount || 0) - baseline.mutationCount);
 
           const tagName = (target.tagName || '').toLowerCase();
           const text = (target.innerText || target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
           const ariaLabel = target.getAttribute?.('aria-label') || '';
-          const effectBits = [];
-          if (activeChanged) effectBits.push('focus');
-          if (urlChanged) effectBits.push('url');
-          if (domChanged) effectBits.push('dom');
-
+          const href = tagName === 'a'
+            ? String(target.getAttribute?.('href') || target.href || '')
+            : '';
           const targetId = target.id ? `#${target.id}` : '';
           const pageHost = window.location.hostname;
           return {
             success: true,
-            message: `Clicked (${baseX}, ${baseY}) [dpr:${dpr.toFixed(2)}] on ${pageHost} target:<${tagName}${targetId}> clicked:[${clickedElements.join(',')}] [effect:${effectBits.join('+') || 'none'}]`
+            baseX,
+            baseY,
+            dpr,
+            pageHost,
+            targetTag: tagName,
+            targetId,
+            clickedElements,
+            effectBits,
+            baseline,
+            mutationDelta,
+            href,
+            text,
+            ariaLabel
           };
         },
         args: [safeX, safeY]
       });
+      const baseResult = result[0]?.result || { success: false, error: 'Script failed' };
+      if (!baseResult.success) {
+        await new Promise(r => setTimeout(r, 250));
+        return AgentS.createActionResult(baseResult);
+      }
+
+      let effectBits = Array.isArray(baseResult.effectBits) ? [...baseResult.effectBits] : [];
+      let clickMode = 'dom';
+      let mutationDelta = Number(baseResult.mutationDelta || 0);
+      let trustedError = null;
+      const isAnchorLikePreRetry = String(baseResult.targetTag || '').toLowerCase() === 'a';
+      const hasStrongEffectPreRetry = effectBits.includes('url') || effectBits.includes('state');
+      const domOnlyLowSignalPreRetry = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      const shouldRetryWithTrusted =
+        effectBits.length === 0 ||
+        (isAnchorLikePreRetry && !hasStrongEffectPreRetry) ||
+        domOnlyLowSignalPreRetry;
+
+      if (shouldRetryWithTrusted) {
+        const trusted = await AgentS.actions.dispatchTrustedClick(tabId, baseResult.baseX, baseResult.baseY);
+        if (trusted.ok) {
+          clickMode = 'trusted';
+          const trustedVerify = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: async (baseX, baseY, baseline) => {
+              const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+              const activeSignature = (node) => {
+                if (!node || !node.tagName) return '';
+                const tag = (node.tagName || '').toLowerCase();
+                const id = node.id ? `#${node.id}` : '';
+                const name = typeof node.getAttribute === 'function' && node.getAttribute('name')
+                  ? `[name="${node.getAttribute('name')}"]`
+                  : '';
+                return `${tag}${id}${name}`;
+              };
+              const pickTarget = () => {
+                const els = document.elementsFromPoint(baseX, baseY) || [];
+                return els[0] || null;
+              };
+              const collectEffects = (target, base) => {
+                const bits = [];
+                if ((window.__agentSMutationCount || 0) !== base.mutationCount) bits.push('dom');
+                if (window.location.href !== base.href) bits.push('url');
+                if (activeSignature(document.activeElement) !== base.active) bits.push('focus');
+                if (target) {
+                  const endExpanded = target.getAttribute?.('aria-expanded');
+                  const endPressed = target.getAttribute?.('aria-pressed');
+                  const endClass = typeof target.className === 'string' ? target.className : String(target.className || '');
+                  if (endExpanded !== base.expanded || endPressed !== base.pressed || endClass !== base.className) {
+                    bits.push('state');
+                  }
+                }
+                return bits;
+              };
+
+              const target = pickTarget();
+              const defaultBaseline = { mutationCount: 0, href: window.location.href, active: '', expanded: null, pressed: null, className: '' };
+              const base = baseline || defaultBaseline;
+              let bits = collectEffects(target, base);
+              for (let i = 0; i < 4 && bits.length === 0; i++) {
+                await sleep(120);
+                bits = collectEffects(target, base);
+              }
+              const mutationDelta = Math.max(0, (window.__agentSMutationCount || 0) - Number(base.mutationCount || 0));
+              const targetTag = (target?.tagName || '').toLowerCase();
+              const targetId = target?.id ? `#${target.id}` : '';
+              const href = targetTag === 'a'
+                ? String(target?.getAttribute?.('href') || target?.href || '')
+                : '';
+              return { effectBits: bits, targetTag, targetId, mutationDelta, href };
+            },
+            args: [baseResult.baseX, baseResult.baseY, baseResult.baseline]
+          });
+          const verified = trustedVerify?.[0]?.result;
+          if (Array.isArray(verified?.effectBits)) effectBits = verified.effectBits;
+          if (verified?.targetTag) baseResult.targetTag = verified.targetTag;
+          if (verified?.targetId !== undefined) baseResult.targetId = verified.targetId;
+          if (verified?.href) baseResult.href = verified.href;
+          if (Number.isFinite(Number(verified?.mutationDelta))) mutationDelta = Number(verified.mutationDelta);
+        } else {
+          trustedError = trusted.error;
+        }
+      }
+
+      const trustedSuffix = clickMode === 'trusted' ? ' [trusted]' : '';
+      const trustedErrSuffix = trustedError ? ` [trusted_error:${trustedError}]` : '';
+      const effectLabel = effectBits.join('+') || 'none';
+      const isAnchorLike = String(baseResult.targetTag || '').toLowerCase() === 'a';
+      const anchorHasStrongEffect = effectBits.includes('url') || effectBits.includes('state');
+      const domOnlyLowSignal = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
       await new Promise(r => setTimeout(r, 250));
-      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
+      if (isAnchorLike && !anchorHasStrongEffect) {
+        const href = String(baseResult.href || '').trim();
+        const canNavigateByHref = /^https?:\/\//i.test(href);
+        if (canNavigateByHref) {
+          try {
+            await chrome.tabs.update(tabId, { url: href });
+            await AgentS.actions.waitForPageLoad(tabId);
+            return AgentS.createActionResult({
+              success: true,
+              message: `Anchor click fallback navigated directly to href: ${href}`
+            });
+          } catch (navErr) {
+            const navMsg = String(navErr?.message || navErr || '');
+            const noAnchorEffectMsg = `Anchor click at (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} did not navigate or change selected state. href fallback failed: ${navMsg}.${trustedSuffix}${trustedErrSuffix}`;
+            return AgentS.createActionResult({
+              success: false,
+              error: noAnchorEffectMsg,
+              message: noAnchorEffectMsg
+            });
+          }
+        }
+        const noAnchorEffectMsg = `Anchor click at (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} did not navigate or change selected state. UI likely unchanged.${trustedSuffix}${trustedErrSuffix}`;
+        return AgentS.createActionResult({
+          success: false,
+          error: noAnchorEffectMsg,
+          message: noAnchorEffectMsg
+        });
+      }
+      if (domOnlyLowSignal) {
+        const lowSignalMsg = `Click at (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} only caused low-signal DOM noise (delta=${mutationDelta}). UI likely unchanged.${trustedSuffix}${trustedErrSuffix}`;
+        return AgentS.createActionResult({
+          success: false,
+          error: lowSignalMsg,
+          message: lowSignalMsg
+        });
+      }
+      if (effectBits.length === 0) {
+        const noEffectMsg = `Click at (${baseResult.baseX}, ${baseResult.baseY}) had no observable effect on ${baseResult.pageHost}. UI did not change.${trustedSuffix}${trustedErrSuffix}`;
+        return AgentS.createActionResult({
+          success: false,
+          error: noEffectMsg,
+          message: noEffectMsg
+        });
+      }
+      return AgentS.createActionResult({
+        success: true,
+        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) [dpr:${Number(baseResult.dpr || 1).toFixed(2)}] on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${baseResult.targetId || ''}> clicked:[${(baseResult.clickedElements || []).join(',')}] [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}`
+      });
     },
 
     async inputText(index, text, tabId) {
@@ -1934,6 +2392,10 @@ const AgentS = {
 
   async callLLM(messages, settings, useVision = false, screenshot = null) {
     let { provider, apiKey, model, baseUrl } = settings;
+    const configuredTimeout = Number(settings?.llmTimeoutMs);
+    const llmTimeoutMs = Number.isFinite(configuredTimeout)
+      ? Math.min(300000, Math.max(15000, configuredTimeout))
+      : 120000;
 
     // Safeguard: if model is "custom" but customModel exists, use it
     if (model === 'custom' && settings.customModel) {
@@ -2069,15 +2531,24 @@ const AgentS = {
         throw new Error(`Unknown provider: ${provider}`);
     }
 
-    console.log('LLM Request:', { endpoint, provider, model, bodyPreview: { ...body, messages: `[${body.messages?.length || 0} messages]` } });
+    console.log('LLM Request:', {
+      endpoint,
+      provider,
+      model,
+      timeoutMs: llmTimeoutMs,
+      bodyPreview: { ...body, messages: `[${body.messages?.length || 0} messages]` }
+    });
 
     let response;
+    let timeoutId = null;
+    let abortedByTimeout = false;
     try {
       // Create abort controller for this request
       currentAbortController = new AbortController();
-      const timeoutId = setTimeout(() => {
+      timeoutId = setTimeout(() => {
+        abortedByTimeout = true;
         if (currentAbortController) currentAbortController.abort();
-      }, 60000);
+      }, llmTimeoutMs);
 
       response = await fetch(endpoint, {
         method: 'POST',
@@ -2089,10 +2560,14 @@ const AgentS = {
       clearTimeout(timeoutId);
       currentAbortController = null;
     } catch (fetchError) {
+      clearTimeout(timeoutId);
       currentAbortController = null;
       console.error('Fetch error:', fetchError);
       if (fetchError.name === 'AbortError') {
-        throw new Error('Request cancelled or timeout');
+        if (abortedByTimeout) {
+          throw new Error(`Request timed out after ${Math.round(llmTimeoutMs / 1000)}s`);
+        }
+        throw new Error('Request cancelled');
       }
       throw new Error(`Network error: ${fetchError.message}`);
     }
@@ -2607,6 +3082,7 @@ async function runExecutor() {
         response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, exec.settings.useVision, screenshot);
       } catch (llmError) {
         const errText = String(llmError?.message || llmError || '').toLowerCase();
+        const isTimeout = errText.includes('timed out') || errText.includes('timeout');
         const visionLikelyUnsupported = exec.settings.useVision && screenshot && (
           errText.includes('image') ||
           errText.includes('vision') ||
@@ -2614,16 +3090,36 @@ async function runExecutor() {
           errText.includes('image_url') ||
           errText.includes('inline_data')
         );
-        if (!visionLikelyUnsupported) throw llmError;
-
-        exec.eventManager.emit({
-          state: AgentS.ExecutionState.THINKING,
-          actor: AgentS.Actors.SYSTEM,
-          taskId: exec.taskId,
-          step: exec.step,
-          details: { message: 'Vision unsupported by current model/provider. Retrying without image.' }
-        });
-        response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, false, null);
+        if (visionLikelyUnsupported) {
+          exec.eventManager.emit({
+            state: AgentS.ExecutionState.THINKING,
+            actor: AgentS.Actors.SYSTEM,
+            taskId: exec.taskId,
+            step: exec.step,
+            details: { message: 'Vision unsupported by current model/provider. Retrying without image.' }
+          });
+          response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, false, null);
+        } else if (isTimeout && exec.settings.useVision && screenshot) {
+          exec.eventManager.emit({
+            state: AgentS.ExecutionState.THINKING,
+            actor: AgentS.Actors.SYSTEM,
+            taskId: exec.taskId,
+            step: exec.step,
+            details: { message: 'LLM request timed out with screenshot. Retrying without image.' }
+          });
+          response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, false, null);
+        } else if (isTimeout) {
+          exec.eventManager.emit({
+            state: AgentS.ExecutionState.THINKING,
+            actor: AgentS.Actors.SYSTEM,
+            taskId: exec.taskId,
+            step: exec.step,
+            details: { message: 'LLM request timed out. Retrying once.' }
+          });
+          response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, exec.settings.useVision, screenshot);
+        } else {
+          throw llmError;
+        }
       }
       console.log('LLM returned response, length:', response?.length);
 
@@ -3011,14 +3507,9 @@ async function handleScreenshot() {
 }
 
 async function loadSettings() {
-  const defaults = { provider: 'openai', apiKey: '', model: 'gpt-4o', customModel: '', baseUrl: '', useVision: true, autoScroll: true, maxSteps: 100, planningInterval: 3, maxFailures: 3, maxInputTokens: 128000 };
+  const defaults = { provider: 'openai', apiKey: '', model: 'gpt-4o', customModel: '', baseUrl: '', useVision: true, autoScroll: true, maxSteps: 100, planningInterval: 3, maxFailures: 3, maxInputTokens: 128000, llmTimeoutMs: 120000 };
   const { settings } = await chrome.storage.local.get('settings');
   return { ...defaults, ...settings };
 }
 
 console.log('Crab-Agent background service worker loaded');
-
-
-
-
-
