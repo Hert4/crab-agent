@@ -30,7 +30,7 @@ This project runs with plain JavaScript and does not require a build step.
   - OpenRouter
   - Ollama
 - Vision mode (send screenshots to the model).
-- Periodic planner checks based on step intervals.
+- Adaptive planner checks (interval + failure/loop/follow-up triggers).
 - Follow-up interrupt while running: users can send a new instruction during execution.
 - Image attachments in prompts:
   - Up to 4 images per message.
@@ -51,7 +51,7 @@ This project runs with plain JavaScript and does not require a build step.
   - Navigator and Planner system prompts.
   - Browser action execution on tabs.
   - LLM provider API integration.
-  - Step loop control, failure counting, planner interval, cancel/pause/resume handling.
+  - Step loop control, failure counting, adaptive planner triggers, cancel/pause/resume handling.
 
 ### 3.2 `sidepanel.html` and `sidepanel.js`
 
@@ -91,7 +91,7 @@ In the Settings panel:
 - `Base URL`: used for OpenAI Compatible, Ollama, or custom endpoints.
 - `Use Vision`: enable or disable screenshot input.
 - `Max Steps`: max execution steps per task.
-- `Planning Interval`: planner check interval.
+- `Planning Interval`: base planner cadence (planner can run earlier on failures/loops/user updates).
 - `Allowed Domains`, `Blocked Domains`: currently stored in settings.
 
 Runtime default values:
@@ -216,4 +216,3 @@ crab-agent/
 - Search tasks.
 - Delete selected tasks or clear all history.
 - Export backup data before deletion if needed.
-

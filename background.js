@@ -56,6 +56,8 @@ Persona consistency:
 6. User-requested actions like posting comments, sending messages, liking, subscribing are ALLOWED when explicitly requested
 7. For imperative reply/send commands, do not ask repeated setup questions if a conversation is already open; attempt execution first.
 8. If user provides text in quotes, send that exact quoted text verbatim.
+9. Icon and visual cues in the screenshot/SoM are critical for identifying correct elements to click; cross-check with DOM indices.
+10 IMPORTANT: Dropdown value selection usually a non indexable element - use click_at based on screenshot position
 
 # Input Format
 You receive:
@@ -72,10 +74,15 @@ Use only those indexes for UI actions.
 # Set-of-Mark Visual Labels (SoM)
 The screenshot has COLORED BOUNDING BOXES with [index] labels matching the interactive elements.
 
+- When both screenshot and DOM are available, you MUST cross-check BOTH before every click decision.
 - Elements WITH a label in the screenshot -> use click_element with that index (preferred, more accurate).
 - Elements WITHOUT a label (not in DOM) -> use click_at with x,y coordinates (only if no matching index exists).
-- Always prefer click_element over click_at when the element has a visible [index] label.
+- Use click_element ONLY when the target exists in DOM and the matching [index] is visible in screenshot.
+- If screenshot and DOM disagree (wrong location/text/index), do not click blindly; reassess with scroll/wait/retry.
 - The label color and position help you identify the exact element to interact with.
+- CRITICAL NO-DOM RULE: If DOM is missing/empty, or target has no [index] label, you MUST use click_at with pixel coordinates from screenshot/SoM.
+- In NO-DOM situations, NEVER invent/guess an index for click_element or input_text.
+- For text input with NO-DOM/no index: click_at the input area first, then use send_keys to type and submit.
 
 # Response Format (JSON ONLY)
 {
@@ -103,7 +110,7 @@ The screenshot has COLORED BOUNDING BOXES with [index] labels matching the inter
 - go_to_url: {"go_to_url": {"url": "https://example.com"}}
 - go_back: {"go_back": {}}
 - click_element: {"click_element": {"index": 5}}
-- click_at: {"click_at": {"x": 500, "y": 300}} // click at screen coordinates when element has no index or you don't trust the index - use with caution and always check the screenshot for context
+- click_at: {"click_at": {"x": 500, "y": 300}} // REQUIRED when DOM/index is unavailable; use screen pixel coordinates from screenshot/SoM (not index numbers)
 - input_text: {"input_text": {"index": 3, "text": "hello"}}
 - send_keys: {"send_keys": {"keys": "Enter"}}
 - switch_tab: {"switch_tab": {"tab_id": 123}}
@@ -151,6 +158,7 @@ The screenshot has COLORED BOUNDING BOXES with [index] labels matching the inter
    - For video/voice calls: verify a call window actually appeared, not just that you clicked a button
 12. FALLBACK TO click_at:
    - If click_element on an index fails 2+ times with no visual change, use click_at
+   - If DOM is missing/empty OR target has no index, click_at is MANDATORY (not optional fallback)
    - IMPORTANT: x,y coordinates are PIXEL POSITIONS on screen, NOT element indices!
    - Look at the screenshot to VISUALLY estimate where the target element is
    - Use the @(x,y) coordinates shown in DOM list for input elements, e.g. "[450] <div> [EDITABLE INPUT] @(750,820)" means center is at x=750, y=820
@@ -182,6 +190,12 @@ You must act like a real human using a browser:
 4. If you can't find an element, SCROLL to look for it
 5. Read error messages and adapt your approach
 6. Elements may change after each action - always check the current state
+7. Icon and visual cues in the screenshot are critical for identifying correct elements to click; cross-check with DOM indices.
+  - if no matching index label exists in screenshot/SoM, use click_at with coordinates instead of guessing an index.
+  - Prefer click_element when interacting with stable buttons, links, and inputs.
+  - Use click_at for floating elements (dropdown options, date pickers, popovers).
+  - If an element is inside an opened dropdown, use click_at instead of click_element.
+8. IMPORTANT: Dropdown value selection usually a non indexable element - use click_at based on screenshot position
 
 ## INPUT FORMAT
 You receive:
@@ -342,6 +356,10 @@ Rules:
 14. If clicking same element repeatedly doesn't work, try a DIFFERENT element or approach
 15. For messaging with a named recipient, keep conversation focus: confirm selected thread/header matches the target name before typing and before sending
 16. Do not perform browser actions for simple greetings/general questions; respond directly with done.
+17. For click decisions, cross-check BOTH DOM and screenshot/SoM whenever both are available.
+18. Use click_element only when target has a valid DOM index and matching [index] label in screenshot/SoM.
+19. CRITICAL NO-DOM/SOM RULE: if DOM is missing/empty or the target has no index label in screenshot/SoM, use click_at with pixel coordinates; do not guess indices.
+20. For typing when no index exists: click_at input area first, then send_keys.
 </system_instructions>
 `,
 
@@ -369,12 +387,16 @@ Responsibilities:
 7. For messaging tasks with a named recipient, keep next steps focused on the exact target conversation; if uncertain, first re-select the recipient thread
 8. If task asks to send/reply a message, do not mark done until the message is actually sent in UI (typed in message input and submitted).
 9. Response in user language
+10. For click guidance, decide click_element vs click_at by cross-checking DOM indices and screenshot/SoM labels.
+11. Check screenshot for correction action is a must.
 
 CRITICAL: When giving next_steps, be VERY SPECIFIC:
 - Reference exact element indices from the DOM: "Click element [15] which shows <result text>"
 - Describe what the element looks like: "Click the search suggestion that contains <keywords>"
 - If search results appeared, tell which result to click: "Click on the first video result [index 20]"
 - Don't say vague things like "click on the result" - say WHICH result and WHICH element index
+- Explicitly say whether to use click_element or click_at, and base that choice on DOM + screenshot agreement.
+- If no matching index label exists in screenshot/SoM, instruct click_at with coordinates instead of guessing an index.
 
 RESPONSE FORMAT (JSON only):
 {
@@ -497,7 +519,7 @@ Field relationships:
     return message;
   },
 
-  buildPlannerUserMessage(task, pageState, actionHistory, currentStep, maxSteps, tabContext = null, conversationFocus = null) {
+  buildPlannerUserMessage(task, pageState, actionHistory, currentStep, maxSteps, tabContext = null, conversationFocus = null, plannerTrigger = 'interval') {
     const currentTab = tabContext?.currentTab || { id: null, url: pageState.url || '', title: pageState.title || '' };
     const otherTabs = (tabContext?.openTabs || [])
       .filter(tab => tab.id !== currentTab.id)
@@ -510,6 +532,7 @@ Field relationships:
     let message = `<nano_user_request>\n${task}\n</nano_user_request>\n\n`;
     message += `Current tab: {id: ${currentTab.id}, url: ${currentTab.url || ''}, title: ${currentTab.title || ''}}\n`;
     message += `Other available tabs:\n${otherTabs}\n`;
+    message += `Planner trigger: ${plannerTrigger}\n`;
     message += `Step: ${currentStep}/${maxSteps}\n\n`;
     message += `Interactive elements (read-only):\n<nano_untrusted_content>\n`;
     message += `${pageState.textRepresentation || 'No interactive elements found.'}\n`;
@@ -2712,7 +2735,9 @@ async function handleNewTask(task, settings, images = []) {
     conversationFocus: null,
     pendingFollowUps: [],
     interruptRequested: false,
-    interruptAbortPending: false
+    interruptAbortPending: false,
+    lastPlannerStep: 0,
+    lastPlannerReason: ''
   };
 
   eventManager.subscribe('*', (event) => sendToPanel({ type: 'execution_event', ...event }));
@@ -2814,6 +2839,60 @@ function flushPendingFollowUps(exec) {
 }
 
 
+function getPlannerTrigger(exec, lastActionResult, pendingUpdate = null) {
+  if (!exec) return null;
+
+  const lastPlannerStep = Number(exec.lastPlannerStep || 0);
+  const stepsSinceLastPlanner = exec.step - lastPlannerStep;
+  const shouldDebounce = (reason) => {
+    if (!reason) return null;
+    const urgent = new Set(['user_follow_up', 'recover_after_failure', 'near_max_steps']);
+    if (!urgent.has(reason) && exec.lastPlannerReason === reason && stepsSinceLastPlanner <= 1) {
+      return null;
+    }
+    return reason;
+  };
+
+  if (exec.step === 1) return 'initial_alignment';
+  if (pendingUpdate?.hasUpdates) return 'user_follow_up';
+  if (lastActionResult && !lastActionResult.success) return 'recover_after_failure';
+
+  const recent = Array.isArray(exec.actionHistory) ? exec.actionHistory.slice(-4) : [];
+  const recentFailures = recent.filter(entry => entry && entry.success === false);
+  const recentClickFailures = recent.filter(entry =>
+    entry &&
+    (entry.action === 'click_element' || entry.action === 'click_at') &&
+    entry.success === false
+  );
+  const noEffectClicks = recent.filter(entry =>
+    entry &&
+    entry.action === 'click_element' &&
+    entry.success &&
+    /\[effect:none\]/i.test(String(entry.details || ''))
+  ).length;
+
+  let repeatedActionCount = 0;
+  if (recent.length > 0) {
+    const last = recent[recent.length - 1];
+    repeatedActionCount = recent.filter(entry =>
+      entry &&
+      entry.action === last.action &&
+      JSON.stringify(entry.params || {}) === JSON.stringify(last.params || {})
+    ).length;
+  }
+
+  if (recentFailures.length >= 2) return shouldDebounce('failure_cluster');
+  if (recentClickFailures.length >= 2 || noEffectClicks >= 2) return shouldDebounce('click_recovery');
+  if (repeatedActionCount >= 3) return shouldDebounce('loop_guard');
+  if (exec.step >= Math.max(2, exec.maxSteps - 1)) return 'near_max_steps';
+
+  const baseInterval = Math.max(1, Number(exec.planningInterval) || 3);
+  if (stepsSinceLastPlanner >= baseInterval) return 'interval';
+
+  return null;
+}
+
+
 async function runExecutor() {
   const exec = currentExecution;
   if (!exec) return;
@@ -2863,8 +2942,11 @@ async function runExecutor() {
     exec.step++;
     exec.eventManager.emit({ state: AgentS.ExecutionState.STEP_START, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, maxSteps: exec.maxSteps });
 
-    if (exec.step > 1 && exec.step % exec.planningInterval === 0) {
-      const planResult = await runPlanner();
+    const plannerTrigger = getPlannerTrigger(exec, lastActionResult, pendingUpdate);
+    if (plannerTrigger) {
+      const planResult = await runPlanner(plannerTrigger);
+      exec.lastPlannerStep = exec.step;
+      exec.lastPlannerReason = plannerTrigger;
       if (planResult?.done) {
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_OK, actor: AgentS.Actors.PLANNER, taskId: exec.taskId, details: { finalAnswer: planResult.final_answer || 'Task completed' } });
         exec.cancelled = true;
@@ -3182,6 +3264,80 @@ async function runExecutor() {
         exec.memory = (exec.memory || '') + `\n[WARNING: You've tried "${actionName}" ${sameActionCount + 1} times with same params. This approach isn't working. Try a DIFFERENT action or element.]`;
       }
 
+      // Cyclic click pattern detection: detect when clicking different elements in a repeating cycle
+      if (actionName === 'click_element' || actionName === 'click_at') {
+        const recentClicks = exec.actionHistory.slice(-12).filter(a =>
+          a.action === 'click_element' || a.action === 'click_at'
+        );
+        if (recentClicks.length >= 6) {
+          // Extract click targets (index for click_element, coords for click_at)
+          const getClickTarget = (entry) => {
+            if (entry.action === 'click_element') {
+              return `el:${entry.params?.index}`;
+            }
+            return `at:${entry.params?.x},${entry.params?.y}`;
+          };
+          const targets = recentClicks.map(getClickTarget);
+
+          // Check for cyclic pattern of 2-4 elements repeating
+          let foundCycle = false;
+          let cycleLen = 0;
+          for (let len = 2; len <= 4; len++) {
+            if (targets.length >= len * 2) {
+              const lastCycle = targets.slice(-len);
+              const prevCycle = targets.slice(-len * 2, -len);
+              if (lastCycle.join(',') === prevCycle.join(',')) {
+                foundCycle = true;
+                cycleLen = len;
+                break;
+              }
+            }
+          }
+
+          if (foundCycle) {
+            const cycleElements = targets.slice(-cycleLen).join(' → ');
+            const blockedReason = `CYCLIC CLICK LOOP DETECTED: You are clicking the same ${cycleLen} elements in a cycle (${cycleElements}). Clicking repeatedly will NOT complete the task. For creating/naming items, you MUST use input_text to TYPE the name in an input field, not click buttons. Find an input/text field and use input_text or send_keys action.`;
+            console.warn(`[Stuck] ${blockedReason}`);
+            exec.memory = (exec.memory || '') + `\n[CRITICAL: ${blockedReason}]`;
+
+            // Block this click and force model to reconsider
+            const blockResult = AgentS.createActionResult({
+              success: false,
+              error: blockedReason,
+              message: blockedReason
+            });
+            exec.actionHistory.push({
+              action: actionName,
+              params: action[actionName],
+              success: false,
+              details: blockedReason
+            });
+            exec.eventManager.emit({
+              state: AgentS.ExecutionState.ACT_FAIL,
+              actor: AgentS.Actors.NAVIGATOR,
+              taskId: exec.taskId,
+              step: exec.step,
+              details: { action: actionName, success: false, error: blockedReason }
+            });
+            lastActionResult = blockResult;
+            exec.consecutiveFailures++;
+            if (exec.consecutiveFailures >= exec.maxFailures) {
+              await AgentS.removeHighlights(exec.tabId);
+              sendToPanel({
+                type: 'execution_event',
+                state: AgentS.ExecutionState.TASK_FAIL,
+                actor: AgentS.Actors.SYSTEM,
+                taskId: exec.taskId,
+                details: { error: blockedReason }
+              });
+              exec.cancelled = true;
+              return;
+            }
+            continue; // Skip to next step
+          }
+        }
+      }
+
       // Enhanced stuck detection: switch_tab loop or click failures after switch
       const last5Actions = exec.actionHistory.slice(-5);
       const switchCount = last5Actions.filter(a => a.action === 'switch_tab').length;
@@ -3385,10 +3541,16 @@ async function runExecutor() {
   }
 }
 
-async function runPlanner() {
+async function runPlanner(triggerReason = 'interval') {
   const exec = currentExecution;
   if (!exec) return null;
-  exec.eventManager.emit({ state: AgentS.ExecutionState.PLANNING, actor: AgentS.Actors.PLANNER, taskId: exec.taskId, step: exec.step, details: { message: 'Evaluating...' } });
+  exec.eventManager.emit({
+    state: AgentS.ExecutionState.PLANNING,
+    actor: AgentS.Actors.PLANNER,
+    taskId: exec.taskId,
+    step: exec.step,
+    details: { message: `Evaluating... (${triggerReason})` }
+  });
 
   try {
     const pageState = await AgentS.buildDomTree(exec.tabId, { highlightElements: false, viewportOnly: true });
@@ -3418,7 +3580,8 @@ async function runPlanner() {
       exec.step,
       exec.maxSteps,
       tabContext,
-      exec.conversationFocus
+      exec.conversationFocus,
+      triggerReason
     );
     if (plannerScreenshot) {
       userContent = `[Screenshot attached for visual verification]\n\n${userContent}`;
