@@ -229,6 +229,20 @@
             <div class="toggle-switch active" id="autoScrollToggle"></div>
           </div>
 
+          <div class="settings-toggle">
+            <div>
+              <div class="settings-label">Enable Thinking</div>
+              <div class="settings-description">Request Claude thinking mode when supported by your OpenAI-compatible backend</div>
+            </div>
+            <div class="toggle-switch" id="thinkingToggle"></div>
+          </div>
+
+          <div class="settings-item">
+            <label class="settings-label">Thinking Budget Tokens</label>
+            <input type="number" class="settings-input" id="thinkingBudgetInput" value="1024" min="1024" max="3072">
+            <span class="settings-description">Used for Claude thinking budget. Effective when Enable Thinking is ON.</span>
+          </div>
+
           <div class="settings-item">
             <label class="settings-label">Max Steps</label>
             <input type="number" class="settings-input" id="maxStepsInput" value="100" min="1" max="500">

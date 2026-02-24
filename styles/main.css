@@ -428,6 +428,30 @@ body {
   border-bottom-left-radius: 6px;
 }
 
+.message.debug-image-message {
+  max-width: 96%;
+  background: rgba(33, 60, 32, 0.08);
+  border-color: rgba(33, 60, 32, 0.22);
+}
+
+.message.debug-image-message .message-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.message.debug-image-message .message-attachments {
+  margin-top: 0;
+  grid-template-columns: minmax(120px, 1fr);
+}
+
+.message.debug-image-message .message-attachment-image {
+  height: auto;
+  max-height: 320px;
+  object-fit: contain;
+  background: #f3f6f3;
+}
+
 .message.system {
   align-self: center;
   max-width: 96%;

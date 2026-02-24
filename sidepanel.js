@@ -164,6 +164,8 @@ const elements = {
   baseUrlItem: document.getElementById('baseUrlItem'),
   visionToggle: document.getElementById('visionToggle'),
   autoScrollToggle: document.getElementById('autoScrollToggle'),
+  thinkingToggle: document.getElementById('thinkingToggle'),
+  thinkingBudgetInput: document.getElementById('thinkingBudgetInput'),
   maxStepsInput: document.getElementById('maxStepsInput'),
   planningIntervalInput: document.getElementById('planningIntervalInput'),
   allowedDomainsInput: document.getElementById('allowedDomainsInput'),
@@ -212,6 +214,8 @@ const modelsByProvider = {
     { id: 'custom', name: 'Custom Model' },
     { id: 'gpt-5.2', name: 'GPT-5.2' },
     { id: 'gpt-5', name: 'GPT-5' },
+    { id: 'claude-sonnet-4-5-20250514', name: 'Claude 4.5 Sonnet' },
+    { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
     { id: 'gpt-4o', name: 'GPT-4o' },
     { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
     { id: 'llama-3.1-70b', name: 'Llama 3.1 70B' },
@@ -415,6 +419,15 @@ function handleExecutionEvent(event) {
       notifyCrabActivity('thinking', details?.message || 'thinking');
       break;
 
+    case 'DEBUG_IMAGE':
+      if (details?.message) {
+        addSystemMessage(`[Vision Debug] ${details.message}`, 'info', true);
+      }
+      if (details?.image) {
+        addDebugImageMessage(details?.message || 'Debug image sent to model input', details.image, false);
+      }
+      break;
+
     case 'PLANNING':
       setExecutionText('Evaluating progress...');
       notifyCrabActivity('curious', details?.message || 'planning');
@@ -544,6 +557,21 @@ function setupEventListeners() {
   elements.autoScrollToggle.addEventListener('click', () => {
     elements.autoScrollToggle.classList.toggle('active');
     settings.autoScroll = elements.autoScrollToggle.classList.contains('active');
+    saveSettings();
+  });
+
+  elements.thinkingToggle.addEventListener('click', () => {
+    elements.thinkingToggle.classList.toggle('active');
+    settings.enableThinking = elements.thinkingToggle.classList.contains('active');
+    updateThinkingControls();
+    saveSettings();
+  });
+
+  elements.thinkingBudgetInput.addEventListener('change', () => {
+    const parsed = parseInt(elements.thinkingBudgetInput.value, 10);
+    const normalized = Number.isFinite(parsed) ? Math.min(3072, Math.max(1024, parsed)) : 1024;
+    elements.thinkingBudgetInput.value = normalized;
+    settings.thinkingBudgetTokens = normalized;
     saveSettings();
   });
 
@@ -700,6 +728,8 @@ function openTask(task) {
       addSystemMessage(msg.content, msg.type || 'info', false);
     } else if (msg.role === 'action') {
       addActionMessage(msg.action, msg.params, msg.status, msg.message, false);
+    } else if (msg.role === 'debug_image') {
+      addDebugImageMessage(msg.content, msg.image, false);
     }
   }
 
@@ -851,6 +881,47 @@ function addSystemMessage(content, type = 'info', save = true) {
     } else {
       notifyCrabActivity('user');
     }
+  }
+}
+
+/**
+ * Add a debug image message to chat
+ */
+function addDebugImageMessage(content, image, save = false) {
+  if (!image) return;
+
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'message assistant debug-image-message';
+
+  if (content) {
+    const textDiv = document.createElement('div');
+    textDiv.className = 'message-text';
+    textDiv.textContent = content;
+    messageDiv.appendChild(textDiv);
+  }
+
+  const imageContainer = document.createElement('div');
+  imageContainer.className = 'message-attachments';
+
+  const imageEl = document.createElement('img');
+  imageEl.className = 'message-attachment-image';
+  imageEl.src = image;
+  imageEl.alt = 'Debug image sent to model';
+  imageEl.loading = 'lazy';
+  imageContainer.appendChild(imageEl);
+
+  messageDiv.appendChild(imageContainer);
+  triggerAnimation(messageDiv, 'message-enter');
+  elements.chatMessages.appendChild(messageDiv);
+  scrollToBottom();
+
+  if (save && currentTask) {
+    currentTask.messages.push({
+      role: 'debug_image',
+      content,
+      image,
+      timestamp: Date.now()
+    });
   }
 }
 
@@ -1346,6 +1417,8 @@ async function loadSettings() {
     baseUrl: '',
     useVision: true,
     autoScroll: true,
+    enableThinking: false,
+    thinkingBudgetTokens: 1024,
     maxSteps: 100,
     planningInterval: 3,
     allowedDomains: '',
@@ -1367,6 +1440,11 @@ async function saveSettings() {
   settings.baseUrl = elements.baseUrlInput.value;
   settings.useVision = elements.visionToggle.classList.contains('active');
   settings.autoScroll = elements.autoScrollToggle.classList.contains('active');
+  settings.enableThinking = elements.thinkingToggle.classList.contains('active');
+  const thinkingBudget = parseInt(elements.thinkingBudgetInput.value, 10);
+  settings.thinkingBudgetTokens = Number.isFinite(thinkingBudget)
+    ? Math.min(3072, Math.max(1024, thinkingBudget))
+    : 1024;
   settings.maxSteps = parseInt(elements.maxStepsInput.value) || 100;
   settings.planningInterval = parseInt(elements.planningIntervalInput.value) || 3;
   settings.allowedDomains = elements.allowedDomainsInput.value;
@@ -1389,6 +1467,11 @@ function updateSettingsUI() {
   }
   elements.visionToggle.classList.toggle('active', settings.useVision);
   elements.autoScrollToggle.classList.toggle('active', settings.autoScroll);
+  elements.thinkingToggle.classList.toggle('active', !!settings.enableThinking);
+  elements.thinkingBudgetInput.value = Number.isFinite(Number(settings.thinkingBudgetTokens))
+    ? Math.min(3072, Math.max(1024, Number(settings.thinkingBudgetTokens)))
+    : 1024;
+  updateThinkingControls();
   elements.maxStepsInput.value = settings.maxSteps;
   elements.planningIntervalInput.value = settings.planningInterval;
   elements.allowedDomainsInput.value = settings.allowedDomains || '';
@@ -1417,6 +1500,13 @@ function updateModelOptions() {
   elements.modelSelect.value = settings.model;
   updateModelButton();
   updateCustomModelVisibility();
+}
+
+function updateThinkingControls() {
+  const enabled = !!settings.enableThinking;
+  if (elements.thinkingBudgetInput) {
+    elements.thinkingBudgetInput.disabled = !enabled;
+  }
 }
 
 /**
