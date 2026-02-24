@@ -53,7 +53,7 @@ Persona consistency:
 6. User-requested actions like posting comments, sending messages, liking, subscribing are ALLOWED when explicitly requested
 7. For imperative reply/send commands, do not ask repeated setup questions if a conversation is already open; attempt execution first.
 8. If user provides text in quotes, send that exact quoted text verbatim.
-9 IMPORTANT: Dropdown value selection usually a non indexable element - use click_at based on screenshot position
+9. IMPORTANT: Dropdown value selection usually a non indexable element - use click_at based on screenshot position
 
 # Task Format
 You will receive:
@@ -83,6 +83,11 @@ You will receive:
     - DO NOT click.
     - Scroll or zoom mentally and re-evaluate.
     - If still ambiguous, choose the one whose visual symbol EXACTLY matches the user goal.
+- For DROPDOWN MENUS with multiple items:
+  1. Count items visually from TOP to BOTTOM in the screenshot
+  2. Check [item N/M] ordinal in DOM to confirm position (1 = top, highest number = bottom)
+  3. Verify y-coordinate: items near BOTTOM have LARGER y values
+  4. If target appears at bottom of menu, it should have largest y and highest item number
 
 NEVER decide based only on:
 - Text label assumption
@@ -115,15 +120,32 @@ NEVER decide based only on:
 6. Before outputting any click action, mentally simulate whether the screenshot visually changes after that click. If the expected UI change is unclear, reassess target.
 7. PRE-DONE VERIFICATION: Before using done, replay the ENTIRE user request and check your memory checklist - are ALL steps marked [✓]? If user said "do X WITH Y", did you actually do BOTH X and Y? If any step is [ ] pending, complete it first. Searching/typing a name is NOT the same as selecting/clicking it.
 8. SUBMIT BUTTON RULE: Before clicking submit/add/create/save buttons, check your memory - if ANY step is [ ] pending, you MUST complete it FIRST. Do NOT click submit with pending steps. Look at screenshot to VISUALLY confirm selections (checkmarks, highlights, selected state) before submitting.
+9. LIST SELECTION: To select items in lists, click the ROW TEXT directly (not empty checkbox elements). If row click doesn't work, use click_at with coordinates left of the text.
+10. MENU ITEM SELECTION: When clicking items in dropdown menus:
+   - Check the [item N/M] ordinal in DOM - it shows position from top (item 1 = top, item 7 = bottom)
+   - Cross-check with screenshot: count menu items from top to verify target position
+   - Use y-coordinate in @(x,y): HIGHER y = LOWER on screen. If target is near bottom of menu, y should be larger.
+11. NESTED/CASCADING MENUS - USE KEYBOARD NAVIGATION:
+   - Click coordinates often WRONG for menu items - use KEYBOARD instead:
+     1. Click to open the menu (File)
+     2. send_keys: "ArrowDown" to move down menu items
+     3. send_keys: "ArrowRight" to open submenu (when on "New")
+     4. send_keys: "ArrowDown" to navigate submenu items
+     5. send_keys: "Enter" to select the highlighted item
+   - Example for "File > New > Python File":
+     - Click File menu
+     - ArrowDown until New is highlighted, then ArrowRight
+     - ArrowDown 6 times (Python File is 7th item), then Enter
+   - This is MORE RELIABLE than click_at for menus
 
 # Available Actions
 - search_google: {"search_google": {"query": "search terms"}}
 - go_to_url: {"go_to_url": {"url": "https://example.com"}}
 - go_back: {"go_back": {}}
-- click_element: {"click_element": {"index": 5}}
-- click_at: {"click_at": {"x": 500, "y": 300}} // REQUIRED when DOM/index is unavailable; use screen pixel coordinates from screenshot (not index numbers)
+- click_element: {"click_element": {"index": 5}} // low priority 
+- click_at: {"click_at": {"x": 500, "y": 300}} // REQUIRED when DOM/index is unavailable or hard to use click_element, high priority; use screen pixel coordinates from screenshot (not index numbers)
 - input_text: {"input_text": {"index": 3, "text": "hello"}}
-- send_keys: {"send_keys": {"keys": "Enter"}}
+- send_keys: {"send_keys": {"keys": "Enter"}} // Also supports: ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Escape, Tab
 - switch_tab: {"switch_tab": {"tab_id": 123}}
 - open_tab: {"open_tab": {"url": "https://example.com"}}
 - close_tab: {"close_tab": {"tab_id": 123}}
@@ -653,6 +675,8 @@ const AgentS = {
             params.y,
             tabId
           );
+        case 'click_text':
+          return await AgentS.actions.clickText(params.text, tabId);
         case 'input_text':
           return await AgentS.actions.inputText(params.index, params.text, tabId);
         case 'send_keys':
@@ -848,6 +872,10 @@ const AgentS = {
             return { success: false, error: 'DOM not built. Use click_at with PIXEL coordinates from screenshot (NOT index numbers).' };
           }
 
+          // Find expected element info from DOM state
+          const expectedInfo = domState.elements?.find(e => e.index === idx);
+          const expectedText = expectedInfo?.text || '';
+
           let el = domState.elementMap?.[idx];
           if (!el) {
             domState = rebuildDom() || domState;
@@ -863,6 +891,39 @@ const AgentS = {
               error: `Element ${idx} not found on ${pageUrl} (max index: ${maxIdx}). The page DOM has changed. DO NOT retry with same index. Look at the FRESH element list in this step and find the correct element by its text/attributes, not by memorized index.`
             };
           }
+
+          // VALIDATION: Verify element text matches expected
+          const actualText = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+          const cleanExpected = expectedText.replace(/\[.*?\]/g, '').replace(/"/g, '').trim();
+          const textMatch = cleanExpected && actualText.toLowerCase().includes(cleanExpected.toLowerCase().slice(0, 20));
+
+          // Debug logging
+          const elRect = el.getBoundingClientRect();
+          console.log(`[clickElement] idx=${idx} expected="${cleanExpected}" actual="${actualText.slice(0,40)}" rect=(${Math.round(elRect.x)},${Math.round(elRect.y)},${Math.round(elRect.width)}x${Math.round(elRect.height)}) match=${textMatch}`);
+
+          // If text doesn't match, try to find correct element by searching
+          if (cleanExpected && !textMatch && cleanExpected.length > 2) {
+            // Search for element with matching text
+            const allElements = document.querySelectorAll('[role="menuitem"], [role="option"], li, button, a');
+            let foundCorrect = false;
+            for (const candidate of allElements) {
+              const candidateText = (candidate.innerText || candidate.textContent || '').replace(/\s+/g, ' ').trim();
+              if (candidateText.toLowerCase() === cleanExpected.toLowerCase() ||
+                  (candidateText.toLowerCase().includes(cleanExpected.toLowerCase()) && candidateText.length < cleanExpected.length + 20)) {
+                const rect = candidate.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  console.warn(`[clickElement] Text mismatch! Expected "${cleanExpected}" but element ${idx} has "${actualText.slice(0,30)}". Found correct element at (${Math.round(rect.x)},${Math.round(rect.y)}), using it instead.`);
+                  el = candidate;
+                  foundCorrect = true;
+                  break;
+                }
+              }
+            }
+            if (!foundCorrect) {
+              console.warn(`[clickElement] Text mismatch but couldn't find correct element for "${cleanExpected}"`);
+            }
+          }
+
           const targetEl = resolveActionTarget(el);
 
           ensureMutationObserver();
@@ -910,7 +971,17 @@ const AgentS = {
           const mutationDelta = Math.max(0, (window.__agentSMutationCount || 0) - baseline.mutationCount);
 
           const tag = (targetEl.tagName || '').toLowerCase();
-          const text = (targetEl.innerText || targetEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+          let text = (targetEl.innerText || targetEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+          // If element has no text, get context from parent row (helps identify which row was clicked)
+          if (!text) {
+            const parentRow = targetEl.closest('[class*="item"], [class*="row"], [class*="list"], [role="listitem"], [role="option"], [class*="member"], [class*="user"], [class*="contact"]');
+            if (parentRow && parentRow !== targetEl) {
+              const parentText = (parentRow.innerText || parentRow.textContent || '').replace(/\s+/g, ' ').trim();
+              if (parentText) {
+                text = `[row: ${parentText.slice(0, 60)}]`;
+              }
+            }
+          }
           const href = tag === 'a'
             ? String(targetEl.getAttribute?.('href') || targetEl.href || '')
             : '';
@@ -1077,7 +1148,8 @@ const AgentS = {
       const effectLabel = effectBits.join('+') || 'none';
       const isAnchorLike = String(baseResult.tag || '').toLowerCase() === 'a';
       const anchorHasStrongEffect = effectBits.includes('url') || effectBits.includes('state');
-      const domOnlyLowSignal = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      // Disabled: was causing false negatives - any DOM change is valid
+      const domOnlyLowSignal = false;
       await new Promise(r => setTimeout(r, 350));
       if (isAnchorLike && !anchorHasStrongEffect) {
         const href = String(baseResult.href || '').trim();
@@ -1213,9 +1285,9 @@ const AgentS = {
           const vh = window.innerHeight;
           const dpr = window.devicePixelRatio || 1;
           const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-          // Scale coordinates by DPR since model sees screenshot at DPR resolution
-          const baseX = clamp(Math.round(clickX / dpr), 0, Math.max(0, vw - 1));
-          const baseY = clamp(Math.round(clickY / dpr), 0, Math.max(0, vh - 1));
+          // Don't scale - screenshot and DOM coordinates are already in CSS pixels
+          const baseX = clamp(Math.round(clickX), 0, Math.max(0, vw - 1));
+          const baseY = clamp(Math.round(clickY), 0, Math.max(0, vh - 1));
 
           // Get all elements at this point (stacking order, topmost first)
           const elementsAtPoint = document.elementsFromPoint(baseX, baseY);
@@ -1298,7 +1370,17 @@ const AgentS = {
           const mutationDelta = Math.max(0, (window.__agentSMutationCount || 0) - baseline.mutationCount);
 
           const tagName = (target.tagName || '').toLowerCase();
-          const text = (target.innerText || target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+          let text = (target.innerText || target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+          // If element has no text, get context from parent row
+          if (!text) {
+            const parentRow = target.closest('[class*="item"], [class*="row"], [class*="list"], [role="listitem"], [role="option"], [class*="member"], [class*="user"], [class*="contact"]');
+            if (parentRow && parentRow !== target) {
+              const parentText = (parentRow.innerText || parentRow.textContent || '').replace(/\s+/g, ' ').trim();
+              if (parentText) {
+                text = `[row: ${parentText.slice(0, 60)}]`;
+              }
+            }
+          }
           const ariaLabel = target.getAttribute?.('aria-label') || '';
           const href = tagName === 'a'
             ? String(target.getAttribute?.('href') || target.href || '')
@@ -1413,7 +1495,8 @@ const AgentS = {
       const effectLabel = effectBits.join('+') || 'none';
       const isAnchorLike = String(baseResult.targetTag || '').toLowerCase() === 'a';
       const anchorHasStrongEffect = effectBits.includes('url') || effectBits.includes('state');
-      const domOnlyLowSignal = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      // Disabled: was causing false negatives - any DOM change is valid
+      const domOnlyLowSignal = false;
       await new Promise(r => setTimeout(r, 250));
       if (isAnchorLike && !anchorHasStrongEffect) {
         const href = String(baseResult.href || '').trim();
@@ -1459,9 +1542,19 @@ const AgentS = {
           message: noEffectMsg
         });
       }
+      // Detect if we clicked on a CONTAINER instead of a menu item
+      const targetId = baseResult.targetId || '';
+      const targetTag = baseResult.targetTag || '';
+      let containerWarning = '';
+      const isLikelyContainer =
+        /menu(?!item)|submenu|dropdown|content|wrapper|container/i.test(targetId) ||
+        ((targetTag === 'ul' || targetTag === 'nav') && !targetId.includes('item'));
+      if (isLikelyContainer) {
+        containerWarning = ' [WARNING: Clicked on CONTAINER, not menu item. Use coordinates of the specific ITEM text]';
+      }
       return AgentS.createActionResult({
         success: true,
-        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) [dpr:${Number(baseResult.dpr || 1).toFixed(2)}] on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${baseResult.targetId || ''}> clicked:[${(baseResult.clickedElements || []).join(',')}] [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}`
+        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${targetId}> clicked:[${(baseResult.clickedElements || []).join(',')}] [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${containerWarning}`
       });
     },
 
@@ -1739,13 +1832,53 @@ const AgentS = {
         'Tab': { key: 'Tab', code: 'Tab', keyCode: 9 },
         'Escape': { key: 'Escape', code: 'Escape', keyCode: 27 },
         'ArrowUp': { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
-        'ArrowDown': { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 }
+        'ArrowDown': { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+        'ArrowLeft': { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+        'ArrowRight': { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+        'Backspace': { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+        'Delete': { key: 'Delete', code: 'Delete', keyCode: 46 },
+        'Home': { key: 'Home', code: 'Home', keyCode: 36 },
+        'End': { key: 'End', code: 'End', keyCode: 35 },
+        'PageUp': { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+        'PageDown': { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+        'Space': { key: ' ', code: 'Space', keyCode: 32 },
+        'a': { key: 'a', code: 'KeyA', keyCode: 65 },
+        'c': { key: 'c', code: 'KeyC', keyCode: 67 },
+        'v': { key: 'v', code: 'KeyV', keyCode: 86 },
+        'x': { key: 'x', code: 'KeyX', keyCode: 88 },
+        'z': { key: 'z', code: 'KeyZ', keyCode: 90 },
+        's': { key: 's', code: 'KeyS', keyCode: 83 },
+        'f': { key: 'f', code: 'KeyF', keyCode: 70 }
       };
       const safeKeys = String(keys || '');
 
+      // Parse modifier combinations like "Shift+Enter", "Control+a", "Ctrl+Shift+s"
+      const parseKeyCombo = (keyStr) => {
+        const parts = keyStr.split('+');
+        const modifiers = { shiftKey: false, ctrlKey: false, altKey: false, metaKey: false };
+        let mainKey = null;
+
+        for (const part of parts) {
+          const lower = part.toLowerCase();
+          if (lower === 'shift') modifiers.shiftKey = true;
+          else if (lower === 'control' || lower === 'ctrl') modifiers.ctrlKey = true;
+          else if (lower === 'alt') modifiers.altKey = true;
+          else if (lower === 'meta' || lower === 'cmd' || lower === 'command') modifiers.metaKey = true;
+          else mainKey = part;
+        }
+
+        return { modifiers, mainKey };
+      };
+
+      const { modifiers, mainKey } = parseKeyCombo(safeKeys);
+      const hasModifiers = modifiers.shiftKey || modifiers.ctrlKey || modifiers.altKey || modifiers.metaKey;
+      // Ensure keyInfo is null (not undefined) for serialization
+      const keyInfo = mainKey ? (keyMap[mainKey] || keyMap[mainKey.toLowerCase()] || null) : null;
+      const isKeyCombo = hasModifiers && !!keyInfo;
+
       const result = await chrome.scripting.executeScript({
         target: { tabId },
-        func: async (keysStr, keyMapping) => {
+        func: async (keysStr, keyMapping, parsedModifiers, parsedKeyInfo, isCombo) => {
           const normalize = value => (value == null ? '' : String(value));
           const disabledInputTypes = new Set(['hidden', 'button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image']);
 
@@ -1847,6 +1980,40 @@ const AgentS = {
             return false;
           };
 
+          // Fallback for terminals (xterm.js) - dispatch keyboard events char by char
+          const typeViaKeyboardEvents = (el, text) => {
+            if (!el) return false;
+            el.focus();
+            for (const char of text) {
+              const keyCode = char.charCodeAt(0);
+              const eventInit = {
+                key: char,
+                code: `Key${char.toUpperCase()}`,
+                keyCode: keyCode,
+                charCode: keyCode,
+                which: keyCode,
+                bubbles: true,
+                cancelable: true
+              };
+              el.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+              el.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+              // Also dispatch input event for some frameworks
+              el.dispatchEvent(new InputEvent('input', { data: char, inputType: 'insertText', bubbles: true }));
+              el.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+            }
+            return true;
+          };
+
+          // Check if we're in a terminal environment (xterm.js, JupyterLab terminal)
+          const isTerminalContext = () => {
+            return !!(
+              document.querySelector('.xterm') ||
+              document.querySelector('.jp-Terminal') ||
+              document.querySelector('[data-term]') ||
+              document.querySelector('.terminal')
+            );
+          };
+
           const findEditableTarget = () => {
             const deepActive = getDeepActiveElement();
             if (isEditable(deepActive)) return deepActive;
@@ -1898,8 +2065,9 @@ const AgentS = {
             return { text, childCount, inputCount };
           };
 
-          const keyInfo = keyMapping[keysStr] || null;
-          const isSpecialKey = !!keyInfo;
+          // Use parsed key info from args if available (for combinations), else fallback to mapping
+          const keyInfo = parsedKeyInfo || keyMapping[keysStr] || null;
+          const isSpecialKey = !!keyInfo || isCombo;
           const target = findEditableTarget() || getDeepActiveElement() || document.body;
           if (!target) return { success: false, error: 'No active target found to send keys.' };
 
@@ -1922,26 +2090,48 @@ const AgentS = {
             // ignore observer failures
           }
 
-          const dispatchKey = (el, info) => {
+          const dispatchKey = (el, info, mods = {}) => {
             const eventInit = {
               key: info.key,
               code: info.code,
               keyCode: info.keyCode,
               which: info.keyCode,
               bubbles: true,
-              cancelable: true
+              cancelable: true,
+              shiftKey: mods.shiftKey || false,
+              ctrlKey: mods.ctrlKey || false,
+              altKey: mods.altKey || false,
+              metaKey: mods.metaKey || false
             };
             el.dispatchEvent(new KeyboardEvent('keydown', eventInit));
             el.dispatchEvent(new KeyboardEvent('keypress', eventInit));
             el.dispatchEvent(new KeyboardEvent('keyup', eventInit));
           };
 
-          if (isSpecialKey) {
+          if (isSpecialKey && keyInfo) {
             if (target && typeof target.focus === 'function') target.focus();
-            dispatchKey(target, keyInfo);
-          } else if (!appendText(target, keysStr)) {
-            observer.disconnect();
-            return { success: false, error: `Cannot type "${keysStr}" because active target is not editable.` };
+            dispatchKey(target, keyInfo, parsedModifiers || {});
+          } else {
+            // Try standard input methods first
+            let typed = appendText(target, keysStr);
+
+            // If standard method failed OR we're in a terminal, also try keyboard events
+            if (!typed || isTerminalContext()) {
+              // For terminals, find the actual terminal input element
+              const terminalInput = document.querySelector('.xterm-helper-textarea') ||
+                                    document.querySelector('.jp-Terminal textarea') ||
+                                    document.querySelector('.terminal textarea') ||
+                                    document.activeElement;
+              if (terminalInput) {
+                typeViaKeyboardEvents(terminalInput, keysStr);
+                typed = true; // Assume success for terminals
+              }
+            }
+
+            if (!typed) {
+              observer.disconnect();
+              return { success: false, error: `Cannot type "${keysStr}" because active target is not editable.` };
+            }
           }
 
           await new Promise(resolve => setTimeout(resolve, isSpecialKey ? 350 : 180));
@@ -1991,9 +2181,56 @@ const AgentS = {
 
           return { success: true, message: `Sent keys: ${keysStr}` };
         },
-        args: [safeKeys, keyMap]
+        args: [safeKeys, keyMap, modifiers, keyInfo, isKeyCombo]
       });
-      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'send_keys script failed' });
+
+      const scriptResult = result[0]?.result;
+
+      // If DOM-based typing failed or might have failed (for terminals), try CDP Input.insertText
+      if (!scriptResult?.success || scriptResult?.message?.includes('terminal')) {
+        try {
+          const target = { tabId };
+          let attachedByAgent = false;
+          try {
+            await chrome.debugger.attach(target, '1.3');
+            attachedByAgent = true;
+          } catch (e) {
+            // Already attached, continue
+          }
+
+          // For special keys, use Input.dispatchKeyEvent
+          if (isKeyCombo && keyInfo) {
+            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+              type: 'keyDown',
+              key: keyInfo.key,
+              code: keyInfo.code,
+              windowsVirtualKeyCode: keyInfo.keyCode,
+              modifiers: (modifiers.shiftKey ? 8 : 0) | (modifiers.ctrlKey ? 2 : 0) | (modifiers.altKey ? 1 : 0) | (modifiers.metaKey ? 4 : 0)
+            });
+            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+              type: 'keyUp',
+              key: keyInfo.key,
+              code: keyInfo.code,
+              windowsVirtualKeyCode: keyInfo.keyCode
+            });
+          } else {
+            // For regular text, use Input.insertText (best for terminals)
+            await chrome.debugger.sendCommand(target, 'Input.insertText', {
+              text: safeKeys
+            });
+          }
+
+          if (attachedByAgent) {
+            try { await chrome.debugger.detach(target); } catch (e) {}
+          }
+          return AgentS.createActionResult({ success: true, message: `Typed (CDP): ${safeKeys}` });
+        } catch (cdpError) {
+          // CDP failed, return original script result
+          console.warn('[send_keys] CDP fallback failed:', cdpError);
+        }
+      }
+
+      return AgentS.createActionResult(scriptResult || { success: false, error: 'send_keys script failed' });
     },
 
     async switchTab(tabId) {
@@ -2136,6 +2373,89 @@ const AgentS = {
       return AgentS.createActionResult({
         success: result[0]?.result || false,
         message: result[0]?.result ? `Found: ${text}` : `Not found: ${text}`
+      });
+    },
+
+    async clickText(searchText, tabId) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (text) => {
+          const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+          const searchNorm = normalizeText(text);
+
+          // Find all visible elements that might contain the text
+          const candidates = [];
+          const allElements = document.querySelectorAll('li, button, a, div, span, [role="menuitem"], [role="option"], [role="button"], [role="tab"]');
+
+          for (const el of allElements) {
+            const elText = normalizeText(el.innerText || el.textContent);
+            if (elText === searchNorm || (elText.includes(searchNorm) && elText.length < searchNorm.length + 20)) {
+              const rect = el.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.top < window.innerHeight) {
+                candidates.push({ el, rect, textLen: elText.length });
+              }
+            }
+          }
+
+          if (candidates.length === 0) {
+            return { success: false, error: `No visible element with text "${text}"` };
+          }
+
+          // Prefer shortest text (most specific match)
+          candidates.sort((a, b) => a.textLen - b.textLen);
+          const target = candidates[0].el;
+          const rect = candidates[0].rect;
+          const clickX = Math.round(rect.x + rect.width / 2);
+          const clickY = Math.round(rect.y + rect.height / 2);
+
+          // DEBUG: Check what element is actually at those coordinates
+          const elementAtPoint = document.elementFromPoint(clickX, clickY);
+          const elementAtPointText = (elementAtPoint?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 30);
+          const coordMismatch = elementAtPoint !== target && !target.contains(elementAtPoint) && !elementAtPoint?.contains(target);
+
+          target.scrollIntoView({ behavior: 'auto', block: 'center' });
+          await sleep(100);
+
+          // IMPORTANT: Use direct click on element, NOT coordinate-based click
+          // This avoids coordinate translation issues in remote environments
+          target.focus();
+          const opts = { view: window, bubbles: true, cancelable: true };
+          target.dispatchEvent(new MouseEvent('mousedown', opts));
+          target.dispatchEvent(new MouseEvent('mouseup', opts));
+          target.dispatchEvent(new MouseEvent('click', opts));
+          target.click(); // Native click - most reliable
+
+          return {
+            success: true,
+            clickX,
+            clickY,
+            tagName: (target.tagName || '').toLowerCase(),
+            actualText: (target.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40),
+            coordMismatch,
+            elementAtPointText
+          };
+        },
+        args: [searchText]
+      });
+
+      const baseResult = result[0]?.result || { success: false, error: 'Script failed' };
+      if (!baseResult.success) {
+        return AgentS.createActionResult(baseResult);
+      }
+
+      // DON'T use trusted click - coordinates may be wrong in remote environments
+      // Native element.click() already fired above
+      await new Promise(r => setTimeout(r, 300));
+
+      let mismatchWarning = '';
+      if (baseResult.coordMismatch) {
+        mismatchWarning = ` [COORD_MISMATCH: element at (${baseResult.clickX},${baseResult.clickY}) is "${baseResult.elementAtPointText}", not target]`;
+      }
+
+      return AgentS.createActionResult({
+        success: true,
+        message: `Clicked "${searchText}" -> <${baseResult.tagName}> "${baseResult.actualText}"${mismatchWarning}`
       });
     },
 
