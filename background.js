@@ -9,6 +9,220 @@
  */
 
 // ============================================================================
+// STATE MANAGER (Inline for MV3 compatibility)
+// ============================================================================
+
+const StateManagerConfig = {
+  MAX_FAILED_ACTIONS: 20,
+  DUPLICATE_ACTION_THRESHOLD: 3,
+  STATE_HISTORY_SIZE: 50
+};
+
+class StateManager {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.stateHistory = [];
+    this.failedActions = [];
+    this.actionPatterns = new Map();
+    this.currentState = null;
+    this.stats = {
+      totalActions: 0,
+      successfulActions: 0,
+      failedActions: 0,
+      loopsDetected: 0,
+      stateUnchangedCount: 0
+    };
+  }
+
+  captureState(url, domHash, viewportInfo = {}) {
+    return {
+      url,
+      domHash,
+      scrollY: viewportInfo.scrollY || 0,
+      timestamp: Date.now(),
+      signature: `${url}|${domHash}|${viewportInfo.scrollY || 0}`
+    };
+  }
+
+  recordPreActionState(url, domHash, viewportInfo = {}) {
+    this.currentState = this.captureState(url, domHash, viewportInfo);
+    return this.currentState;
+  }
+
+  checkStateChanged(url, domHash, viewportInfo = {}) {
+    if (!this.currentState) return true;
+    const newState = this.captureState(url, domHash, viewportInfo);
+    const changed = this.currentState.url !== newState.url ||
+                    this.currentState.domHash !== newState.domHash ||
+                    Math.abs((this.currentState.scrollY || 0) - (newState.scrollY || 0)) > 50;
+
+    if (!changed) {
+      this.stats.stateUnchangedCount++;
+    } else {
+      this.stats.stateUnchangedCount = 0;
+    }
+
+    this.stateHistory.push({ before: this.currentState, after: newState, changed });
+    if (this.stateHistory.length > StateManagerConfig.STATE_HISTORY_SIZE) {
+      this.stateHistory.shift();
+    }
+    return changed;
+  }
+
+  buildActionKey(actionName, params) {
+    const safeParams = this.sanitizeParams(params);
+    return `${actionName}:${JSON.stringify(safeParams)}`;
+  }
+
+  sanitizeParams(params) {
+    if (!params || typeof params !== 'object') return params;
+    const sanitized = {};
+    for (const [key, value] of Object.entries(params)) {
+      if (/time|date|timestamp/i.test(key)) continue;
+      if (typeof value === 'string' && value.length > 100) {
+        sanitized[key] = value.slice(0, 100);
+      } else {
+        sanitized[key] = value;
+      }
+    }
+    return sanitized;
+  }
+
+  recordActionResult(actionName, params, success, details = '') {
+    this.stats.totalActions++;
+    if (success) {
+      this.stats.successfulActions++;
+    } else {
+      this.stats.failedActions++;
+    }
+
+    const actionKey = this.buildActionKey(actionName, params);
+
+    if (!success) {
+      this.failedActions.push({
+        action: actionName,
+        params: this.sanitizeParams(params),
+        details,
+        timestamp: Date.now(),
+        key: actionKey
+      });
+      if (this.failedActions.length > StateManagerConfig.MAX_FAILED_ACTIONS) {
+        this.failedActions.shift();
+      }
+    }
+
+    const currentCount = this.actionPatterns.get(actionKey) || 0;
+    this.actionPatterns.set(actionKey, currentCount + 1);
+
+    if (this.actionPatterns.get(actionKey) >= StateManagerConfig.DUPLICATE_ACTION_THRESHOLD) {
+      this.stats.loopsDetected++;
+    }
+  }
+
+  isActionBlocked(actionName, params) {
+    const actionKey = this.buildActionKey(actionName, params);
+    const count = this.actionPatterns.get(actionKey) || 0;
+
+    if (count >= StateManagerConfig.DUPLICATE_ACTION_THRESHOLD) {
+      return { blocked: true, reason: `Action repeated ${count} times without success` };
+    }
+
+    const recentFailed = this.failedActions.slice(-5).filter(a => a.key === actionKey);
+    if (recentFailed.length >= 2) {
+      return { blocked: true, reason: 'Action failed multiple times recently' };
+    }
+
+    return { blocked: false };
+  }
+
+  getWarningBlock() {
+    const warnings = [];
+
+    if (this.failedActions.length > 0) {
+      const recentFailed = this.failedActions.slice(-5);
+      const failedSummary = recentFailed
+        .map(a => `• ${a.action}(${JSON.stringify(a.params || {}).slice(0, 40)}) → ${a.details || 'failed'}`)
+        .join('\n');
+      warnings.push(
+        `[FAILED ACTIONS WARNING]\nThese actions failed recently. DO NOT repeat them:\n${failedSummary}\nTry: different element index, scroll, hover, or keyboard navigation.`
+      );
+    }
+
+    const repeatedActions = [];
+    for (const [key, count] of this.actionPatterns.entries()) {
+      if (count >= StateManagerConfig.DUPLICATE_ACTION_THRESHOLD - 1) {
+        repeatedActions.push({ key, count });
+      }
+    }
+    if (repeatedActions.length > 0) {
+      warnings.push(
+        `[LOOP DETECTION WARNING]\nYou are repeating similar actions without progress.\nStrategies: scroll, hover_element, click different element, use send_keys.`
+      );
+    }
+
+    if (this.stats.stateUnchangedCount >= 3) {
+      warnings.push(
+        `[STATE UNCHANGED WARNING]\nPage state has not changed after ${this.stats.stateUnchangedCount} actions.\nYour clicks may not be hitting the intended targets.`
+      );
+    }
+
+    return warnings.join('\n\n');
+  }
+
+  resetPatterns() {
+    this.actionPatterns.clear();
+    this.stats.stateUnchangedCount = 0;
+  }
+}
+
+// ============================================================================
+// STATE MANAGEMENT INTEGRATION
+// ============================================================================
+
+let globalStateManager = null;
+
+function getStateManager() {
+  if (!globalStateManager) {
+    globalStateManager = new StateManager();
+    console.log('[Crab-Agent] StateManager initialized');
+  }
+  return globalStateManager;
+}
+
+function getStateWarnings() {
+  const sm = getStateManager();
+  return sm ? sm.getWarningBlock() : '';
+}
+
+function recordActionForLoop(actionName, params, success, details = '') {
+  const sm = getStateManager();
+  if (sm) sm.recordActionResult(actionName, params, success, details);
+}
+
+function shouldBlockAction(actionName, params) {
+  const sm = getStateManager();
+  return sm ? sm.isActionBlocked(actionName, params) : { blocked: false };
+}
+
+function recordPreState(url, domHash, viewportInfo = {}) {
+  const sm = getStateManager();
+  return sm ? sm.recordPreActionState(url, domHash, viewportInfo) : null;
+}
+
+function checkStateChange(url, domHash, viewportInfo = {}) {
+  const sm = getStateManager();
+  return sm ? sm.checkStateChanged(url, domHash, viewportInfo) : true;
+}
+
+function resetStatePatterns() {
+  const sm = getStateManager();
+  if (sm) sm.resetPatterns();
+}
+
+// ============================================================================
 // PROMPTS SYSTEM
 // ============================================================================
 
@@ -98,18 +312,25 @@ NEVER decide based only on:
 - Always use [index] for click_element and input_text.
 - You can only interact with currently visible elements from the current observation.
 
-# Output Structure (JSON ONLY)
+# Output Structure (JSON ONLY - Chain of Thought REQUIRED)
 {
-  "task_mode": "direct_response|browser_action",
+  "thought": {
+    "observation": "What I see on the current page (elements, state)",
+    "analysis": "Analysis of current state vs goal, identify gaps",
+    "plan": "Why I'm choosing this specific action"
+  },
   "current_state": {
-    "evaluation_previous_goal": "Success|Failed|Unknown - MUST verify screenshot for visual evidence (e.g., if clicked call button, is call window visible? if not, mark as Failed)",
-    "memory": "Track as checklist: 'Task: <goal> | [✓] step1 done [✓] step2 done [ ] step3 pending [ ] step4 pending' - mark each sub-step explicitly",
+    "evaluation_previous_goal": "Success|Failed|Unknown - MUST verify screenshot for visual evidence",
+    "memory": "Track as checklist: 'Task: <goal> | [✓] done [ ] pending'",
     "next_goal": "next immediate objective"
   },
   "action": [
     {"one_action_name": {"param": "value"}}
   ]
 }
+
+CRITICAL: The "thought" field is MANDATORY and MUST come FIRST.
+Think step-by-step before deciding on action.
 
 # Action Rules
 1. Only one action can be provided at once
@@ -134,23 +355,40 @@ NEVER decide based only on:
      5. send_keys: "Enter" to select the highlighted item
 
 # Available Actions
+
+## ELEMENT-BASED (PREFERRED - use element [index] from DOM):
+- click_element: {"click_element": {"index": 5}} // HIGH PRIORITY - use index from DOM list
+- hover_element: {"hover_element": {"index": 5}} // Trigger dropdowns/tooltips before clicking
+- input_text: {"input_text": {"index": 3, "text": "hello"}}
+
+## NAVIGATION:
 - search_google: {"search_google": {"query": "search terms"}}
 - go_to_url: {"go_to_url": {"url": "https://example.com"}}
 - go_back: {"go_back": {}}
-- click_element: {"click_element": {"index": 5}} // low priority 
-- click_at: {"click_at": {"x": 500, "y": 300}} // REQUIRED when DOM/index is unavailable or hard to use click_element, high priority; use screen pixel coordinates from screenshot (not index numbers)
-- input_text: {"input_text": {"index": 3, "text": "hello"}}
-- send_keys: {"send_keys": {"keys": "Enter"}} // Also supports: ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Escape, Tab
+
+## KEYBOARD:
+- send_keys: {"send_keys": {"keys": "Enter"}} // Supports: Enter, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Escape, Tab
+
+## TAB MANAGEMENT:
 - switch_tab: {"switch_tab": {"tab_id": 123}}
 - open_tab: {"open_tab": {"url": "https://example.com"}}
 - close_tab: {"close_tab": {"tab_id": 123}}
+
+## SCROLLING:
 - scroll_down: {"scroll_down": {}}
 - scroll_up: {"scroll_up": {}}
 - scroll_to_top: {"scroll_to_top": {}}
 - scroll_to_bottom: {"scroll_to_bottom": {}}
 - scroll_to_text: {"scroll_to_text": {"text": "target"}}
-- wait: {"wait": {"seconds": 2}} // always use this if the task requires loading page content, waiting for dynamic content, or pausing before next action or waiting for check the screenshot
+
+## UTILITIES:
+- wait: {"wait": {"seconds": 2}}
+- wait_for_element: {"wait_for_element": {"selector": ".my-class", "timeout": 5000}}
+- wait_for_stable: {"wait_for_stable": {"timeout": 2000}} // Wait for DOM to stop changing
 - done: {"done": {"text": "final answer", "success": true}}
+
+## COORDINATE-BASED (FALLBACK - only when element has no index):
+- click_at: {"click_at": {"x": 500, "y": 300}} // Use ONLY when DOM index unavailable
 
 # Behavior Rules
 1. Click/focus before typing
@@ -385,7 +623,7 @@ Field relationships:
     ].join(' ');
   },
 
-  buildNavigatorUserMessage(task, pageState, actionResults, memory, contextRules, tabContext = null, currentStep = null, maxSteps = null, conversationFocus = null) {
+  buildNavigatorUserMessage(task, pageState, actionResults, memory, contextRules, tabContext = null, currentStep = null, maxSteps = null, conversationFocus = null, stateWarnings = null) {
     const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
     const currentTab = tabContext?.currentTab || { id: null, url: pageState.url || '', title: pageState.title || '' };
     const otherTabs = (tabContext?.openTabs || [])
@@ -397,14 +635,21 @@ Field relationships:
     const quotedText = quotedMatch ? String(quotedMatch[1] || '').trim() : '';
     const exactMessageHint = quotedText ? `Send this quoted message exactly as written: "${quotedText}".` : '';
 
-    let message = `# Goal:\n${task}\n\n`;
+    let message = `# Goal:\n<user_request>\n${task}\n</user_request>\n\n`;
 
     message += `# Observation of current step:\n`;
     message += `Note: [index] is the unique numeric identifier at the beginning of each element line.\n`;
     message += `Always use [index] for index-based actions.\n`;
-    message += `<nano_untrusted_content>\n`;
+    message += `Elements marked [Obstructed] are covered by overlays.\n`;
+    message += `Elements marked [EDITABLE INPUT] can receive text input.\n`;
+    message += `<elements>\n`;
     message += `${pageState.textRepresentation || 'No interactive elements found. Try waiting or scrolling one page.'}\n`;
-    message += `</nano_untrusted_content>\n\n`;
+    message += `</elements>\n\n`;
+
+    // Add state warnings from loop detection
+    if (stateWarnings) {
+      message += `# ⚠️ WARNINGS (READ CAREFULLY):\n${stateWarnings}\n\n`;
+    }
 
     if (contextRules) {
       message += `# Context rules:\n${contextRules}\n\n`;
@@ -412,7 +657,7 @@ Field relationships:
 
     message += `# History of interaction with the task:\n`;
     if (actionResults) {
-      message += `- Last action: ${actionResults.success ? 'SUCCESS' : 'FAILED'} - ${actionResults.message || actionResults.error || 'no details'}\n`;
+      message += `- Last action: ${actionResults.success ? '✓ SUCCESS' : '✗ FAILED'} - ${actionResults.message || actionResults.error || 'no details'}\n`;
     } else {
       message += `- First step, no previous action result\n`;
     }
@@ -429,10 +674,19 @@ Field relationships:
 
     message += `# Action space reminder:\n`;
     message += `Only one action can be provided at once.\n`;
-    message += `Use one of: search_google, go_to_url, go_back, click_element, click_at, input_text, send_keys, switch_tab, open_tab, close_tab, scroll_down, scroll_up, scroll_to_top, scroll_to_bottom, scroll_to_text, wait, done.\n\n`;
-    message += `# Output format:\n`;
-    message += `Return valid JSON only with keys: task_mode, current_state, action.\n`;
-    message += `Do not include reasoning fields in JSON.`;
+    message += `PREFERRED: click_element, hover_element, input_text (use element index)\n`;
+    message += `FALLBACK: click_at (use only when element has no index)\n`;
+    message += `NAVIGATION: search_google, go_to_url, go_back, switch_tab, open_tab, close_tab\n`;
+    message += `KEYBOARD: send_keys (Enter, ArrowDown, ArrowUp, Escape, Tab)\n`;
+    message += `SCROLL: scroll_down, scroll_up, scroll_to_text\n`;
+    message += `UTILITY: wait, wait_for_element, wait_for_stable, done\n\n`;
+    message += `# Output format (JSON with Chain of Thought):\n`;
+    message += `{\n`;
+    message += `  "thought": {"observation": "...", "analysis": "...", "plan": "..."},\n`;
+    message += `  "current_state": {"evaluation_previous_goal": "...", "memory": "...", "next_goal": "..."},\n`;
+    message += `  "action": [{"action_name": {...}}]\n`;
+    message += `}\n`;
+    message += `The "thought" field is REQUIRED - think before acting.`;
 
     return message;
   },
@@ -506,6 +760,19 @@ Field relationships:
 
   validateNavigatorResponse(response) {
     if (!response || typeof response !== 'object') return { valid: false, error: 'Not an object' };
+
+    // Ensure thought exists (Chain of Thought)
+    if (!response.thought) {
+      response.thought = {
+        observation: 'No explicit thought provided',
+        analysis: 'Proceeding with action',
+        plan: 'Execute specified action'
+      };
+    } else {
+      // Log thought for debugging
+      console.log('[CoT] Model thought:', JSON.stringify(response.thought).slice(0, 200));
+    }
+
     // Be more lenient - current_state is optional
     if (!response.action) {
       // Try to find action in different formats
@@ -556,6 +823,8 @@ Field relationships:
     // Ensure current_state exists
     if (!response.current_state) {
       response.current_state = {
+        evaluation_previous_goal: 'Unknown',
+        memory: '',
         next_goal: response.task_mode === 'direct_response' ? 'respond directly' : 'executing action'
       };
     }
@@ -644,58 +913,106 @@ const AgentS = {
     const params = action[actionName];
     console.log(`Executing action: ${actionName}`, params);
 
+    // Check if action should be blocked (loop detection)
+    const blockCheck = shouldBlockAction(actionName, params);
+    if (blockCheck.blocked) {
+      console.warn(`[Loop Prevention] Action blocked: ${actionName}`, blockCheck.reason);
+      const result = AgentS.createActionResult({
+        success: false,
+        error: `Action blocked by loop prevention: ${blockCheck.reason}. Try a different approach.`
+      });
+      recordActionForLoop(actionName, params, false, 'blocked_by_loop_prevention');
+      return result;
+    }
+
+    // Record pre-action state for change detection
+    recordPreState(pageState?.url, pageState?.domHash, pageState?.viewportInfo);
+
+    let result;
     try {
       switch (actionName) {
         case 'search_google':
-          return await AgentS.actions.searchGoogle(params.query, tabId);
+          result = await AgentS.actions.searchGoogle(params.query, tabId);
+          resetStatePatterns(); // Reset on navigation
+          break;
         case 'go_to_url':
-          return await AgentS.actions.goToUrl(params.url, tabId);
+          result = await AgentS.actions.goToUrl(params.url, tabId);
+          resetStatePatterns(); // Reset on navigation
+          break;
         case 'go_back':
-          return await AgentS.actions.goBack(tabId);
+          result = await AgentS.actions.goBack(tabId);
+          resetStatePatterns(); // Reset on navigation
+          break;
         case 'click_element':
-          return await AgentS.actions.clickElement(params.index, tabId);
+          result = await AgentS.actions.clickElement(params.index, tabId);
+          break;
+        case 'hover_element':
+          result = await AgentS.actions.hoverElement(params.index, tabId);
+          break;
         case 'click_at':
-          return await AgentS.actions.clickAtCoordinates(
-            params.x,
-            params.y,
-            tabId
-          );
+          result = await AgentS.actions.clickAtCoordinates(params.x, params.y, tabId);
+          break;
         case 'click_text':
-          return await AgentS.actions.clickText(params.text, tabId);
+          result = await AgentS.actions.clickText(params.text, tabId);
+          break;
         case 'input_text':
-          return await AgentS.actions.inputText(params.index, params.text, tabId);
+          result = await AgentS.actions.inputText(params.index, params.text, tabId);
+          break;
         case 'send_keys':
-          return await AgentS.actions.sendKeys(params.keys, tabId);
+          result = await AgentS.actions.sendKeys(params.keys, tabId);
+          break;
         case 'switch_tab':
-          return await AgentS.actions.switchTab(params.tab_id);
+          result = await AgentS.actions.switchTab(params.tab_id);
+          break;
         case 'open_tab':
-          return await AgentS.actions.openTab(params.url);
+          result = await AgentS.actions.openTab(params.url);
+          resetStatePatterns(); // Reset on new tab
+          break;
         case 'close_tab':
-          return await AgentS.actions.closeTab(params.tab_id);
+          result = await AgentS.actions.closeTab(params.tab_id);
+          break;
         case 'scroll_down':
-          return await AgentS.actions.scroll('down', tabId);
+          result = await AgentS.actions.scroll('down', tabId);
+          break;
         case 'scroll_up':
-          return await AgentS.actions.scroll('up', tabId);
+          result = await AgentS.actions.scroll('up', tabId);
+          break;
         case 'scroll_to_top':
-          return await AgentS.actions.scroll('top', tabId);
+          result = await AgentS.actions.scroll('top', tabId);
+          break;
         case 'scroll_to_bottom':
-          return await AgentS.actions.scroll('bottom', tabId);
+          result = await AgentS.actions.scroll('bottom', tabId);
+          break;
         case 'scroll_to_text':
-          return await AgentS.actions.scrollToText(params.text, tabId);
+          result = await AgentS.actions.scrollToText(params.text, tabId);
+          break;
+        case 'wait_for_element':
+          result = await AgentS.actions.waitForElement(params.selector, params.timeout || 5000, tabId);
+          break;
+        case 'wait_for_stable':
+          result = await AgentS.actions.waitForDomStable(params.timeout || 2000, tabId);
+          break;
         case 'done':
-          return AgentS.createActionResult({
+          result = AgentS.createActionResult({
             isDone: true, success: params.success !== false,
             extractedContent: params.text, message: params.text
           });
+          break;
         case 'wait':
           await new Promise(resolve => setTimeout(resolve, (params.seconds || 2) * 1000));
-          return AgentS.createActionResult({ success: true, message: `Waited ${params.seconds || 2}s` });
+          result = AgentS.createActionResult({ success: true, message: `Waited ${params.seconds || 2}s` });
+          break;
         default:
-          return AgentS.createActionResult({ success: false, error: `Unknown action: ${actionName}` });
+          result = AgentS.createActionResult({ success: false, error: `Unknown action: ${actionName}` });
       }
     } catch (error) {
-      return AgentS.createActionResult({ success: false, error: error.message });
+      result = AgentS.createActionResult({ success: false, error: error.message });
     }
+
+    // Record action result for loop detection
+    recordActionForLoop(actionName, params, result?.success || false, result?.message || result?.error || '');
+
+    return result;
   },
 
   actions: {
@@ -2472,6 +2789,161 @@ const AgentS = {
         };
         chrome.tabs.onUpdated.addListener(listener);
       });
+    },
+
+    // Hover element action
+    async hoverElement(index, tabId) {
+      const safeIndex = typeof index === 'number' ? index : parseInt(index, 10);
+      if (!Number.isFinite(safeIndex)) {
+        return AgentS.createActionResult({ success: false, error: `Invalid element index: ${index}` });
+      }
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (idx) => {
+          const domState = window.AgentSDom?.lastBuildResult;
+          if (!domState) {
+            return { success: false, error: 'DOM not built' };
+          }
+
+          const el = domState.elementMap?.[idx];
+          if (!el) {
+            return { success: false, error: `Element ${idx} not found` };
+          }
+
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+          // Dispatch hover events
+          el.dispatchEvent(new MouseEvent('mouseenter', {
+            bubbles: true, cancelable: true, view: window
+          }));
+          el.dispatchEvent(new MouseEvent('mouseover', {
+            bubbles: true, cancelable: true, view: window
+          }));
+
+          // Also try focus for dropdowns
+          if (el.matches('button, [role="button"], [aria-haspopup]')) {
+            el.focus();
+          }
+
+          const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+          return { success: true, text, tag: (el.tagName || '').toLowerCase() };
+        },
+        args: [safeIndex]
+      });
+
+      const baseResult = result[0]?.result || { success: false, error: 'Script failed' };
+      if (baseResult.success) {
+        return AgentS.createActionResult({
+          success: true,
+          message: `Hovered element ${safeIndex} <${baseResult.tag}> "${baseResult.text}"`
+        });
+      }
+      return AgentS.createActionResult(baseResult);
+    },
+
+    // Wait for element action
+    async waitForElement(selector, timeout, tabId) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (sel, timeoutMs) => {
+          return new Promise((resolve) => {
+            const startTime = Date.now();
+
+            const existing = document.querySelector(sel);
+            if (existing) {
+              resolve({ success: true, message: `Element found: ${sel}` });
+              return;
+            }
+
+            const observer = new MutationObserver(() => {
+              const element = document.querySelector(sel);
+              if (element) {
+                observer.disconnect();
+                resolve({ success: true, message: `Element appeared: ${sel}` });
+              } else if (Date.now() - startTime > timeoutMs) {
+                observer.disconnect();
+                resolve({ success: false, error: `Timeout waiting for: ${sel}` });
+              }
+            });
+
+            observer.observe(document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true
+            });
+
+            setTimeout(() => {
+              observer.disconnect();
+              const element = document.querySelector(sel);
+              if (element) {
+                resolve({ success: true, message: `Element found: ${sel}` });
+              } else {
+                resolve({ success: false, error: `Timeout waiting for: ${sel}` });
+              }
+            }, timeoutMs);
+          });
+        },
+        args: [selector, timeout || 5000]
+      });
+
+      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
+    },
+
+    // Wait for DOM to stabilize
+    async waitForDomStable(timeout, tabId) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (timeoutMs) => {
+          return new Promise((resolve) => {
+            let lastMutationTime = Date.now();
+            let resolved = false;
+            const threshold = 500;
+
+            const observer = new MutationObserver(() => {
+              lastMutationTime = Date.now();
+            });
+
+            observer.observe(document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              characterData: true
+            });
+
+            const checkStable = () => {
+              if (resolved) return;
+
+              const timeSinceLastMutation = Date.now() - lastMutationTime;
+
+              if (timeSinceLastMutation >= threshold) {
+                resolved = true;
+                observer.disconnect();
+                resolve({ success: true, message: 'DOM stable' });
+              } else if (Date.now() - lastMutationTime > timeoutMs) {
+                resolved = true;
+                observer.disconnect();
+                resolve({ success: true, message: 'DOM stable (timeout)' });
+              } else {
+                setTimeout(checkStable, 100);
+              }
+            };
+
+            setTimeout(checkStable, 200);
+
+            setTimeout(() => {
+              if (!resolved) {
+                resolved = true;
+                observer.disconnect();
+                resolve({ success: true, message: 'DOM stable (hard timeout)' });
+              }
+            }, timeoutMs);
+          });
+        },
+        args: [timeout || 2000]
+      });
+
+      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
     }
   },
 
@@ -3454,6 +3926,9 @@ async function runExecutor() {
       continue;
     }
 
+    // Get state warnings for loop prevention
+    const stateWarnings = getStateWarnings();
+
     let userMessage = AgentSPrompts.buildNavigatorUserMessage(
       getEffectiveTaskPrompt(exec),
       pageState,
@@ -3463,7 +3938,8 @@ async function runExecutor() {
       tabContext,
       exec.step,
       exec.maxSteps,
-      exec.conversationFocus
+      exec.conversationFocus,
+      stateWarnings
     );
 
     // Add note about vision if screenshot is available

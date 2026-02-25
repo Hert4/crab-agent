@@ -45,7 +45,10 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["lib/buildDomTree.js"],
+      "resources": [
+        "lib/buildDomTree.js",
+        "lib/stateManager.js"
+      ],
       "matches": ["<all_urls>"]
     }
   ]
