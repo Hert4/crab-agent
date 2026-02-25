@@ -554,13 +554,168 @@ body {
 /* Mascot crab */
 .mascot-crab-row {
   display: flex;
-  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 10px;
   padding: 6px 12px 0;
+}
+
+.live-activity-panel {
+  flex: 1;
+  min-width: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(33, 60, 32, 0.2);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(245, 249, 245, 0.96) 100%);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.live-activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(33, 60, 32, 0.13);
+  background: rgba(33, 60, 32, 0.05);
+}
+
+.live-activity-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.55px;
+  color: #2a4428;
+  flex-shrink: 0;
+}
+
+.live-activity-hint {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-activity-grid {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+
+.live-activity-slot {
+  min-height: 64px;
+}
+
+.live-activity-slot.image-slot {
+  min-height: 150px;
+}
+
+.live-activity-slot.image-slot.is-empty {
+  display: none;
+}
+
+.live-activity-card {
+  border-radius: 10px;
+  border: 1px solid rgba(33, 60, 32, 0.18);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: var(--shadow-sm);
+  padding: 8px 10px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s var(--ease-spring);
+}
+
+.live-activity-card.is-entering {
+  opacity: 0;
+  transform: translateY(6px) scale(0.99);
+}
+
+.live-activity-card.is-leaving {
+  opacity: 0;
+  transform: translateY(-5px) scale(0.99);
+}
+
+.live-activity-card.status-running {
+  border-left: 4px solid var(--accent-orange);
+}
+
+.live-activity-card.status-success {
+  border-left: 4px solid var(--accent-green);
+}
+
+.live-activity-card.status-error {
+  border-left: 4px solid var(--accent-danger);
+  background: rgba(229, 77, 46, 0.05);
+}
+
+.live-activity-card-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #2d482a;
+  margin-bottom: 4px;
+}
+
+.live-activity-card-main {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.live-activity-card-note {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.live-activity-card.empty {
+  border-style: dashed;
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.live-activity-card.image {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.live-activity-image {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  border-radius: 8px;
+  border: 1px solid rgba(33, 60, 32, 0.18);
+  background: #eef3ee;
+  object-fit: contain;
 }
 
 .mascot-crab {
   position: relative;
-  width: 138px;
+  width: 126px;
+  min-width: 126px;
+  flex: 0 0 126px;
   border: 1px solid rgba(33, 60, 32, 0.2);
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(241, 246, 241, 0.93) 100%);
@@ -1368,16 +1523,32 @@ body {
 
 @media (max-width: 420px) {
   .mascot-crab-row {
+    gap: 8px;
     padding: 4px 8px 0;
   }
 
   .mascot-crab {
-    transform: scale(0.9);
-    transform-origin: top right;
+    width: 112px;
+    min-width: 112px;
+    flex-basis: 112px;
+    padding: 10px 6px 4px;
   }
 
   .chat-messages {
     padding: 12px;
+  }
+
+  .live-activity-header {
+    padding: 7px 8px;
+  }
+
+  .live-activity-grid {
+    padding: 7px;
+    gap: 7px;
+  }
+
+  .live-activity-slot.image-slot {
+    min-height: 126px;
   }
 
   .header {

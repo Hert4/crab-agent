@@ -616,7 +616,7 @@ const AgentS = {
   },
 
   MessageManager: class {
-    constructor(maxTokens = 128000) { this.messages = []; this.maxTokens = maxTokens; }
+    constructor(maxTokens = 64000) { this.messages = []; this.maxTokens = maxTokens; }
     initTaskMessages(systemPrompt, taskPrompt, exampleOutput, taskImages = []) {
       this.messages = [{ role: 'system', content: systemPrompt }];
       if (exampleOutput) {
@@ -2991,7 +2991,7 @@ chrome.runtime.onConnect.addListener((port) => {
       try {
         switch (message.type) {
           case 'new_task': await handleNewTask(message.task, message.settings, message.images || []); break;
-          case 'follow_up_task': await handleFollowUpTask(message.task, message.images || []); break;
+          case 'follow_up_task': await handleFollowUpTask(message.task, message.images || [], message.followUpContext || ''); break;
           case 'cancel_task': handleCancelTask(); break;
           case 'pause_task': handlePauseTask(); break;
           case 'resume_task': handleResumeTask(); break;
@@ -3967,7 +3967,28 @@ async function runPlanner(triggerReason = 'interval') {
   } catch (e) { console.error('Planner error:', e); return null; }
 }
 
-async function handleFollowUpTask(task, images = []) {
+function buildCompactFollowUpTask(task, followUpContext = '') {
+  const latestTask = String(task || '').trim();
+  const compactContext = String(followUpContext || '').trim();
+  if (!compactContext) return latestTask;
+
+  return [
+    '[CURRENT USER REQUEST]',
+    latestTask || '(No explicit user text)',
+    '',
+    '[CONVERSATION MEMORY - IMPORTANT]',
+    'Below is the conversation history from this chat session.',
+    'You MUST remember and use all information the user has shared (names, preferences, previous requests, etc.).',
+    'If the user asks about something they mentioned earlier, refer to this history.',
+    'Do NOT claim you do not know something if it appears in the conversation history.',
+    '',
+    compactContext,
+    '',
+    'Respond naturally based on the conversation context above.'
+  ].join('\n');
+}
+
+async function handleFollowUpTask(task, images = [], followUpContext = '') {
   if (currentExecution && !currentExecution.cancelled) {
     const queued = queueFollowUpUpdate(currentExecution, task, images);
     if (!queued) {
@@ -3989,8 +4010,10 @@ async function handleFollowUpTask(task, images = []) {
       currentAbortController = null;
     }
   } else {
+    // Let the model handle follow-up tasks with full conversation context
     const settings = currentExecution?.settings || await loadSettings();
-    await handleNewTask(task, settings, images);
+    const bootstrappedTask = buildCompactFollowUpTask(task, followUpContext);
+    await handleNewTask(bootstrappedTask, settings, images);
   }
 }
 

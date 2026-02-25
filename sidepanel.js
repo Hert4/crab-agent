@@ -26,12 +26,14 @@ let mascotCrabEnergyTimer = null;
 let mascotCrabSettleTimer = null;
 let mascotCrabMoodHoldUntil = 0;
 let isExecutionActive = false;
+let liveActivityState = { action: null, image: null };
 
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const MASCOT_CRAB_FRAME_INTERVAL_MS = 500;
 const CRAB_ENERGY_TICK_MS = 15000;
 const CRAB_IDLE_TIRED_MS = 90000;
+const LIVE_ACTIVITY_FADE_MS = 220;
 
 function buildCrabFrame(options = {}) {
   const {
@@ -152,6 +154,10 @@ const elements = {
   mascotCrab: document.getElementById('mascotCrab'),
   mascotCrabArt: document.getElementById('mascotCrabArt'),
   mascotCrabBubble: document.getElementById('mascotCrabBubble'),
+  liveActivityPanel: document.getElementById('liveActivityPanel'),
+  liveActivityHint: document.getElementById('liveActivityHint'),
+  liveActionSlot: document.getElementById('liveActionSlot'),
+  liveImageSlot: document.getElementById('liveImageSlot'),
 
   // Settings
   settingsBackBtn: document.getElementById('settingsBackBtn'),
@@ -279,6 +285,7 @@ async function init() {
   setupEventListeners();
   renderAttachmentPreview();
   initMascotCrab();
+  resetLiveActivityPanel(false);
 
   // Start heartbeat
   setInterval(sendHeartbeat, 30000);
@@ -348,6 +355,7 @@ function handleExecutionEvent(event) {
       showExecutionBar();
       setExecutionText('Starting task...');
       notifyCrabActivity('thinking');
+      resetLiveActivityPanel(false);
       startTimer();
       break;
 
@@ -420,11 +428,10 @@ function handleExecutionEvent(event) {
       break;
 
     case 'DEBUG_IMAGE':
-      if (details?.message) {
-        addSystemMessage(`[Vision Debug] ${details.message}`, 'info', true);
-      }
       if (details?.image) {
         addDebugImageMessage(details?.message || 'Debug image sent to model input', details.image, false);
+      } else if (details?.message) {
+        setLiveActivityHint(`Vision: ${details.message}`);
       }
       break;
 
@@ -705,6 +712,7 @@ function startNewTask() {
   elements.chatInput.value = '';
   elements.chatInput.placeholder = 'What would you like me to do?';
   clearPendingImages();
+  resetLiveActivityPanel(false);
 
   showView('chat');
   elements.chatInput.focus();
@@ -717,6 +725,7 @@ function openTask(task) {
   currentTask = task;
   elements.chatTitle.textContent = task.title;
   elements.chatMessages.innerHTML = '';
+  resetLiveActivityPanel(false);
 
   // Render existing messages
   for (const msg of task.messages) {
@@ -726,12 +735,9 @@ function openTask(task) {
       addAssistantMessage(msg.content, false);
     } else if (msg.role === 'system') {
       addSystemMessage(msg.content, msg.type || 'info', false);
-    } else if (msg.role === 'action') {
-      addActionMessage(msg.action, msg.params, msg.status, msg.message, false);
-    } else if (msg.role === 'debug_image') {
-      addDebugImageMessage(msg.content, msg.image, false);
     }
   }
+  hydrateLiveActivityFromHistory(task.messages);
 
   elements.chatInput.placeholder = 'Ask for follow-up changes...';
   clearPendingImages();
@@ -757,6 +763,7 @@ async function sendMessage() {
   const images = pendingImages.map(image => image.dataUrl);
   if (!text && images.length === 0) return;
   notifyCrabActivity('user');
+  const historyBeforeSend = Array.isArray(currentTask?.messages) ? [...currentTask.messages] : [];
 
   // Check if API key is set
   if (!settings.apiKey && settings.provider !== 'ollama') {
@@ -779,7 +786,10 @@ async function sendMessage() {
   }
 
   // Send to background
-  const isFollowUp = isExecutionActive || currentTask.messages.length > 1;
+  const isFollowUp = isExecutionActive || (currentTask?.messages?.length || 0) > 1;
+  const followUpContext = (!isExecutionActive && isFollowUp)
+    ? buildFollowUpContext(historyBeforeSend)
+    : '';
 
   // Use customModel if provider is openai-compatible and model is "custom"
   const effectiveModel = (settings.provider === 'openai-compatible' && settings.model === 'custom')
@@ -790,6 +800,7 @@ async function sendMessage() {
     type: isFollowUp ? 'follow_up_task' : 'new_task',
     task: taskText,
     images,
+    followUpContext,
     settings: {
       ...settings,
       useVision: settings.useVision || images.length > 0,
@@ -801,6 +812,77 @@ async function sendMessage() {
   notifyCrabActivity('thinking', taskText);
 
   clearPendingImages();
+}
+
+function buildFollowUpContext(messages, maxEntries) {
+  maxEntries = maxEntries || 20;
+  if (!Array.isArray(messages) || messages.length === 0) return '';
+
+  function normalizeText(value, maxLen) {
+    var text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    return text.length > maxLen ? text.slice(0, maxLen) + '...' : text;
+  }
+
+  function formatActionParams(params) {
+    if (!params) return '';
+    if (typeof params !== 'object') return normalizeText(params, 100);
+    return Object.entries(params)
+      .slice(0, 6)
+      .map(function(entry) { return entry[0] + '=' + normalizeText(entry[1], 80); })
+      .join(', ');
+  }
+
+  var dialogueLines = [];
+  var actionLines = [];
+
+  for (var i = 0; i < messages.length; i++) {
+    var msg = messages[i];
+    if (!msg || typeof msg !== 'object') continue;
+    if (msg.role === 'debug_image') continue;
+
+    if (msg.role === 'action') {
+      if (msg.status === 'start') continue;
+      var actionName = normalizeText(msg.action, 80);
+      if (!actionName) continue;
+      var status = normalizeText(msg.status || 'info', 20).toUpperCase();
+      var params = formatActionParams(msg.params);
+      var info = normalizeText(msg.message, 180);
+      var actionLine = params
+        ? '[ACTION ' + status + '] ' + actionName + ' (' + params + ')'
+        : '[ACTION ' + status + '] ' + actionName;
+      actionLines.push(info ? actionLine + ' -> ' + info : actionLine);
+      continue;
+    }
+
+    if (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system') {
+      var content = normalizeText(msg.content, 400);
+      if (!content) continue;
+      dialogueLines.push('[' + msg.role.toUpperCase() + '] ' + content);
+    }
+  }
+
+  var sections = [];
+
+  if (actionLines.length > 0) {
+    sections.push('[RECENT ACTIONS]');
+    var recentActions = actionLines.slice(-8);
+    for (var j = 0; j < recentActions.length; j++) {
+      sections.push(recentActions[j]);
+    }
+    sections.push('');
+  }
+
+  if (dialogueLines.length > 0) {
+    sections.push('[CONVERSATION HISTORY]');
+    sections.push('Remember all information shared by the user in this conversation.');
+    var recentDialogue = dialogueLines.slice(-maxEntries);
+    for (var k = 0; k < recentDialogue.length; k++) {
+      sections.push(recentDialogue[k]);
+    }
+  }
+
+  return sections.join('\n').trim();
 }
 
 /**
@@ -885,35 +967,195 @@ function addSystemMessage(content, type = 'info', save = true) {
 }
 
 /**
- * Add a debug image message to chat
+ * Compact utility for short UI strings
+ */
+function toCompactText(value, maxLen = 220) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}...` : normalized;
+}
+
+function setLiveActivityHint(text) {
+  if (!elements.liveActivityHint) return;
+  elements.liveActivityHint.textContent = toCompactText(text || 'Waiting for first action...', 100);
+}
+
+function buildLiveActivityEmptyCard(text) {
+  const card = document.createElement('div');
+  card.className = 'live-activity-card empty';
+  card.textContent = toCompactText(text || 'No activity yet.', 90);
+  return card;
+}
+
+function formatLiveActionParams(params) {
+  if (!params) return '';
+  if (typeof params !== 'object') return toCompactText(params, 80);
+  return Object.entries(params)
+    .slice(0, 6)
+    .map(([key, value]) => `${key}=${toCompactText(value, 50)}`)
+    .join(', ');
+}
+
+function swapLiveActivityCard(slotEl, nextCard, animate = true) {
+  if (!slotEl || !nextCard) return;
+
+  const previous = slotEl.firstElementChild;
+  if (!previous) {
+    if (animate) {
+      nextCard.classList.add('is-entering');
+      slotEl.appendChild(nextCard);
+      requestAnimationFrame(() => nextCard.classList.remove('is-entering'));
+    } else {
+      slotEl.appendChild(nextCard);
+    }
+    return;
+  }
+
+  if (!animate) {
+    previous.replaceWith(nextCard);
+    return;
+  }
+
+  previous.classList.add('is-leaving');
+  setTimeout(() => {
+    if (previous.parentElement !== slotEl) return;
+    previous.replaceWith(nextCard);
+    nextCard.classList.add('is-entering');
+    requestAnimationFrame(() => nextCard.classList.remove('is-entering'));
+  }, LIVE_ACTIVITY_FADE_MS);
+}
+
+function renderLiveActionCard(action, params, status, message = '', animate = true) {
+  if (!elements.liveActionSlot) return;
+
+  const actionName = toCompactText(action || 'action', 80);
+  const statusKey = status === 'success' ? 'success' : status === 'error' ? 'error' : 'running';
+  const previousAction = liveActivityState?.action || null;
+  const mergedParams = params || (previousAction?.actionName === actionName ? previousAction.params : null);
+  const paramsText = formatLiveActionParams(mergedParams);
+  const mainText = paramsText ? `${actionName} (${paramsText})` : actionName;
+  const noteText = toCompactText(message, 220);
+
+  const title = document.createElement('div');
+  title.className = 'live-activity-card-title';
+  if (statusKey === 'success') title.textContent = 'Action success';
+  else if (statusKey === 'error') title.textContent = 'Action failed';
+  else title.textContent = 'Action running';
+
+  const main = document.createElement('div');
+  main.className = 'live-activity-card-main';
+  main.textContent = mainText;
+
+  const card = document.createElement('div');
+  card.className = `live-activity-card status-${statusKey}`;
+  card.appendChild(title);
+  card.appendChild(main);
+
+  if (noteText) {
+    const note = document.createElement('div');
+    note.className = 'live-activity-card-note';
+    note.textContent = noteText;
+    card.appendChild(note);
+  }
+
+  swapLiveActivityCard(elements.liveActionSlot, card, animate);
+  liveActivityState.action = {
+    actionName,
+    params: mergedParams,
+    status: statusKey,
+    message: noteText
+  };
+
+  if (statusKey === 'success') setLiveActivityHint(`Done: ${actionName}`);
+  else if (statusKey === 'error') setLiveActivityHint(`Failed: ${actionName}`);
+  else setLiveActivityHint(`Running: ${actionName}`);
+}
+
+function renderLiveImageCard(content, image, animate = true) {
+  if (!image || !elements.liveImageSlot) return;
+
+  elements.liveImageSlot.classList.remove('is-empty');
+
+  const card = document.createElement('div');
+  card.className = 'live-activity-card image';
+
+  const title = document.createElement('div');
+  title.className = 'live-activity-card-title';
+  title.textContent = 'Latest visual context';
+  card.appendChild(title);
+
+  const imageEl = document.createElement('img');
+  imageEl.className = 'live-activity-image';
+  imageEl.src = image;
+  imageEl.alt = 'Latest debug image sent to model';
+  imageEl.loading = 'lazy';
+  card.appendChild(imageEl);
+
+  const noteText = toCompactText(content, 180);
+  if (noteText) {
+    const note = document.createElement('div');
+    note.className = 'live-activity-card-note';
+    note.textContent = noteText;
+    card.appendChild(note);
+  }
+
+  swapLiveActivityCard(elements.liveImageSlot, card, animate);
+  liveActivityState.image = { content: noteText, image };
+  setLiveActivityHint('Visual context updated');
+}
+
+function resetLiveActivityPanel(animate = false) {
+  liveActivityState = { action: null, image: null };
+  if (elements.liveActionSlot) {
+    swapLiveActivityCard(
+      elements.liveActionSlot,
+      buildLiveActivityEmptyCard('No action yet. Waiting for next step...'),
+      animate
+    );
+  }
+  if (elements.liveImageSlot) {
+    elements.liveImageSlot.classList.add('is-empty');
+    elements.liveImageSlot.innerHTML = '';
+  }
+  setLiveActivityHint('Waiting for first action...');
+}
+
+function hydrateLiveActivityFromHistory(messages) {
+  resetLiveActivityPanel(false);
+  if (!Array.isArray(messages) || messages.length === 0) return;
+
+  let lastAction = null;
+  let lastImage = null;
+  for (const msg of messages) {
+    if (!msg || typeof msg !== 'object') continue;
+    if (msg.role === 'action') {
+      lastAction = msg;
+    } else if (msg.role === 'debug_image' && msg.image) {
+      lastImage = msg;
+    }
+  }
+
+  if (lastAction) {
+    renderLiveActionCard(
+      lastAction.action,
+      lastAction.params,
+      lastAction.status,
+      lastAction.message || '',
+      false
+    );
+  }
+
+  if (lastImage) {
+    renderLiveImageCard(lastImage.content || '', lastImage.image, false);
+  }
+}
+
+/**
+ * Add a debug image message to live activity panel
  */
 function addDebugImageMessage(content, image, save = false) {
   if (!image) return;
-
-  const messageDiv = document.createElement('div');
-  messageDiv.className = 'message assistant debug-image-message';
-
-  if (content) {
-    const textDiv = document.createElement('div');
-    textDiv.className = 'message-text';
-    textDiv.textContent = content;
-    messageDiv.appendChild(textDiv);
-  }
-
-  const imageContainer = document.createElement('div');
-  imageContainer.className = 'message-attachments';
-
-  const imageEl = document.createElement('img');
-  imageEl.className = 'message-attachment-image';
-  imageEl.src = image;
-  imageEl.alt = 'Debug image sent to model';
-  imageEl.loading = 'lazy';
-  imageContainer.appendChild(imageEl);
-
-  messageDiv.appendChild(imageContainer);
-  triggerAnimation(messageDiv, 'message-enter');
-  elements.chatMessages.appendChild(messageDiv);
-  scrollToBottom();
+  renderLiveImageCard(content, image, true);
 
   if (save && currentTask) {
     currentTask.messages.push({
@@ -926,49 +1168,10 @@ function addDebugImageMessage(content, image, save = false) {
 }
 
 /**
- * Add an action status message
+ * Add an action status message to live activity panel
  */
 function addActionMessage(action, params, status, message = '', save = true) {
-  // Check if we should update an existing action message
-  const lastAction = elements.chatMessages.querySelector('.action-status:last-of-type');
-  if (lastAction && status !== 'start' && lastAction.dataset.action === action) {
-    lastAction.className = `action-status ${status}`;
-    if (message) {
-      lastAction.querySelector('.action-message').textContent = message;
-    }
-    if (save) {
-      if (status === 'success') {
-        registerCrabSuccess(message || action || 'action success');
-      } else if (status === 'error') {
-        registerCrabError(message || action || 'action failed');
-      }
-    }
-    return;
-  }
-
-  if (status === 'start') {
-    const actionDiv = document.createElement('div');
-    actionDiv.className = 'action-status';
-    actionDiv.dataset.action = action;
-
-    let paramStr = '';
-    if (params) {
-      if (typeof params === 'object') {
-        paramStr = Object.entries(params).map(([k, v]) => `${k}=${v}`).join(', ');
-      } else {
-        paramStr = String(params);
-      }
-    }
-
-    actionDiv.innerHTML = `
-      <strong>${action}</strong>${paramStr ? ` (${paramStr})` : ''}
-      <span class="action-message"></span>
-    `;
-
-    triggerAnimation(actionDiv, 'message-enter');
-    elements.chatMessages.appendChild(actionDiv);
-    scrollToBottom();
-  }
+  renderLiveActionCard(action, params, status, message, save);
 
   if (save && currentTask) {
     currentTask.messages.push({
