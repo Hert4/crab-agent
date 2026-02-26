@@ -278,10 +278,25 @@ You will receive:
 - Optional screenshot
 
 # Screenshot Guidance
+- IMPORTANT: Screenshot has Set-of-Mark (SoM) overlay with numbered labels matching DOM indices.
+- Element indices visible in screenshot (colored boxes with numbers) correspond to [index] in DOM list.
 - When both screenshot and DOM are available, you MUST cross-validate BOTH before every click decision.
-- Use click_element when the target exists in DOM and has a valid [index].
+
+## CRITICAL: click_element vs click_at Decision
+- **ALWAYS use click_element(index)** when the target element has a visible SoM label (numbered box) in the screenshot.
+- **NEVER use click_at** when click_element is possible - click_at is ONLY for elements WITHOUT SoM labels.
+- If you see a numbered label on/near your target in the screenshot, you MUST use click_element with that index.
+- click_at is a FALLBACK only when: DOM is empty, element has no index, or SoM label is missing.
+
+## Matching SoM Labels to Elements
+- Look at the colored box around the target element in screenshot
+- Read the number on that box (e.g., "233")
+- Use that exact number: {"click_element": {"index": 233}}
+- Do NOT guess coordinates - use the index from the SoM label
+
 - If screenshot and DOM conflict (wrong location/text/index), do not click blindly; reassess with scroll/wait/retry.
 - CRITICAL NO-DOM RULE: If DOM is missing/empty, you MUST use click_at with pixel coordinates from screenshot.
+- click_at coordinates are in CSS pixels (viewport coordinates), NOT physical pixels.
 - In NO-DOM situations, NEVER invent/guess an index for click_element or input_text.
 - For text input with NO-DOM/no index: click_at the input area first, then use send_keys to type and submit.
 - When multiple nearby elements have similar meaning (e.g., Folder vs Group, Search vs Message input, Settings vs More menu):
@@ -339,14 +354,20 @@ Think step-by-step before deciding on action.
 4. Use done as the final action once task is complete
 5. If task_mode is "direct_response", action MUST be exactly one done action and MUST NOT include browser actions.
 6. Before outputting any click action, mentally simulate whether the screenshot visually changes after that click. If the expected UI change is unclear, reassess target.
-7. PRE-DONE VERIFICATION: Before using done, replay the ENTIRE user request and verify your memory checklist - are ALL steps marked [✓]? If user said "do X WITH Y", did you actually do BOTH X and Y? If any step is [ ] pending, complete it first. Searching/typing a name is NOT the same as selecting/clicking it.
-8. SUBMIT BUTTON RULE: Before clicking submit/add/create/save buttons, verify your memory - if ANY step is [ ] pending, you MUST complete it FIRST. Do NOT click submit with pending steps. Look at screenshot to VISUALLY confirm selections (checkmarks, highlights, selected state) before submitting.
-9. LIST SELECTION: To select items in lists, click the ROW TEXT directly (not empty checkbox elements). If row click doesn't work, use click_at with coordinates left of the text.
-10. MENU ITEM SELECTION: When clicking items in dropdown menus:
+7. **PRE-CLICK COORDINATE VALIDATION for admin/settings tasks (delete, edit, settings, collapse icons)**:
+   - BEFORE clicking, state in your thought: "Target x-coordinate is [X], viewport width is [W]"
+   - For collapse/panel icons: x MUST be > 70% of viewport width (e.g., x > 1190 for 1700px viewport)
+   - For settings/admin in chat apps: target should be in RIGHT zone (x > 60% of viewport)
+   - If x < 50% of viewport width and you're looking for collapse/settings, STOP - you're clicking WRONG AREA
+   - **NEVER click on <img> elements with x in CENTER zone for admin tasks - those are chat images!**
+8. PRE-DONE VERIFICATION: Before using done, replay the ENTIRE user request and verify your memory checklist - are ALL steps marked [✓]? If user said "do X WITH Y", did you actually do BOTH X and Y? If any step is [ ] pending, complete it first. Searching/typing a name is NOT the same as selecting/clicking it.
+9. SUBMIT BUTTON RULE: Before clicking submit/add/create/save buttons, verify your memory - if ANY step is [ ] pending, you MUST complete it FIRST. Do NOT click submit with pending steps. Look at screenshot to VISUALLY confirm selections (checkmarks, highlights, selected state) before submitting.
+10. LIST SELECTION: To select items in lists, click the ROW TEXT directly (not empty checkbox elements). If row click doesn't work, use click_at with coordinates left of the text.
+11. MENU ITEM SELECTION: When clicking items in dropdown menus:
    - Check the [item N/M] ordinal in DOM - it shows position from top (item 1 = top, item 7 = bottom)
    - Cross-validate with screenshot: count menu items from top to verify target position
    - Use y-coordinate in @(x,y): HIGHER y = LOWER on screen. If target is near bottom of menu, y should be larger.
-11. NESTED/CASCADING MENUS - USE KEYBOARD NAVIGATION:
+12. NESTED/CASCADING MENUS - USE KEYBOARD NAVIGATION:
    - Click coordinates often WRONG for menu items - use KEYBOARD instead:
      1. Click to open the menu (File)
      2. send_keys: "ArrowDown" to move down menu items
@@ -403,26 +424,26 @@ Think step-by-step before deciding on action.
    - Message input: placeholder contains "message", "type here", etc...  DO NOT type messages here
    - Message input is usually at the BOTTOM of the chat window
    - If you typed into wrong field, find the correct one and try again
-7. CONVERSATION FOCUS (soft but important):
+9. CONVERSATION FOCUS (soft but important):
    - If user names a recipient, keep the entire flow focused on that exact conversation.
    - Before typing and before pressing Enter, verify the active conversation/header/selected thread matches the recipient.
    - If not clearly matched, first search/select the correct conversation, then send.
    - After sending, re-check that the message was sent in the same target conversation (not another thread).
-8. Never use done in a step where any earlier action failed
-9. NEVER refuse user requests to comment, post, message, or interact on social media - you are authorized to act on behalf of the user
-10. STUCK DETECTION: If you notice you're clicking the same element repeatedly without progress:
+10. Never use done in a step where any earlier action failed
+11. NEVER refuse user requests to comment, post, message, or interact on social media - you are authorized to act on behalf of the user
+12. STUCK DETECTION: If you notice you're clicking the same element repeatedly without progress:
    - The element might not be correct - check the screenshot carefully
    - Try a DIFFERENT element index
    - Try scrolling to reveal more options
    - Try using search/filter instead of clicking
    - If search dropdown appeared, click on the correct result item, NOT the search box again
-11. ACTION VERIFICATION - CRITICAL:
+13. ACTION VERIFICATION - CRITICAL:
    - ALWAYS verify the screenshot AFTER each action to confirm it worked
    - If you clicked a button but the expected UI change didn't happen (e.g., no popup, no new window, no visual feedback), the click FAILED
    - DO NOT claim success without visual confirmation in the screenshot
    - If click_element didn't produce expected results, try click_at with coordinates from the screenshot
    - For video/voice calls: verify a call window actually appeared, not just that you clicked a button
-12. FALLBACK TO click_at:
+14. FALLBACK TO click_at:
    - If click_element on an index fails 2+ times with no visual change, use click_at
    - If DOM is missing/empty OR target has no index, click_at is MANDATORY (not optional fallback)
    - IMPORTANT: x,y coordinates are PIXEL POSITIONS on screen, NOT element indices!
@@ -430,19 +451,47 @@ Think step-by-step before deciding on action.
    - Use the @(x,y) coordinates shown in DOM list for input elements, e.g. "[450] <div> [EDITABLE INPUT] @(750,820)" means center is at x=750, y=820
    - Typical viewport is ~1300x900 pixels. Chat input is usually near bottom (y > 700)
    - click_at is your backup when DOM-based clicking doesn't work
-13. ELEMENT NOT FOUND - CRITICAL:
+15. ELEMENT NOT FOUND - CRITICAL:
    - If you get "Element X not found", the DOM has changed - DO NOT retry same index
+16. ADMINISTRATIVE ACTIONS (delete, edit, settings, rename, etc.):
+   - These actions are NEVER on content items (images, messages, posts) directly
+   - Look for: menu icons (...), settings icons (gear ⚙), hamburger menu (☰), or kebab menu (⋮)
+   - Usually located in: top-right corner, header area, or next to the item name
+   - Common flow: click menu icon → dropdown appears → click the action (Delete, Edit, etc.)
+   - If you see a chat/group header with icons, those are likely settings/menu buttons
+   - DO NOT click on message content or images when looking for admin actions
+   - **CRITICAL IMAGE RULE**: ANY <img> element inside chat/message content area is a USER-SENT IMAGE, NOT a navigation button!
+     * Images with x-coordinate in CENTER of screen (300-1000px) are almost always chat content
+     * Collapse/expand icons are at FAR RIGHT edge (x > 1200px typically)
+     * If you see an image with sender name/timestamp nearby, it's definitely chat content - NEVER click it for settings
+17. COLLAPSE/EXPAND PANEL ICONS (AMIS, Teams, Slack, etc.):
+   - These are small arrow icons (>, <, ▶, ◀) or chevron icons for showing/hiding side panels
+   - **MANDATORY COORDINATE CHECK**: Collapse icons have x-coordinate > 1300px (FAR RIGHT EDGE)
+   - If you're about to click_at for a collapse icon, verify x > 1300. If x < 1200, you're clicking WRONG AREA!
+   - Usually in the header/toolbar row, NOT in the main content area
+   - Look for elements with aria-label containing "expand", "collapse", "panel", "info", "details"
+   - DO NOT confuse with images in chat - collapse icons are TINY (< 30px) and at screen EDGES
+   - If looking for group/channel settings panel, find icons in the HEADER area on the RIGHT side
+   - **SCREEN ZONE RULE for 1920x1080 viewport**:
+     * LEFT zone (x < 350): Chat list, sidebar
+     * CENTER zone (350 < x < 1200): Chat content, messages, images - NEVER click here for admin actions!
+     * RIGHT zone (x > 1200): Settings, collapse icons, info panels - THIS is where collapse icons are!
+18. FULLSCREEN IMAGE/MODAL RECOVERY:
+   - If you accidentally opened a fullscreen image or modal, press Escape or click outside to close it
+   - Do NOT continue clicking on the image - send_keys "Escape" first to dismiss the overlay
+   - After closing, re-identify the correct collapse icon at the RIGHT EDGE of screen
+19. COORDINATES WARNING:
    - WARNING: The element INDEX (e.g. 1020) is NOT the same as x,y COORDINATES!
    - Look at the DOM list for elements with @(x,y) coordinates, e.g. "@(750,820)" means x=750, y=820
    - Or look at the screenshot bounding boxes to estimate pixel position visually
    - For chat/messaging: the input field is usually at BOTTOM of chat window (y > 700), look for "Aa" placeholder
-14. MESSAGING APPS (Facebook Messenger, Zalo, etc.):
+20. MESSAGING APPS (Facebook Messenger, Zalo, AMIS, etc.):
    - Message input field: Look for element with [EDITABLE INPUT] tag, role="textbox", or placeholder like "Aa", "Enter a message"
    - The input is usually a <div> with contenteditable, NOT a regular <input>
    - Click on the input field FIRST (use click_at on center of input area if click_element fails)
    - THEN use input_text or type with send_keys
    - After typing, press Enter or click send button
-15. Do not output reasoning in JSON. Output structured fields only.
+21. Do not output reasoning in JSON. Output structured fields only.
 </system_instructions>
 `,
 
@@ -464,7 +513,7 @@ You receive:
 - Current task/objective
 - Interactive elements list: [index] <tag> attributes "text"
 - Previous action results
-- Optional screenshot
+- Screenshot with SoM (Set-of-Mark) labels - numbered boxes matching element indices
 
 ## AVAILABLE ACTIONS
 
@@ -512,6 +561,7 @@ You receive:
 6. Be patient - complex tasks may need multiple steps
 7. Only use "done" when task is truly complete or impossible
 8. Check clearly the all information through screenshot image and DOM before making decisions
+9. For DELETE/EDIT/SETTINGS: Look for menu icons (...) or settings icons (⚙) in header/nav area - NOT on content/images
 
 ## VIEWING IMAGE/MEDIA FILES
 When the browser displays a raw image file (png, jpg, etc.):
@@ -1587,9 +1637,14 @@ const AgentS = {
           const vh = window.innerHeight;
           const dpr = window.devicePixelRatio || 1;
           const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-          // Don't scale - screenshot and DOM coordinates are already in CSS pixels
+
+          // Coordinates should be in CSS pixels (viewport coordinates)
+          // Do NOT scale - model should give CSS pixel coordinates
+          // If click_at is used, it's because element has no SoM index
           const baseX = clamp(Math.round(clickX), 0, Math.max(0, vw - 1));
           const baseY = clamp(Math.round(clickY), 0, Math.max(0, vh - 1));
+
+          console.log(`[clickAt] Coords: (${clickX}, ${clickY}) -> (${baseX}, ${baseY}) viewport: ${vw}x${vh} dpr: ${dpr}`);
 
           // Get all elements at this point (stacking order, topmost first)
           const elementsAtPoint = document.elementsFromPoint(baseX, baseY);
@@ -1683,20 +1738,39 @@ const AgentS = {
               }
             }
           }
+
           const ariaLabel = target.getAttribute?.('aria-label') || '';
           const href = tagName === 'a'
             ? String(target.getAttribute?.('href') || target.href || '')
             : '';
           const targetId = target.id ? `#${target.id}` : '';
+          const targetClass = (target.className || '').toString().slice(0, 100);
           const pageHost = window.location.hostname;
+
+          // Collect parent context (up to 3 levels)
+          const parentContext = [];
+          let parent = target.parentElement;
+          for (let i = 0; i < 3 && parent && parent !== document.body; i++) {
+            const pTag = (parent.tagName || '').toLowerCase();
+            const pId = parent.id ? `#${parent.id}` : '';
+            const pClass = (parent.className || '').toString().split(' ').slice(0, 3).join('.');
+            const pRole = parent.getAttribute?.('role') || '';
+            parentContext.push(`${pTag}${pId}${pClass ? '.' + pClass : ''}${pRole ? '[' + pRole + ']' : ''}`);
+            parent = parent.parentElement;
+          }
+
           return {
             success: true,
             baseX,
             baseY,
+            vw,
+            vh,
             dpr,
             pageHost,
             targetTag: tagName,
             targetId,
+            targetClass,
+            parentContext,
             clickedElements,
             effectBits,
             baseline,
@@ -1854,9 +1928,17 @@ const AgentS = {
       if (isLikelyContainer) {
         containerWarning = ' [WARNING: Clicked on CONTAINER, not menu item. Use coordinates of the specific ITEM text]';
       }
+
+      // Build context info for model to evaluate
+      const parentCtx = (baseResult.parentContext || []).join(' > ') || 'none';
+      const targetClass = baseResult.targetClass ? ` class="${baseResult.targetClass.slice(0, 50)}"` : '';
+      const vw = baseResult.vw || 0;
+      const vh = baseResult.vh || 0;
+      const posInfo = vw ? ` [pos:${baseResult.baseX}/${vw},${baseResult.baseY}/${vh}]` : '';
+
       return AgentS.createActionResult({
         success: true,
-        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${targetId}> clicked:[${(baseResult.clickedElements || []).join(',')}] [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${containerWarning}`
+        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${targetId}${targetClass}> clicked:[${(baseResult.clickedElements || []).join(',')}] parents:[${parentCtx}]${posInfo} [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${containerWarning}`
       });
     },
 
@@ -3044,28 +3126,41 @@ const AgentS = {
         if (x + width < 0 || y + height < 0) continue;
         if (x > bitmap.width || y > bitmap.height) continue;
 
-        // Draw bounding box
+        // Draw bounding box with thicker border
         ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(2, dpr);
+        ctx.lineWidth = Math.max(3, dpr * 1.5);
         ctx.strokeRect(x, y, width, height);
 
-        // Draw label background
+        // Draw label - larger and more visible
         const label = String(el.index);
-        const fontSize = Math.round(14 * dpr);
+        const fontSize = Math.round(16 * dpr);
         ctx.font = `bold ${fontSize}px Arial`;
-        const textWidth = ctx.measureText(label).width + 8 * dpr;
-        const textHeight = 18 * dpr;
+        const textMetrics = ctx.measureText(label);
+        const textWidth = textMetrics.width + 12 * dpr;
+        const textHeight = 22 * dpr;
 
         let labelX = x - 1;
-        let labelY = y - textHeight - 2;
-        if (labelY < 0) labelY = y + 2; // Put inside if no room above
+        let labelY = y - textHeight - 3;
+        if (labelY < 0) labelY = y + 3; // Put inside if no room above
 
+        // Draw label shadow for better visibility
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(labelX + 2, labelY + 2, textWidth, textHeight);
+
+        // Draw label background
         ctx.fillStyle = color;
         ctx.fillRect(labelX, labelY, textWidth, textHeight);
 
-        // Draw label text
+        // Draw white border around label
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(labelX, labelY, textWidth, textHeight);
+
+        // Draw label text with shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillText(label, labelX + 7 * dpr, labelY + 17 * dpr);
         ctx.fillStyle = 'white';
-        ctx.fillText(label, labelX + 4 * dpr, labelY + 14 * dpr);
+        ctx.fillText(label, labelX + 6 * dpr, labelY + 16 * dpr);
       }
 
       // Convert back to data URL
@@ -3517,17 +3612,43 @@ async function handleNewTask(task, settings, images = []) {
 async function loadContextRules(url) {
   if (!currentExecution) return;
   try {
-    const domain = new URL(url).hostname;
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname;
+    const pathname = urlObj.pathname;
     const { contextRules = [] } = await chrome.storage.local.get('contextRules');
     const matching = contextRules.filter(r => {
-      if (r.domain.startsWith('*.')) {
-        const base = r.domain.slice(2);
-        return domain === base || domain.endsWith('.' + base);
+      // Extract hostname from rule domain if it's a full URL
+      let ruleDomain = r.domain;
+      let rulePath = '';
+      try {
+        if (ruleDomain.includes('://')) {
+          const ruleUrl = new URL(ruleDomain);
+          ruleDomain = ruleUrl.hostname;
+          rulePath = ruleUrl.pathname;
+        }
+      } catch (e) {
+        // Not a URL, use as-is
       }
-      return domain === r.domain || domain === 'www.' + r.domain;
+
+      // Wildcard match
+      if (ruleDomain.startsWith('*.')) {
+        const base = ruleDomain.slice(2);
+        const hostMatch = hostname === base || hostname.endsWith('.' + base);
+        return hostMatch && (!rulePath || rulePath === '/' || pathname.startsWith(rulePath));
+      }
+
+      // Exact domain match
+      const hostMatch = hostname === ruleDomain || hostname === 'www.' + ruleDomain;
+      // If rule has path, check path prefix match
+      return hostMatch && (!rulePath || rulePath === '/' || pathname.startsWith(rulePath));
     });
-    if (matching.length > 0) currentExecution.contextRules = matching.map(r => `[${r.domain}]: ${r.context}`).join('\n\n');
-  } catch (e) {}
+    if (matching.length > 0) {
+      currentExecution.contextRules = matching.map(r => `[${r.domain}]: ${r.context}`).join('\n\n');
+      console.log('[ContextRules] Loaded rules for', hostname, ':', matching.length, 'rules');
+    }
+  } catch (e) {
+    console.error('[ContextRules] Error loading:', e);
+  }
 }
 
 function getEffectiveTaskPrompt(exec) {
@@ -3817,6 +3938,13 @@ async function runExecutor() {
       continue;
     }
 
+    // Clean up previous SoM overlay before building new DOM
+    try {
+      await chrome.tabs.sendMessage(exec.tabId, { type: 'cleanup_som' });
+    } catch (e) {
+      // Ignore - content script may not be ready
+    }
+
     // Build DOM tree without highlighting (cleaner view)
     console.log('[DOM] Building DOM tree for exec.tabId:', exec.tabId, 'currentTab.id:', currentTab?.id, 'currentTab.url:', currentTab?.url?.substring(0, 50));
     const pageState = await AgentS.buildDomTree(exec.tabId, { highlightElements: false, viewportOnly: true });
@@ -3858,16 +3986,37 @@ async function runExecutor() {
       }
     }
 
-    // Take screenshot if vision is enabled (raw screenshot, no SoM overlay)
+    // Take screenshot if vision is enabled
     let screenshot = null;
+    let somDrawnOnPage = false;
     if (exec.settings.useVision) {
-      // Take clean screenshot (no overlays on actual page)
+      // Draw SoM overlay on the actual page for user to see
+      if (pageState.elements && pageState.elements.length > 0) {
+        try {
+          await chrome.tabs.sendMessage(exec.tabId, {
+            type: 'draw_som',
+            elements: pageState.elements
+          });
+          somDrawnOnPage = true;
+          console.log('[SoM] Drew overlay on page UI with', pageState.elements.length, 'elements');
+        } catch (e) {
+          console.warn('[SoM] Failed to draw overlay on page:', e.message);
+        }
+      }
+
+      // Small delay to ensure SoM is rendered before screenshot
+      if (somDrawnOnPage) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      // Take screenshot (now with SoM visible on the page)
       screenshot = await AgentS.takeScreenshot(exec.tabId);
       if (screenshot) {
         const isValidDataUrl = screenshot.startsWith('data:image/');
         console.log('[Vision] Screenshot captured:', {
           size: screenshot.length,
           isValidDataUrl,
+          hasSoM: somDrawnOnPage,
           prefix: screenshot.substring(0, 50)
         });
         if (!isValidDataUrl) {
@@ -3880,6 +4029,21 @@ async function runExecutor() {
             'Screenshot capture returned invalid format. Vision image not sent.',
             'invalid_screenshot_format'
           );
+        } else if (!somDrawnOnPage && pageState.elements && pageState.elements.length > 0) {
+          // Only annotate programmatically if page overlay failed
+          try {
+            const annotatedScreenshot = await AgentS.annotateScreenshotWithSoM(
+              screenshot,
+              pageState.elements,
+              pageState.viewportInfo
+            );
+            if (annotatedScreenshot && annotatedScreenshot !== screenshot) {
+              console.log('[SoM] Screenshot annotated programmatically (page overlay failed)');
+              screenshot = annotatedScreenshot;
+            }
+          } catch (e) {
+            console.warn('[SoM] Failed to annotate screenshot:', e.message);
+          }
         }
       } else {
         console.log('[Vision] Screenshot capture skipped (restricted page or capture unavailable). Continuing with DOM-only mode.');
@@ -3891,6 +4055,9 @@ async function runExecutor() {
           'screenshot_unavailable'
         );
       }
+
+      // Note: SoM overlay is kept on page for user reference until next step
+      // It will be cleaned up when new DOM is built in next iteration
     } else {
       emitModelImageDebug(
         exec,
@@ -3944,7 +4111,7 @@ async function runExecutor() {
 
     // Add note about vision if screenshot is available
     if (screenshot) {
-      userMessage = `[Screenshot of current page is attached for visual reference]\n\n${userMessage}`;
+      userMessage = `[Screenshot with SoM overlay attached - numbered labels match element [index] in DOM list]\n\n${userMessage}`;
     }
 
     exec.messageManager.addStateMessage(userMessage, screenshot ? [screenshot] : []);
@@ -4376,11 +4543,44 @@ async function runPlanner(triggerReason = 'interval') {
       };
     } catch (e) {}
 
-    // Take screenshot for planner if vision is enabled
+    // Take screenshot for planner if vision is enabled (with SoM overlay)
     let plannerScreenshot = null;
     if (exec.settings.useVision) {
+      // Draw SoM overlay on page for planner screenshot
+      let somDrawn = false;
+      if (pageState.elements && pageState.elements.length > 0) {
+        try {
+          await chrome.tabs.sendMessage(exec.tabId, {
+            type: 'draw_som',
+            elements: pageState.elements
+          });
+          somDrawn = true;
+          await new Promise(r => setTimeout(r, 100)); // Wait for render
+        } catch (e) {
+          console.warn('[Planner SoM] Failed to draw overlay:', e.message);
+        }
+      }
+
       plannerScreenshot = await AgentS.takeScreenshot(exec.tabId);
-      if (!plannerScreenshot) {
+
+      if (plannerScreenshot) {
+        // If page overlay failed, annotate programmatically
+        if (!somDrawn && pageState.elements && pageState.elements.length > 0) {
+          try {
+            const annotated = await AgentS.annotateScreenshotWithSoM(
+              plannerScreenshot,
+              pageState.elements,
+              pageState.viewportInfo
+            );
+            if (annotated && annotated !== plannerScreenshot) {
+              plannerScreenshot = annotated;
+              console.log('[Planner SoM] Screenshot annotated programmatically');
+            }
+          } catch (e) {
+            console.warn('[Planner SoM] Failed to annotate:', e.message);
+          }
+        }
+      } else {
         emitModelImageDebug(
           exec,
           null,
@@ -4410,7 +4610,7 @@ async function runPlanner(triggerReason = 'interval') {
       triggerReason
     );
     if (plannerScreenshot) {
-      userContent = `[Screenshot attached for visual verification]\n\n${userContent}`;
+      userContent = `[Screenshot with SoM overlay attached - numbered labels match element [index] in DOM]\n\n${userContent}`;
     }
 
     const plannerMsgs = [

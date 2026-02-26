@@ -85,31 +85,35 @@
           top: `${rect.y}px`,
           width: `${rect.width}px`,
           height: `${rect.height}px`,
-          border: `2px solid ${color}`,
-          backgroundColor: obstructed ? `${color}11` : `${color}22`,
+          border: `3px solid ${color}`,
+          backgroundColor: obstructed ? `${color}11` : `${color}15`,
           boxSizing: 'border-box',
-          pointerEvents: 'none'
+          pointerEvents: 'none',
+          boxShadow: `0 0 0 1px rgba(255,255,255,0.3), inset 0 0 0 1px rgba(255,255,255,0.2)`
         });
 
-        // Create label
+        // Create label - larger and more visible
         const label = document.createElement('div');
         label.className = 'crab-som-label';
         label.textContent = String(index);
 
         Object.assign(label.style, {
           position: 'absolute',
-          top: '-18px',
+          top: '-22px',
           left: '-2px',
-          backgroundColor: obstructed ? '#888' : color,
+          backgroundColor: obstructed ? '#666' : color,
           color: 'white',
-          fontSize: '11px',
+          fontSize: '14px',
           fontWeight: 'bold',
           fontFamily: 'Arial, sans-serif',
-          padding: '1px 4px',
-          borderRadius: '3px',
-          minWidth: '16px',
+          padding: '2px 6px',
+          borderRadius: '4px',
+          minWidth: '20px',
           textAlign: 'center',
-          whiteSpace: 'nowrap'
+          whiteSpace: 'nowrap',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.5)',
+          border: '1px solid rgba(255,255,255,0.5)',
+          textShadow: '0 1px 1px rgba(0,0,0,0.5)'
         });
 
         if (obstructed) {
