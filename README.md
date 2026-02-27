@@ -31,7 +31,13 @@ This project runs with plain JavaScript and does not require a build step.
   - Ollama
 - Vision mode (send screenshots to the model).
 - Adaptive planner checks (interval + failure/loop/follow-up triggers).
+- Exploration guardrail policy to reduce blind repeated clicks.
 - Follow-up interrupt while running: users can send a new instruction during execution.
+- Task recording for each run (step trace + visual replay frames).
+- Replay export:
+  - Export last run as interactive HTML replay.
+  - Export last run as animated GIF replay.
+  - Export last run as teaching JSON record.
 - Image attachments in prompts:
   - Up to 4 images per message.
   - Up to 5 MB per image.
@@ -90,6 +96,7 @@ In the Settings panel:
 - `Model`: choose model per provider.
 - `Base URL`: used for OpenAI Compatible, Ollama, or custom endpoints.
 - `Use Vision`: enable or disable screenshot input.
+- `Task Recording`: enable or disable step recording and replay export.
 - `Max Steps`: max execution steps per task.
 - `Planning Interval`: base planner cadence (planner can run earlier on failures/loops/user updates).
 - `Allowed Domains`, `Blocked Domains`: currently stored in settings.
@@ -101,6 +108,7 @@ Runtime default values:
 - `useVision`: `true`
 - `maxSteps`: `100`
 - `planningInterval`: `3`
+- `enableTaskRecording`: `true`
 - `maxFailures`: `3`
 - `maxInputTokens`: `128000`
 
@@ -123,13 +131,20 @@ Technical note:
 
 ### 6.3 Cancel a Task
 
-- Click `Cancel` in the execution bar.
+- Click the primary `Stop` button (square icon) in the input area while a task is running.
 
 ### 6.4 Context Rules
 
 - Open the `CONTEXT RULES` tab.
 - Add rules by domain.
 - Matching rules are injected into context when tasks run on that domain.
+
+### 6.5 Export Replay and Teaching Record
+
+- Open `Settings` -> `Data`.
+- Click `Export Replay (HTML)` to download a visual replay of the latest task.
+- Click `Export Replay (GIF)` to download an animated replay for sharing.
+- Click `Export Teaching Record` to download the latest structured step trace JSON.
 
 ## 7. Supported Browser Actions
 
@@ -148,6 +163,9 @@ Technical note:
 - `scroll_to_top`
 - `scroll_to_bottom`
 - `scroll_to_text`
+- `find_text`
+- `zoom_page`
+- `get_accessibility_tree`
 - `wait`
 - `done`
 

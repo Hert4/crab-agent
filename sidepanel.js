@@ -27,6 +27,21 @@ let mascotCrabSettleTimer = null;
 let mascotCrabMoodHoldUntil = 0;
 let isExecutionActive = false;
 let liveActivityState = { action: null, image: null };
+const cancelledTaskIds = new Set();
+
+const PRIMARY_ACTION_ICONS = {
+  send: `
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 19V5"></path>
+      <path d="M5 12l7-7 7 7"></path>
+    </svg>
+  `,
+  stop: `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="7" y="7" width="10" height="10" rx="1.5" ry="1.5"></rect>
+    </svg>
+  `
+};
 
 const MAX_IMAGE_ATTACHMENTS = 4;
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
@@ -237,11 +252,16 @@ const elements = {
   visionToggle: document.getElementById('visionToggle'),
   autoScrollToggle: document.getElementById('autoScrollToggle'),
   thinkingToggle: document.getElementById('thinkingToggle'),
+  recordingToggle: document.getElementById('recordingToggle'),
+  recordingNote: document.getElementById('recordingNote'),
   thinkingBudgetInput: document.getElementById('thinkingBudgetInput'),
   maxStepsInput: document.getElementById('maxStepsInput'),
   planningIntervalInput: document.getElementById('planningIntervalInput'),
   allowedDomainsInput: document.getElementById('allowedDomainsInput'),
   blockedDomainsInput: document.getElementById('blockedDomainsInput'),
+  exportReplayBtn: document.getElementById('exportReplayBtn'),
+  exportReplayGifBtn: document.getElementById('exportReplayGifBtn'),
+  exportTeachingBtn: document.getElementById('exportTeachingBtn'),
   exportDataBtn: document.getElementById('exportDataBtn'),
   clearHistoryBtn: document.getElementById('clearHistoryBtn'),
   themeSelect: document.getElementById('themeSelect'),
@@ -353,6 +373,7 @@ async function init() {
   renderAttachmentPreview();
   initMascotCrab();
   resetLiveActivityPanel(false);
+  updatePrimaryActionButton();
 
   // Start with a new task ready
   startNewTask();
@@ -402,6 +423,10 @@ function handleBackgroundMessage(message) {
     case 'screenshot':
       // Handle screenshot response
       break;
+
+    case 'recording_export_data':
+      handleRecordingExportData(message);
+      break;
   }
 }
 
@@ -410,8 +435,25 @@ function handleBackgroundMessage(message) {
  */
 function handleExecutionEvent(event) {
   const { state, actor, taskId, step, maxSteps, details } = event;
+  const isTerminalState = state === 'TASK_OK' || state === 'TASK_FAIL';
 
   console.log('Execution event:', state, details);
+
+  if (taskId && cancelledTaskIds.has(taskId) && state !== 'TASK_CANCEL' && state !== 'TASK_START') {
+    console.log('Ignoring event for cancelled task:', taskId, state);
+    if (isTerminalState) {
+      cancelledTaskIds.delete(taskId);
+    }
+    return;
+  }
+  if (isTerminalState && taskId && currentTaskId && taskId !== currentTaskId) {
+    console.log('Ignoring stale terminal event for non-active task:', taskId, 'active:', currentTaskId);
+    return;
+  }
+  if (isTerminalState && taskId && !currentTaskId) {
+    console.log('Ignoring terminal event because there is no active task:', taskId, state);
+    return;
+  }
 
   // Update execution bar
   if (step !== undefined && elements.executionStep) {
@@ -421,6 +463,10 @@ function handleExecutionEvent(event) {
   switch (state) {
     case 'TASK_START':
       currentTaskId = taskId;
+      cancelledTaskIds.clear();
+      if (taskId) {
+        cancelledTaskIds.delete(taskId);
+      }
       console.log('TASK_START - showing execution bar');
       showExecutionBar();
       setExecutionText('Starting task...');
@@ -434,6 +480,7 @@ function handleExecutionEvent(event) {
       stopTimer();
       removeThinkingIndicator();
       addAssistantMessage(details?.finalAnswer || 'Task completed successfully!');
+      currentTaskId = null;
       saveCurrentTask();
       playNotificationSound('success');
       break;
@@ -445,16 +492,21 @@ function handleExecutionEvent(event) {
       // Show the actual error/answer message
       const errorMsg = details?.error || details?.finalAnswer || 'Unknown error';
       addSystemMessage(errorMsg, 'error');
+      currentTaskId = null;
       saveCurrentTask();
       playNotificationSound('error');
       break;
 
     case 'TASK_CANCEL':
       console.log('Task cancelled, hiding execution bar');
+      if (taskId) {
+        cancelledTaskIds.add(taskId);
+      }
       hideExecutionBar();
       stopTimer();
       removeThinkingIndicator();
       addSystemMessage('Task cancelled by user');
+      currentTaskId = null;
       setMascotCrabMood('sad', 2200);
       saveCurrentTask();
       break;
@@ -640,8 +692,14 @@ function setupEventListeners() {
     });
   }
 
-  // Send message
-  elements.sendBtn.addEventListener('click', sendMessage);
+  // Primary action button: send when idle, cancel when executing
+  elements.sendBtn.addEventListener('click', () => {
+    if (isExecutionActive) {
+      requestTaskCancellation();
+      return;
+    }
+    sendMessage();
+  });
   elements.chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -666,11 +724,13 @@ function setupEventListeners() {
     elements.imageInput.addEventListener('change', handleImageSelection);
   }
 
-  // Cancel button
-  elements.cancelBtn.addEventListener('click', () => {
-    console.log('Cancel button clicked');
-    requestTaskCancellation();
-  });
+  // Cancel button in legacy execution bar (kept for compatibility)
+  if (elements.cancelBtn) {
+    elements.cancelBtn.addEventListener('click', () => {
+      console.log('Cancel button clicked');
+      requestTaskCancellation();
+    });
+  }
 
   // Open in new tab button
   if (elements.openTabBtn) {
@@ -720,6 +780,20 @@ function setupEventListeners() {
     updateThinkingControls();
     saveSettings();
   });
+
+  if (elements.recordingToggle) {
+    elements.recordingToggle.addEventListener('click', () => {
+      elements.recordingToggle.classList.toggle('active');
+      settings.enableTaskRecording = elements.recordingToggle.classList.contains('active');
+      updateTaskRecordingHelp();
+      saveSettings();
+      if (settings.enableTaskRecording) {
+        addSystemMessage('Task Recording ON: steps are saved for Replay (HTML/GIF) and Teaching JSON export.', 'info', false);
+      } else {
+        addSystemMessage('Task Recording OFF: agent still runs, but new replay/teaching data will not be saved.', 'info', false);
+      }
+    });
+  }
 
   elements.thinkingBudgetInput.addEventListener('change', () => {
     const parsed = parseInt(elements.thinkingBudgetInput.value, 10);
@@ -807,6 +881,39 @@ function setupEventListeners() {
 
   // Export data
   elements.exportDataBtn.addEventListener('click', exportData);
+
+  if (elements.exportReplayBtn) {
+    elements.exportReplayBtn.addEventListener('click', () => {
+      if (!port) {
+        addSystemMessage('Background connection is not ready. Please retry.', 'error', false);
+        return;
+      }
+      port.postMessage({ type: 'export_replay_html' });
+      addSystemMessage('Preparing replay export...', 'info', false);
+    });
+  }
+
+  if (elements.exportReplayGifBtn) {
+    elements.exportReplayGifBtn.addEventListener('click', () => {
+      if (!port) {
+        addSystemMessage('Background connection is not ready. Please retry.', 'error', false);
+        return;
+      }
+      port.postMessage({ type: 'export_replay_gif' });
+      addSystemMessage('Rendering GIF export (this may take a few seconds)...', 'info', false);
+    });
+  }
+
+  if (elements.exportTeachingBtn) {
+    elements.exportTeachingBtn.addEventListener('click', () => {
+      if (!port) {
+        addSystemMessage('Background connection is not ready. Please retry.', 'error', false);
+        return;
+      }
+      port.postMessage({ type: 'export_teaching_record' });
+      addSystemMessage('Preparing teaching record export...', 'info', false);
+    });
+  }
 
   // Clear history
   elements.clearHistoryBtn.addEventListener('click', async () => {
@@ -903,6 +1010,7 @@ function startNewTask() {
   clearPendingImages();
   resetLiveActivityPanel(false);
   updateCharCounter();
+  updatePrimaryActionButton();
 
   showView('chat');
   elements.chatInput.focus();
@@ -937,6 +1045,9 @@ function openTask(task) {
 
 function requestTaskCancellation() {
   if (!port) return;
+  if (currentTaskId) {
+    cancelledTaskIds.add(currentTaskId);
+  }
   port.postMessage({ type: 'cancel_task' });
 
   if (isExecutionActive) {
@@ -1311,6 +1422,18 @@ function humanizeAction(action, params) {
       const text = params?.text || '';
       return text ? `Scrolling to "${toCompactText(text, 25)}"` : 'Scrolling to element';
     },
+    'find_text': () => {
+      const text = params?.text || '';
+      return text ? `Finding "${toCompactText(text, 25)}"` : 'Finding text on page';
+    },
+    'zoom_page': () => {
+      if (params?.mode === 'in') return 'Zooming in';
+      if (params?.mode === 'out') return 'Zooming out';
+      if (params?.mode === 'reset') return 'Resetting zoom';
+      if (params?.level != null || params?.percent != null || params?.zoom != null) return 'Setting zoom level';
+      return 'Adjusting zoom';
+    },
+    'get_accessibility_tree': () => 'Reading accessibility tree',
     'hover': () => {
       const target = params?.text || params?.element_text || '';
       return target ? `Hovering over "${toCompactText(target, 25)}"` : 'Hovering element';
@@ -1618,8 +1741,29 @@ function setExecutionText(text) {
   if (elements.executionText) {
     elements.executionText.textContent = text;
   }
+  if (text) {
+    setLiveActivityHint(text);
+  }
   updateThinkingIndicatorFromStatus(text);
   updateMascotCrabFromStatus(text);
+}
+
+function updatePrimaryActionButton() {
+  if (!elements.sendBtn) return;
+
+  if (isExecutionActive) {
+    elements.sendBtn.classList.add('is-stop');
+    elements.sendBtn.innerHTML = PRIMARY_ACTION_ICONS.stop;
+    elements.sendBtn.title = 'Cancel current task';
+    elements.sendBtn.setAttribute('aria-label', 'Cancel current task');
+    elements.sendBtn.disabled = false;
+    return;
+  }
+
+  elements.sendBtn.classList.remove('is-stop');
+  elements.sendBtn.innerHTML = PRIMARY_ACTION_ICONS.send;
+  elements.sendBtn.title = '';
+  elements.sendBtn.setAttribute('aria-label', 'Send message');
 }
 
 /**
@@ -1858,6 +2002,13 @@ function updateCharCounter() {
   }
 
   // Disable send button if over limit
+  if (isExecutionActive) {
+    elements.sendBtn.disabled = false;
+    elements.sendBtn.title = 'Cancel current task';
+    return;
+  }
+
+  // Disable send button if over limit
   if (length > CHAR_LIMIT) {
     elements.sendBtn.disabled = true;
     elements.sendBtn.title = `Message too long (${formattedLength} / ${formattedLimit} characters)`;
@@ -1940,20 +2091,17 @@ function updateMascotCrabEnergy() {
  * Show execution bar
  */
 function showExecutionBar() {
-  console.log('showExecutionBar called, element:', elements.executionBar);
+  // Keep legacy execution bar hidden; use primary input button state instead.
   if (elements.executionBar) {
-    elements.executionBar.classList.add('active');
-    console.log('Execution bar classes:', elements.executionBar.className);
+    elements.executionBar.classList.remove('active');
+    elements.executionBar.classList.add('hidden');
   }
   isExecutionActive = true;
+  updatePrimaryActionButton();
   if (elements.mascotCrab) {
     elements.mascotCrab.classList.add('busy');
   }
   notifyCrabActivity('thinking');
-  // Keep send enabled so users can interrupt with follow-up instructions.
-  if (elements.sendBtn) {
-    elements.sendBtn.disabled = false;
-  }
 }
 
 /**
@@ -1962,16 +2110,15 @@ function showExecutionBar() {
 function hideExecutionBar() {
   if (elements.executionBar) {
     elements.executionBar.classList.remove('active');
+    elements.executionBar.classList.add('hidden');
   }
   isExecutionActive = false;
+  updatePrimaryActionButton();
   if (elements.mascotCrab) {
     elements.mascotCrab.classList.remove('busy');
   }
   settleMascotCrabMood(1200);
-  // Re-enable send button
-  if (elements.sendBtn) {
-    elements.sendBtn.disabled = false;
-  }
+  updateCharCounter();
 }
 
 /**
@@ -2052,6 +2199,7 @@ async function loadSettings() {
     useVision: true,
     autoScroll: true,
     enableThinking: false,
+    enableTaskRecording: true,
     thinkingBudgetTokens: 1024,
     maxSteps: 100,
     planningInterval: 3,
@@ -2079,6 +2227,9 @@ async function saveSettings() {
   settings.useVision = elements.visionToggle.classList.contains('active');
   settings.autoScroll = elements.autoScrollToggle.classList.contains('active');
   settings.enableThinking = elements.thinkingToggle.classList.contains('active');
+  if (elements.recordingToggle) {
+    settings.enableTaskRecording = elements.recordingToggle.classList.contains('active');
+  }
   const thinkingBudget = parseInt(elements.thinkingBudgetInput.value, 10);
   settings.thinkingBudgetTokens = Number.isFinite(thinkingBudget)
     ? Math.min(3072, Math.max(1024, thinkingBudget))
@@ -2107,6 +2258,10 @@ function updateSettingsUI() {
   elements.visionToggle.classList.toggle('active', settings.useVision);
   elements.autoScrollToggle.classList.toggle('active', settings.autoScroll);
   elements.thinkingToggle.classList.toggle('active', !!settings.enableThinking);
+  if (elements.recordingToggle) {
+    elements.recordingToggle.classList.toggle('active', settings.enableTaskRecording !== false);
+  }
+  updateTaskRecordingHelp();
   elements.thinkingBudgetInput.value = Number.isFinite(Number(settings.thinkingBudgetTokens))
     ? Math.min(3072, Math.max(1024, Number(settings.thinkingBudgetTokens)))
     : 1024;
@@ -2148,6 +2303,15 @@ function updateThinkingControls() {
   if (elements.thinkingBudgetInput) {
     elements.thinkingBudgetInput.disabled = !enabled;
   }
+}
+
+function updateTaskRecordingHelp() {
+  if (!elements.recordingNote) return;
+  if (settings.enableTaskRecording === false) {
+    elements.recordingNote.textContent = 'OFF: the agent still runs, but it will not save new step screenshots/actions, so Replay and Teaching exports are not updated.';
+    return;
+  }
+  elements.recordingNote.textContent = 'ON: saves step screenshots + actions for each task so you can export Replay (HTML/GIF) and Teaching JSON from the Data section.';
 }
 
 /**
@@ -2428,6 +2592,52 @@ async function saveRule() {
   await chrome.storage.local.set({ contextRules });
   elements.ruleModal.classList.remove('active');
   renderContextRules();
+}
+
+function handleRecordingExportData(message) {
+  const content = typeof message?.content === 'string' ? message.content : '';
+  const base64 = typeof message?.base64 === 'string' ? message.base64 : '';
+  const filename = message?.filename || `crab-agent-export-${Date.now()}.txt`;
+  const mimeType = message?.mimeType || 'text/plain';
+  const exportType = message?.exportType || 'unknown';
+
+  if (!content && !base64) {
+    addSystemMessage('Export failed: empty payload returned from background.', 'error', false);
+    return;
+  }
+
+  try {
+    let blob;
+    if (base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      blob = new Blob([bytes], { type: mimeType });
+    } else {
+      blob = new Blob([content], { type: mimeType });
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    if (exportType === 'replay_html') {
+      addSystemMessage(`Replay exported: ${filename}`, 'success', false);
+    } else if (exportType === 'replay_gif') {
+      addSystemMessage(`Replay GIF exported: ${filename}`, 'success', false);
+    } else if (exportType === 'teaching_json') {
+      addSystemMessage(`Teaching record exported: ${filename}`, 'success', false);
+    } else {
+      addSystemMessage(`Exported: ${filename}`, 'success', false);
+    }
+  } catch (error) {
+    addSystemMessage(`Export failed: ${error.message}`, 'error', false);
+  }
 }
 
 /**

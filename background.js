@@ -609,6 +609,9 @@ CRITICAL: The "thought" field is MANDATORY and MUST come FIRST.
 - wait: {"wait": {"seconds": 2}}
 - wait_for_element: {"wait_for_element": {"selector": ".my-class", "timeout": 5000}}
 - wait_for_stable: {"wait_for_stable": {"timeout": 2000}} // Wait for DOM to stop changing
+- find_text: {"find_text": {"text": "Settings", "max_results": 8, "scroll_to_first": true}} // Search text and interactive labels in page content
+- zoom_page: {"zoom_page": {"mode": "in", "step": 0.1}} // mode: "in" | "out" | "reset", or set {"level": 1.25} / {"percent": 125}
+- get_accessibility_tree: {"get_accessibility_tree": {"mode": "interactive", "max_depth": 6}} // mode: "interactive" or "all", optional ref_id root
 - done: {"done": {"text": "final answer", "success": true}}
   **RESPONSE STYLE**: Write "text" in natural, friendly language for the user:
   - Do NOT mention: URL parameters, DOM elements, technical implementation details
@@ -650,6 +653,7 @@ CRITICAL: The "thought" field is MANDATORY and MUST come FIRST.
    - Try scrolling to reveal more options
    - Try using search/filter instead of clicking
    - If search dropdown appeared, click on the correct result item, NOT the search box again
+   - If 2+ click attempts fail or have no visible effect, STOP blind clicks and use find_text or get_accessibility_tree before clicking again
 13. ACTION VERIFICATION - CRITICAL:
    - ALWAYS verify the screenshot AFTER each action to confirm it worked
    - If you clicked a button but the expected UI change didn't happen (e.g., no popup, no new window, no visual feedback), the click FAILED
@@ -974,7 +978,7 @@ Field relationships:
     message += `NAVIGATION: search_google, go_to_url, go_back, switch_tab, open_tab, close_tab\n`;
     message += `KEYBOARD: send_keys (Enter, ArrowDown, ArrowUp, Escape, Tab)\n`;
     message += `SCROLL: scroll_down, scroll_up, scroll_to_text, scroll_element (for panels/sidebars)\n`;
-    message += `UTILITY: wait, wait_for_element, wait_for_stable, done\n\n`;
+    message += `UTILITY: wait, wait_for_element, wait_for_stable, find_text, zoom_page, get_accessibility_tree, done\n\n`;
     message += `# Output format (JSON with Chain of Thought):\n`;
     message += `{\n`;
     message += `  "thought": {"observation": "...", "analysis": "...", "plan": "..."},\n`;
@@ -1283,6 +1287,15 @@ const AgentS = {
           break;
         case 'scroll_element':
           result = await AgentS.actions.scrollElement(params.index, params.direction || 'down', tabId);
+          break;
+        case 'find_text':
+          result = await AgentS.actions.findText(params.text, tabId, params);
+          break;
+        case 'zoom_page':
+          result = await AgentS.actions.zoomPage(params, tabId);
+          break;
+        case 'get_accessibility_tree':
+          result = await AgentS.actions.getAccessibilityTree(params, tabId);
           break;
         case 'wait_for_element':
           result = await AgentS.actions.waitForElement(params.selector, params.timeout || 5000, tabId);
@@ -3123,6 +3136,468 @@ const AgentS = {
       });
     },
 
+    async findText(text, tabId, options = {}) {
+      const query = String(text || options?.text || '').trim();
+      if (!query) {
+        return AgentS.createActionResult({
+          success: false,
+          error: 'find_text requires non-empty "text".'
+        });
+      }
+
+      const safeOptions = {
+        exact: options?.exact === true,
+        caseSensitive: options?.case_sensitive === true || options?.caseSensitive === true,
+        maxResults: Math.max(1, Math.min(15, parseInt(options?.max_results ?? options?.maxResults ?? 8, 10) || 8)),
+        scrollToFirst: options?.scroll_to_first !== false && options?.scrollToFirst !== false
+      };
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (searchText, opts) => {
+          const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const toLower = (value) => String(value || '').toLowerCase();
+          const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+          const queryRaw = String(searchText || '');
+          const queryNorm = normalize(queryRaw);
+          const queryCmp = opts.caseSensitive ? queryNorm : toLower(queryNorm);
+
+          if (!queryNorm) {
+            return { success: false, error: 'Empty query' };
+          }
+
+          const isVisible = (el) => {
+            if (!(el instanceof Element)) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            return true;
+          };
+
+          const compare = (haystack) => {
+            const normalized = normalize(haystack);
+            if (!normalized) return false;
+            const candidate = opts.caseSensitive ? normalized : toLower(normalized);
+            return opts.exact ? candidate === queryCmp : candidate.includes(queryCmp);
+          };
+
+          const scoreMatch = (textValue) => {
+            const normalized = normalize(textValue);
+            const candidate = opts.caseSensitive ? normalized : toLower(normalized);
+            if (!candidate) return 0;
+            if (candidate === queryCmp) return 100;
+            if (candidate.startsWith(queryCmp)) return 80;
+            return 50;
+          };
+
+          const buildDomState = () => {
+            try {
+              if (window.AgentSDom?.buildDomTree) {
+                const domState = window.AgentSDom.buildDomTree({
+                  highlightElements: false,
+                  viewportOnly: false,
+                  maxElements: 800
+                });
+                window.AgentSDom.lastBuildResult = domState;
+                return domState;
+              }
+            } catch (e) {}
+            return window.AgentSDom?.lastBuildResult || null;
+          };
+
+          const domState = buildDomState();
+          const rawMatches = [];
+          const dedupe = new Set();
+
+          if (domState?.elements?.length) {
+            for (const el of domState.elements) {
+              const attrs = el.attributes || {};
+              const attrText = Object.values(attrs).join(' ');
+              const haystack = `${el.text || ''} ${attrText}`.trim();
+              if (!compare(haystack)) continue;
+
+              const key = `dom:${el.index}`;
+              if (dedupe.has(key)) continue;
+              dedupe.add(key);
+
+              rawMatches.push({
+                source: 'dom',
+                index: el.index,
+                ref_id: el.ref_id || null,
+                tag: el.tagName || '',
+                text: normalize(el.text || attrText || ''),
+                rect: el.rect || null,
+                score: scoreMatch(el.text || attrText) + 25
+              });
+            }
+          }
+
+          // Fallback: scan visible text nodes for non-interactive matches
+          try {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              const node = walker.currentNode;
+              const parent = node.parentElement;
+              if (!parent || !isVisible(parent)) continue;
+              const textContent = normalize(node.textContent || '');
+              if (!compare(textContent)) continue;
+
+              const rect = parent.getBoundingClientRect();
+              const key = `text:${Math.round(rect.x)}:${Math.round(rect.y)}:${textContent.slice(0, 40)}`;
+              if (dedupe.has(key)) continue;
+              dedupe.add(key);
+
+              rawMatches.push({
+                source: 'text',
+                index: null,
+                ref_id: null,
+                tag: parent.tagName?.toLowerCase?.() || '',
+                text: textContent.slice(0, 180),
+                rect: {
+                  x: Math.round(rect.x),
+                  y: Math.round(rect.y),
+                  width: Math.round(rect.width),
+                  height: Math.round(rect.height)
+                },
+                score: scoreMatch(textContent)
+              });
+
+              if (rawMatches.length >= 80) break;
+            }
+          } catch (e) {}
+
+          rawMatches.sort((a, b) => b.score - a.score);
+          const maxResults = clamp(parseInt(opts.maxResults, 10) || 8, 1, 15);
+          const matches = rawMatches.slice(0, maxResults).map((item) => ({
+            source: item.source,
+            index: item.index,
+            ref_id: item.ref_id,
+            tag: item.tag,
+            text: item.text,
+            rect: item.rect
+          }));
+
+          if (opts.scrollToFirst && matches.length > 0) {
+            const first = matches[0];
+            try {
+              let target = null;
+              if (Number.isFinite(first.index) && window.AgentSDom?.getElementByIndex) {
+                target = window.AgentSDom.getElementByIndex(first.index);
+              }
+              if (!target && first.ref_id && window.AgentSDom?.getElementByRef) {
+                target = window.AgentSDom.getElementByRef(first.ref_id);
+              }
+              if (!target && first.rect) {
+                const cx = first.rect.x + Math.round(first.rect.width / 2);
+                const cy = first.rect.y + Math.round(first.rect.height / 2);
+                target = document.elementFromPoint(cx, cy);
+              }
+              if (target && typeof target.scrollIntoView === 'function') {
+                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            } catch (e) {}
+          }
+
+          return {
+            success: true,
+            query: queryNorm,
+            totalMatches: rawMatches.length,
+            returned: matches.length,
+            matches
+          };
+        },
+        args: [query, safeOptions]
+      });
+
+      const payload = result[0]?.result || { success: false, error: 'find_text script failed' };
+      if (!payload.success) {
+        return AgentS.createActionResult(payload);
+      }
+
+      if (!payload.returned) {
+        return AgentS.createActionResult({
+          success: true,
+          message: `No match found for "${query}".`
+        });
+      }
+
+      const topLines = payload.matches.map((match) => {
+        const idx = Number.isFinite(match.index) ? `[${match.index}] ` : '';
+        const position = match.rect
+          ? ` @(${Math.round(match.rect.x + match.rect.width / 2)},${Math.round(match.rect.y + match.rect.height / 2)})`
+          : '';
+        return `- ${idx}<${match.tag || 'node'}> "${String(match.text || '').slice(0, 80)}"${position}`;
+      });
+
+      const memoryBlock = [
+        `[FIND_TEXT "${payload.query}"]`,
+        ...topLines
+      ].join('\n');
+
+      return AgentS.createActionResult({
+        success: true,
+        includeInMemory: true,
+        extractedContent: memoryBlock,
+        message: `Found ${payload.totalMatches} matches for "${payload.query}". Top ${payload.returned} stored in memory.`
+      });
+    },
+
+    async zoomPage(params, tabId) {
+      const safeParams = (params && typeof params === 'object') ? params : {};
+      const parseZoomValue = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return value > 5 ? value / 100 : value;
+        }
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (!trimmed) return null;
+          if (trimmed.endsWith('%')) {
+            const parsedPercent = parseFloat(trimmed.slice(0, -1));
+            return Number.isFinite(parsedPercent) ? parsedPercent / 100 : null;
+          }
+          const parsed = parseFloat(trimmed);
+          if (!Number.isFinite(parsed)) return null;
+          return parsed > 5 ? parsed / 100 : parsed;
+        }
+        return null;
+      };
+
+      const mode = String(safeParams.mode || '').toLowerCase();
+      const stepRaw = parseFloat(safeParams.step);
+      const step = Number.isFinite(stepRaw) && stepRaw > 0 ? Math.min(stepRaw, 1) : 0.1;
+
+      try {
+        const current = await chrome.tabs.getZoom(tabId);
+        let target = current;
+
+        if (mode === 'in') {
+          target = current + step;
+        } else if (mode === 'out') {
+          target = current - step;
+        } else if (mode === 'reset') {
+          target = 1;
+        } else {
+          const explicitLevel =
+            parseZoomValue(safeParams.level) ??
+            parseZoomValue(safeParams.zoom) ??
+            parseZoomValue(safeParams.percent);
+          if (explicitLevel == null) {
+            return AgentS.createActionResult({
+              success: false,
+              error: 'zoom_page requires mode (in|out|reset) or level/percent.'
+            });
+          }
+          target = explicitLevel;
+        }
+
+        target = Math.max(0.25, Math.min(5, Math.round(target * 100) / 100));
+        await chrome.tabs.setZoom(tabId, target);
+
+        const beforePercent = Math.round(current * 100);
+        const afterPercent = Math.round(target * 100);
+        const direction = afterPercent > beforePercent ? 'in' : afterPercent < beforePercent ? 'out' : 'unchanged';
+
+        return AgentS.createActionResult({
+          success: true,
+          message: `Zoom ${direction}: ${beforePercent}% -> ${afterPercent}%`
+        });
+      } catch (error) {
+        return AgentS.createActionResult({
+          success: false,
+          error: `zoom_page failed: ${error?.message || String(error)}`
+        });
+      }
+    },
+
+    async getAccessibilityTree(params, tabId) {
+      const safeParams = (params && typeof params === 'object') ? params : {};
+      const mode = String(safeParams.mode || 'interactive').toLowerCase() === 'all' ? 'all' : 'interactive';
+      const maxDepthRaw = parseInt(safeParams.max_depth ?? safeParams.maxDepth ?? 6, 10);
+      const maxDepth = Number.isFinite(maxDepthRaw) ? Math.max(1, Math.min(maxDepthRaw, 12)) : 6;
+      const maxNodesRaw = parseInt(safeParams.max_nodes ?? safeParams.maxNodes ?? 180, 10);
+      const maxNodes = Number.isFinite(maxNodesRaw) ? Math.max(20, Math.min(maxNodesRaw, 400)) : 180;
+      const refId = typeof safeParams.ref_id === 'string' ? safeParams.ref_id.trim() : '';
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (treeMode, depthLimit, nodeLimit, rootRefId) => {
+          const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const interactiveRoles = new Set([
+            'button', 'link', 'checkbox', 'radio', 'tab', 'menuitem',
+            'option', 'switch', 'textbox', 'combobox', 'listbox', 'searchbox',
+            'treeitem', 'slider', 'spinbutton', 'gridcell'
+          ]);
+          const interactiveTags = new Set(['a', 'button', 'input', 'textarea', 'select', 'summary', 'details']);
+
+          const isVisible = (el) => {
+            if (!(el instanceof Element)) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none') return false;
+            if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+            if (style.opacity === '0') return false;
+            return true;
+          };
+
+          const isInteractive = (el) => {
+            if (!(el instanceof Element)) return false;
+            const tag = (el.tagName || '').toLowerCase();
+            if (interactiveTags.has(tag)) return true;
+            const role = (el.getAttribute('role') || '').toLowerCase();
+            if (interactiveRoles.has(role)) return true;
+            const tabindex = el.getAttribute('tabindex');
+            if (tabindex !== null && tabindex !== '-1') return true;
+            if (el.isContentEditable) return true;
+            return false;
+          };
+
+          const getLabel = (el) => {
+            if (!(el instanceof Element)) return '';
+            const ariaLabel = normalize(el.getAttribute('aria-label') || '');
+            if (ariaLabel) return ariaLabel;
+
+            const labelledBy = normalize(el.getAttribute('aria-labelledby') || '');
+            if (labelledBy) {
+              const labelled = document.getElementById(labelledBy);
+              const labelledText = normalize(labelled?.textContent || '');
+              if (labelledText) return labelledText;
+            }
+
+            const alt = normalize(el.getAttribute('alt') || '');
+            if (alt) return alt;
+            const title = normalize(el.getAttribute('title') || '');
+            if (title) return title;
+
+            return normalize(el.innerText || el.textContent || '').slice(0, 120);
+          };
+
+          const buildDomState = () => {
+            try {
+              if (window.AgentSDom?.buildDomTree) {
+                const domState = window.AgentSDom.buildDomTree({
+                  highlightElements: false,
+                  viewportOnly: false,
+                  maxElements: 900
+                });
+                window.AgentSDom.lastBuildResult = domState;
+                return domState;
+              }
+            } catch (e) {}
+            return window.AgentSDom?.lastBuildResult || null;
+          };
+
+          const domState = buildDomState();
+          const refIdMap = domState?.refIdMap || {};
+
+          let root = document.body;
+          if (rootRefId) {
+            root =
+              window.AgentSDom?.getElementByRef?.(rootRefId) ||
+              document.querySelector(`[data-crab-ref-id="${rootRefId}"]`) ||
+              null;
+            if (!root) {
+              return {
+                success: false,
+                error: `ref_id not found: ${rootRefId}`
+              };
+            }
+          }
+
+          const lines = [];
+          let visitedCount = 0;
+          let includedCount = 0;
+          let truncated = false;
+
+          const walk = (node, depth) => {
+            if (truncated) return;
+            if (!(node instanceof Element)) return;
+            if (visitedCount >= nodeLimit) {
+              truncated = true;
+              return;
+            }
+
+            visitedCount++;
+
+            const visible = isVisible(node);
+            const interactive = isInteractive(node);
+            const includeNode = treeMode === 'all' ? visible : (visible && interactive);
+
+            if (includeNode) {
+              const tag = (node.tagName || '').toLowerCase();
+              const role = normalize(node.getAttribute('role') || '');
+              const name = getLabel(node);
+              const ref = normalize(node.getAttribute('data-crab-ref-id') || '');
+              const idx = ref && Object.prototype.hasOwnProperty.call(refIdMap, ref) ? refIdMap[ref] : null;
+              const expanded = normalize(node.getAttribute('aria-expanded') || '');
+              const selected = normalize(node.getAttribute('aria-selected') || '');
+              const checked = normalize(node.getAttribute('aria-checked') || '');
+
+              const ids = [];
+              if (Number.isFinite(idx)) ids.push(`index=${idx}`);
+              if (ref) ids.push(`ref=${ref}`);
+
+              const attrs = [];
+              if (role) attrs.push(`role=${role}`);
+              if (expanded) attrs.push(`aria-expanded=${expanded}`);
+              if (selected) attrs.push(`aria-selected=${selected}`);
+              if (checked) attrs.push(`aria-checked=${checked}`);
+
+              const indent = '  '.repeat(Math.max(0, depth));
+              let line = `${indent}- <${tag}>`;
+              if (ids.length > 0) line += ` [${ids.join(', ')}]`;
+              if (attrs.length > 0) line += ` (${attrs.join(', ')})`;
+              if (name) line += ` "${name.slice(0, 120)}"`;
+              lines.push(line);
+              includedCount++;
+            }
+
+            if (depth >= depthLimit) return;
+            for (const child of node.children || []) {
+              walk(child, depth + 1);
+              if (truncated) break;
+            }
+          };
+
+          walk(root, 0);
+
+          if (lines.length === 0) {
+            lines.push('(no matching accessibility nodes)');
+          }
+
+          return {
+            success: true,
+            mode: treeMode,
+            maxDepth: depthLimit,
+            nodeLimit,
+            includedCount,
+            visitedCount,
+            truncated,
+            lines
+          };
+        },
+        args: [mode, maxDepth, maxNodes, refId]
+      });
+
+      const payload = result[0]?.result || { success: false, error: 'get_accessibility_tree script failed' };
+      if (!payload.success) {
+        return AgentS.createActionResult(payload);
+      }
+
+      const shortLines = Array.isArray(payload.lines) ? payload.lines.slice(0, 60) : [];
+      const treeSummary = `[ACCESSIBILITY_TREE mode=${payload.mode} depth=${payload.maxDepth}]`;
+      const treeBody = shortLines.join('\n');
+      const truncationNote = payload.truncated ? '\n[TRUNCATED: increase max_nodes for more entries]' : '';
+
+      return AgentS.createActionResult({
+        success: true,
+        includeInMemory: true,
+        extractedContent: `${treeSummary}\n${treeBody}${truncationNote}`,
+        message: `Accessibility tree captured (${payload.includedCount} nodes, mode=${payload.mode}, depth=${payload.maxDepth}).`
+      });
+    },
+
     async clickText(searchText, tabId) {
       const result = await chrome.scripting.executeScript({
         target: { tabId },
@@ -4199,6 +4674,708 @@ const AgentS = {
 let currentExecution = null;
 let sidePanel = null;
 let currentAbortController = null; // Global abort controller for canceling requests
+let lastTaskReplayArtifact = null;
+let lastTaskTeachingRecord = null;
+
+const TASK_RECORDING_CONFIG = {
+  MAX_RECORDED_STEPS: 120,
+  MAX_REPLAY_FRAMES: 16,
+  MAX_FRAME_DIMENSION: 960,
+  FRAME_FORMAT: 'jpeg',
+  FRAME_QUALITY: 0.68
+};
+
+const GIF_EXPORT_CONFIG = {
+  MAX_FRAMES: 12,
+  MAX_DIMENSION: 640,
+  FRAME_DELAY_MS: 850,
+  MAX_OUTPUT_BYTES: 8 * 1024 * 1024
+};
+
+function normalizeRecordText(value, maxLen = 220) {
+  const text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
+}
+
+function normalizeRecordParams(params, maxLen = 320) {
+  if (params == null) return '';
+  let serialized = '';
+  try {
+    serialized = JSON.stringify(params);
+  } catch (e) {
+    serialized = String(params);
+  }
+  serialized = String(serialized || '').replace(/\s+/g, ' ').trim();
+  if (!serialized) return '';
+  return serialized.length > maxLen ? `${serialized.slice(0, maxLen)}...` : serialized;
+}
+
+function isTaskRecordingEnabled(settings) {
+  // Enabled by default unless explicitly disabled.
+  return settings?.enableTaskRecording !== false;
+}
+
+function ensureTaskRecorder(exec) {
+  if (!exec || !isTaskRecordingEnabled(exec.settings)) return null;
+  if (exec.recorder) return exec.recorder;
+
+  exec.recorder = {
+    version: '2.1',
+    taskId: exec.taskId,
+    task: normalizeRecordText(exec.task || exec.originalTask || '', 600),
+    startedAt: Date.now(),
+    finishedAt: null,
+    status: 'running',
+    summary: '',
+    steps: [],
+    frameCount: 0,
+    maxRecordedSteps: TASK_RECORDING_CONFIG.MAX_RECORDED_STEPS,
+    maxReplayFrames: TASK_RECORDING_CONFIG.MAX_REPLAY_FRAMES
+  };
+  return exec.recorder;
+}
+
+async function beginTaskRecordingStep(exec, context = {}) {
+  const recorder = ensureTaskRecorder(exec);
+  if (!recorder) return null;
+  if (recorder.steps.length >= recorder.maxRecordedSteps) return null;
+
+  const stepRecord = {
+    step: Number(context.step || exec.step || recorder.steps.length + 1),
+    startedAt: Date.now(),
+    url: normalizeRecordText(context.pageState?.url || '', 260),
+    title: normalizeRecordText(context.pageState?.title || '', 180),
+    elementCount: Number(context.pageState?.elementCount || 0),
+    domHash: normalizeRecordText(context.pageState?.domHash || '', 80),
+    plannerTrigger: normalizeRecordText(context.plannerTrigger || '', 40),
+    warnings: normalizeRecordText(context.stateWarnings || '', 380),
+    modelThought: '',
+    chosenAction: '',
+    chosenParams: '',
+    outcome: '',
+    outcomeSuccess: null,
+    outcomeDetails: '',
+    frame: null,
+    endedAt: null
+  };
+
+  if (context.screenshot && recorder.frameCount < recorder.maxReplayFrames) {
+    try {
+      const reducedFrame = await AgentS.resizeScreenshot(
+        context.screenshot,
+        TASK_RECORDING_CONFIG.MAX_FRAME_DIMENSION,
+        TASK_RECORDING_CONFIG.FRAME_FORMAT,
+        TASK_RECORDING_CONFIG.FRAME_QUALITY
+      );
+      if (typeof reducedFrame === 'string' && reducedFrame.startsWith('data:image/')) {
+        stepRecord.frame = reducedFrame;
+        recorder.frameCount += 1;
+      }
+    } catch (e) {
+      // Frame capture failure should not break executor.
+    }
+  }
+
+  recorder.steps.push(stepRecord);
+  return stepRecord;
+}
+
+function annotateTaskRecordingDecision(stepRecord, parsed, actionName, actionPayload) {
+  if (!stepRecord) return;
+  const thought = parsed?.thought || {};
+  const thoughtSummary = [
+    normalizeRecordText(thought.observation || '', 180),
+    normalizeRecordText(thought.analysis || thought.visual_reasoning || '', 180),
+    normalizeRecordText(thought.plan || '', 180)
+  ].filter(Boolean).join(' | ');
+
+  stepRecord.modelThought = thoughtSummary;
+  stepRecord.chosenAction = normalizeRecordText(actionName || '', 80);
+  stepRecord.chosenParams = normalizeRecordParams(actionPayload, 260);
+}
+
+function finalizeTaskRecordingStep(stepRecord, outcome = {}) {
+  if (!stepRecord || stepRecord.endedAt) return;
+  stepRecord.outcome = normalizeRecordText(outcome.outcome || '', 80);
+  stepRecord.outcomeSuccess = outcome.success === true ? true : outcome.success === false ? false : null;
+  stepRecord.outcomeDetails = normalizeRecordText(
+    outcome.details || outcome.message || outcome.error || '',
+    320
+  );
+  stepRecord.endedAt = Date.now();
+}
+
+function buildTeachingRecordFromRecorder(recorder, includeFrames = false) {
+  if (!recorder) return null;
+  const steps = (recorder.steps || []).map((step) => ({
+    step: step.step,
+    startedAt: step.startedAt,
+    endedAt: step.endedAt,
+    url: step.url,
+    title: step.title,
+    elementCount: step.elementCount,
+    domHash: step.domHash,
+    plannerTrigger: step.plannerTrigger,
+    warnings: step.warnings,
+    modelThought: step.modelThought,
+    chosenAction: step.chosenAction,
+    chosenParams: step.chosenParams,
+    outcome: step.outcome,
+    outcomeSuccess: step.outcomeSuccess,
+    outcomeDetails: step.outcomeDetails,
+    ...(includeFrames ? { frame: step.frame || null } : {})
+  }));
+
+  return {
+    version: recorder.version,
+    taskId: recorder.taskId,
+    task: recorder.task,
+    status: recorder.status,
+    summary: recorder.summary,
+    startedAt: recorder.startedAt,
+    finishedAt: recorder.finishedAt,
+    totalSteps: steps.length,
+    frameCount: steps.filter((step) => !!step.frame).length,
+    steps
+  };
+}
+
+async function finalizeTaskRecording(exec, status = 'completed', details = {}) {
+  if (!exec?.recorder) return;
+  const recorder = exec.recorder;
+  if (recorder.finishedAt) return;
+  recorder.finishedAt = Date.now();
+  recorder.status = status;
+  recorder.summary = normalizeRecordText(
+    details.summary || details.finalAnswer || details.error || '',
+    600
+  );
+
+  const replayArtifact = buildTeachingRecordFromRecorder(recorder, true);
+  const teachingRecord = buildTeachingRecordFromRecorder(recorder, false);
+
+  lastTaskReplayArtifact = replayArtifact;
+  lastTaskTeachingRecord = teachingRecord;
+
+  // Persist light-weight teaching record for later learning/export.
+  try {
+    const storagePayload = {
+      lastTaskTeachingRecord: teachingRecord
+    };
+
+    // Persist replay only when size is reasonably below storage quota.
+    const replayApproxSize = JSON.stringify(replayArtifact).length;
+    if (replayApproxSize <= 3500000) {
+      storagePayload.lastTaskReplayArtifact = replayArtifact;
+    }
+    await chrome.storage.local.set(storagePayload);
+  } catch (e) {
+    console.warn('[Recorder] Failed to persist teaching record:', e.message);
+  }
+}
+
+function buildReplayHtmlDocument(replayArtifact) {
+  if (!replayArtifact || !Array.isArray(replayArtifact.steps)) return '';
+  const frames = replayArtifact.steps
+    .filter((step) => typeof step.frame === 'string' && step.frame.startsWith('data:image/'))
+    .map((step) => ({
+      step: step.step,
+      action: step.chosenAction || 'unknown',
+      params: step.chosenParams || '',
+      outcome: step.outcome || '',
+      detail: step.outcomeDetails || '',
+      frame: step.frame
+    }));
+
+  if (frames.length === 0) return '';
+
+  const payload = {
+    taskId: replayArtifact.taskId,
+    task: replayArtifact.task,
+    status: replayArtifact.status,
+    startedAt: replayArtifact.startedAt,
+    finishedAt: replayArtifact.finishedAt,
+    summary: replayArtifact.summary,
+    frames
+  };
+
+  const payloadJson = JSON.stringify(payload);
+  const title = `Crab-Agent Replay - ${normalizeRecordText(replayArtifact.task || replayArtifact.taskId || 'session', 80)}`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+  <style>
+    :root { --bg:#0f1220; --panel:#171b2f; --text:#e8ecff; --muted:#9aa5d3; --accent:#4fd1c5; }
+    body { margin:0; font-family: "Segoe UI", Tahoma, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width:1100px; margin:24px auto; padding:0 16px; }
+    .card { background:var(--panel); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:16px; }
+    .title { font-size:18px; font-weight:700; margin-bottom:8px; }
+    .meta { color:var(--muted); font-size:13px; margin-bottom:12px; line-height:1.5; }
+    .viewer { display:grid; grid-template-columns: 2fr 1fr; gap:16px; }
+    .frame { width:100%; background:#000; border-radius:10px; border:1px solid rgba(255,255,255,0.12); }
+    .timeline { max-height:70vh; overflow:auto; border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:8px; }
+    .item { padding:8px; border-radius:8px; margin:6px 0; cursor:pointer; border:1px solid transparent; }
+    .item:hover { border-color:rgba(79,209,197,0.45); background:rgba(79,209,197,0.08); }
+    .item.active { border-color:var(--accent); background:rgba(79,209,197,0.16); }
+    .controls { display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+    button { background:#243055; color:var(--text); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:8px 12px; cursor:pointer; }
+    button:hover { background:#2f3c6b; }
+    input[type="range"] { width:220px; }
+    .caption { margin-top:8px; color:var(--muted); font-size:13px; line-height:1.45; }
+    @media (max-width: 900px) { .viewer { grid-template-columns: 1fr; } .timeline { max-height:36vh; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="title">Crab-Agent Visual Replay</div>
+      <div class="meta" id="meta"></div>
+      <div class="viewer">
+        <div>
+          <img id="frame" class="frame" alt="Replay frame">
+          <div class="controls">
+            <button id="prevBtn" type="button">Prev</button>
+            <button id="playBtn" type="button">Play</button>
+            <button id="nextBtn" type="button">Next</button>
+            <label>Speed
+              <select id="speedSelect">
+                <option value="1200">0.8x</option>
+                <option value="900" selected>1.0x</option>
+                <option value="700">1.3x</option>
+                <option value="500">1.8x</option>
+              </select>
+            </label>
+            <input id="scrub" type="range" min="0" value="0">
+          </div>
+          <div class="caption" id="caption"></div>
+        </div>
+        <div class="timeline" id="timeline"></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const replay = ${payloadJson};
+    const frames = Array.isArray(replay.frames) ? replay.frames : [];
+    let index = 0;
+    let timer = null;
+    let delayMs = 900;
+    const frameEl = document.getElementById('frame');
+    const captionEl = document.getElementById('caption');
+    const timelineEl = document.getElementById('timeline');
+    const scrubEl = document.getElementById('scrub');
+    const playBtn = document.getElementById('playBtn');
+    const speedSelect = document.getElementById('speedSelect');
+    document.getElementById('meta').textContent =
+      'Task: ' + (replay.task || '(unknown)') + '\\n' +
+      'Status: ' + (replay.status || 'unknown') + ', Frames: ' + frames.length + '\\n' +
+      'Summary: ' + (replay.summary || '(none)');
+
+    function renderTimeline() {
+      timelineEl.innerHTML = '';
+      frames.forEach((frame, i) => {
+        const div = document.createElement('div');
+        div.className = 'item' + (i === index ? ' active' : '');
+        const detail = [frame.action, frame.params, frame.outcome].filter(Boolean).join(' | ');
+        div.textContent = 'Step ' + frame.step + ': ' + detail;
+        div.title = frame.detail || detail;
+        div.addEventListener('click', () => {
+          index = i;
+          render();
+        });
+        timelineEl.appendChild(div);
+      });
+    }
+
+    function render() {
+      if (!frames.length) return;
+      if (index < 0) index = 0;
+      if (index >= frames.length) index = frames.length - 1;
+      const frame = frames[index];
+      frameEl.src = frame.frame;
+      scrubEl.max = String(Math.max(0, frames.length - 1));
+      scrubEl.value = String(index);
+      captionEl.textContent =
+        'Step ' + frame.step + ' | Action: ' + (frame.action || 'n/a') +
+        (frame.params ? ' | Params: ' + frame.params : '') +
+        (frame.outcome ? ' | Outcome: ' + frame.outcome : '') +
+        (frame.detail ? ' | ' + frame.detail : '');
+      renderTimeline();
+    }
+
+    function stop() {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      playBtn.textContent = 'Play';
+    }
+
+    function play() {
+      if (!frames.length) return;
+      stop();
+      timer = setInterval(() => {
+        index = (index + 1) % frames.length;
+        render();
+      }, delayMs);
+      playBtn.textContent = 'Pause';
+    }
+
+    document.getElementById('prevBtn').addEventListener('click', () => { stop(); index -= 1; render(); });
+    document.getElementById('nextBtn').addEventListener('click', () => { stop(); index += 1; render(); });
+    playBtn.addEventListener('click', () => {
+      if (timer) stop();
+      else play();
+    });
+    scrubEl.addEventListener('input', () => { stop(); index = Number(scrubEl.value || 0); render(); });
+    speedSelect.addEventListener('change', () => {
+      delayMs = Number(speedSelect.value || 900);
+      if (timer) play();
+    });
+
+    render();
+  </script>
+</body>
+</html>`;
+}
+
+function createGifPaletteBytes() {
+  const palette = new Uint8Array(256 * 3);
+  let offset = 0;
+
+  // 216 web-safe colors (6x6x6 cube)
+  for (let r = 0; r < 6; r++) {
+    for (let g = 0; g < 6; g++) {
+      for (let b = 0; b < 6; b++) {
+        palette[offset++] = r * 51;
+        palette[offset++] = g * 51;
+        palette[offset++] = b * 51;
+      }
+    }
+  }
+
+  // 40 grayscale tones to complete 256 entries.
+  for (let i = 0; i < 40; i++) {
+    const v = Math.round((i * 255) / 39);
+    palette[offset++] = v;
+    palette[offset++] = v;
+    palette[offset++] = v;
+  }
+
+  return palette;
+}
+
+function mapRgbToPaletteIndex(r, g, b, a) {
+  if (a <= 12) return 0;
+  const drg = Math.abs(r - g);
+  const dgb = Math.abs(g - b);
+  const drb = Math.abs(r - b);
+
+  // Use grayscale bucket when color is near-neutral.
+  if (drg + dgb + drb < 36) {
+    const gray = Math.round((r + g + b) / 3);
+    const grayIdx = 216 + Math.max(0, Math.min(39, Math.round((gray * 39) / 255)));
+    return grayIdx;
+  }
+
+  const r6 = Math.max(0, Math.min(5, Math.round(r / 51)));
+  const g6 = Math.max(0, Math.min(5, Math.round(g / 51)));
+  const b6 = Math.max(0, Math.min(5, Math.round(b / 51)));
+  return r6 * 36 + g6 * 6 + b6;
+}
+
+function createGifByteWriter(initialSize = 4096) {
+  let buffer = new Uint8Array(initialSize);
+  let length = 0;
+
+  const ensure = (needed) => {
+    if (length + needed <= buffer.length) return;
+    let newSize = buffer.length;
+    while (newSize < length + needed) {
+      newSize *= 2;
+    }
+    const next = new Uint8Array(newSize);
+    next.set(buffer);
+    buffer = next;
+  };
+
+  return {
+    pushByte(value) {
+      ensure(1);
+      buffer[length++] = value & 0xFF;
+    },
+    pushWord(value) {
+      ensure(2);
+      buffer[length++] = value & 0xFF;
+      buffer[length++] = (value >> 8) & 0xFF;
+    },
+    pushBytes(bytes) {
+      if (!bytes || bytes.length === 0) return;
+      ensure(bytes.length);
+      buffer.set(bytes, length);
+      length += bytes.length;
+    },
+    pushString(text) {
+      for (let i = 0; i < text.length; i++) {
+        this.pushByte(text.charCodeAt(i) & 0xFF);
+      }
+    },
+    toUint8Array() {
+      return buffer.slice(0, length);
+    },
+    get length() {
+      return length;
+    }
+  };
+}
+
+function lzwEncodeGifIndices(indices, minCodeSize = 8) {
+  if (!indices || indices.length === 0) return new Uint8Array();
+
+  const clearCode = 1 << minCodeSize;
+  const endCode = clearCode + 1;
+  const maxCode = 4095;
+  const output = [];
+  let codeSize = minCodeSize + 1;
+  let nextCode = endCode + 1;
+  let bitBuffer = 0;
+  let bitCount = 0;
+  let dict = new Map();
+
+  const resetDictionary = () => {
+    dict = new Map();
+    for (let i = 0; i < clearCode; i++) {
+      dict.set(String.fromCharCode(i), i);
+    }
+    codeSize = minCodeSize + 1;
+    nextCode = endCode + 1;
+  };
+
+  const writeCode = (code) => {
+    bitBuffer |= (code << bitCount);
+    bitCount += codeSize;
+    while (bitCount >= 8) {
+      output.push(bitBuffer & 0xFF);
+      bitBuffer >>= 8;
+      bitCount -= 8;
+    }
+  };
+
+  resetDictionary();
+  writeCode(clearCode);
+
+  let prefix = String.fromCharCode(indices[0]);
+  for (let i = 1; i < indices.length; i++) {
+    const suffix = String.fromCharCode(indices[i]);
+    const combo = prefix + suffix;
+
+    if (dict.has(combo)) {
+      prefix = combo;
+      continue;
+    }
+
+    writeCode(dict.get(prefix));
+
+    if (nextCode <= maxCode) {
+      dict.set(combo, nextCode++);
+      if (nextCode === (1 << codeSize) && codeSize < 12) {
+        codeSize++;
+      }
+    } else {
+      writeCode(clearCode);
+      resetDictionary();
+    }
+
+    prefix = suffix;
+  }
+
+  writeCode(dict.get(prefix));
+  writeCode(endCode);
+  if (bitCount > 0) {
+    output.push(bitBuffer & 0xFF);
+  }
+
+  return Uint8Array.from(output);
+}
+
+function writeGifSubBlocks(writer, bytes) {
+  const blockSize = 255;
+  for (let offset = 0; offset < bytes.length; offset += blockSize) {
+    const chunk = bytes.subarray(offset, offset + blockSize);
+    writer.pushByte(chunk.length);
+    writer.pushBytes(chunk);
+  }
+  writer.pushByte(0); // block terminator
+}
+
+function uint8ArrayToBase64(bytes) {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function pickReplayFramesForGif(replayArtifact, maxFrames = GIF_EXPORT_CONFIG.MAX_FRAMES) {
+  if (!replayArtifact || !Array.isArray(replayArtifact.steps)) return [];
+  const source = replayArtifact.steps
+    .filter((step) => typeof step.frame === 'string' && step.frame.startsWith('data:image/'))
+    .map((step) => ({
+      step: step.step,
+      action: normalizeRecordText(step.chosenAction || '', 60),
+      params: normalizeRecordText(step.chosenParams || '', 120),
+      outcome: normalizeRecordText(step.outcome || '', 60),
+      detail: normalizeRecordText(step.outcomeDetails || '', 160),
+      frame: step.frame
+    }));
+
+  if (source.length <= maxFrames) return source;
+  const picked = [];
+  for (let i = 0; i < maxFrames; i++) {
+    const idx = Math.round((i * (source.length - 1)) / Math.max(1, maxFrames - 1));
+    picked.push(source[idx]);
+  }
+  return picked;
+}
+
+async function decodeReplayFramesToIndexedGifData(replayFrames, options = {}) {
+  if (!Array.isArray(replayFrames) || replayFrames.length === 0) return null;
+  const maxDim = Number(options.maxDimension || GIF_EXPORT_CONFIG.MAX_DIMENSION);
+  const palette = createGifPaletteBytes();
+
+  // Read first frame to determine output dimensions.
+  const firstBlob = await (await fetch(replayFrames[0].frame)).blob();
+  const firstBitmap = await createImageBitmap(firstBlob);
+  const scale = Math.min(1, maxDim / Math.max(firstBitmap.width, firstBitmap.height));
+  const width = Math.max(1, Math.round(firstBitmap.width * scale));
+  const height = Math.max(1, Math.round(firstBitmap.height * scale));
+
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  const indexedFrames = [];
+  for (const frame of replayFrames) {
+    const blob = await (await fetch(frame.frame)).blob();
+    const bitmap = await createImageBitmap(blob);
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(bitmap, 0, 0, width, height);
+
+    // Bottom caption bar
+    const overlayHeight = Math.max(34, Math.round(height * 0.12));
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.58)';
+    ctx.fillRect(0, height - overlayHeight, width, overlayHeight);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `${Math.max(11, Math.round(height * 0.028))}px sans-serif`;
+    ctx.textBaseline = 'top';
+    const line1 = `Step ${frame.step}: ${frame.action || 'action'}`;
+    const line2 = frame.outcome ? `Result: ${frame.outcome}` : (frame.detail || '');
+    ctx.fillText(line1.slice(0, 72), 8, height - overlayHeight + 5);
+    if (line2) {
+      ctx.fillText(line2.slice(0, 82), 8, height - overlayHeight + 18);
+    }
+
+    const image = ctx.getImageData(0, 0, width, height).data;
+    const indices = new Uint8Array(width * height);
+    let ptr = 0;
+    for (let i = 0; i < image.length; i += 4) {
+      indices[ptr++] = mapRgbToPaletteIndex(
+        image[i],
+        image[i + 1],
+        image[i + 2],
+        image[i + 3]
+      );
+    }
+    indexedFrames.push(indices);
+  }
+
+  return { width, height, palette, indexedFrames };
+}
+
+function encodeIndexedFramesToGifBytes(gifData, options = {}) {
+  if (!gifData || !Array.isArray(gifData.indexedFrames) || gifData.indexedFrames.length === 0) {
+    return null;
+  }
+
+  const width = gifData.width;
+  const height = gifData.height;
+  const frameDelayMs = Math.max(100, Number(options.frameDelayMs || GIF_EXPORT_CONFIG.FRAME_DELAY_MS));
+  const delayCs = Math.max(2, Math.round(frameDelayMs / 10));
+  const writer = createGifByteWriter();
+
+  // Header + Logical Screen Descriptor
+  writer.pushString('GIF89a');
+  writer.pushWord(width);
+  writer.pushWord(height);
+  writer.pushByte(0xF7); // global color table flag + 256 colors
+  writer.pushByte(0x00); // background color index
+  writer.pushByte(0x00); // pixel aspect ratio
+  writer.pushBytes(gifData.palette);
+
+  // Netscape loop extension (infinite)
+  writer.pushBytes(Uint8Array.from([
+    0x21, 0xFF, 0x0B,
+    0x4E, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2E, 0x30,
+    0x03, 0x01, 0x00, 0x00, 0x00
+  ]));
+
+  for (const indices of gifData.indexedFrames) {
+    // Graphic Control Extension
+    writer.pushBytes(Uint8Array.from([
+      0x21, 0xF9, 0x04, 0x00,
+      delayCs & 0xFF, (delayCs >> 8) & 0xFF,
+      0x00, 0x00
+    ]));
+
+    // Image Descriptor
+    writer.pushByte(0x2C);
+    writer.pushWord(0); // left
+    writer.pushWord(0); // top
+    writer.pushWord(width);
+    writer.pushWord(height);
+    writer.pushByte(0x00); // no local color table
+
+    // LZW image data
+    const minCodeSize = 8;
+    writer.pushByte(minCodeSize);
+    const compressed = lzwEncodeGifIndices(indices, minCodeSize);
+    writeGifSubBlocks(writer, compressed);
+  }
+
+  writer.pushByte(0x3B); // GIF trailer
+  return writer.toUint8Array();
+}
+
+async function buildReplayGifExport(replayArtifact) {
+  const replayFrames = pickReplayFramesForGif(replayArtifact, GIF_EXPORT_CONFIG.MAX_FRAMES);
+  if (replayFrames.length === 0) return null;
+
+  const gifData = await decodeReplayFramesToIndexedGifData(replayFrames, {
+    maxDimension: GIF_EXPORT_CONFIG.MAX_DIMENSION
+  });
+  if (!gifData) return null;
+
+  const gifBytes = encodeIndexedFramesToGifBytes(gifData, {
+    frameDelayMs: GIF_EXPORT_CONFIG.FRAME_DELAY_MS
+  });
+  if (!gifBytes || gifBytes.length === 0) return null;
+  if (gifBytes.length > GIF_EXPORT_CONFIG.MAX_OUTPUT_BYTES) {
+    throw new Error('GIF too large. Try fewer steps or lower capture size.');
+  }
+
+  return {
+    width: gifData.width,
+    height: gifData.height,
+    frameCount: replayFrames.length,
+    bytes: gifBytes,
+    base64: uint8ArrayToBase64(gifBytes)
+  };
+}
 
 chrome.runtime.onInstalled.addListener(() => console.log('Crab-Agent installed'));
 
@@ -4221,6 +5398,9 @@ chrome.runtime.onConnect.addListener((port) => {
           case 'cancel_task': handleCancelTask(); break;
           case 'pause_task': handlePauseTask(); break;
           case 'resume_task': handleResumeTask(); break;
+          case 'export_replay_html': await handleExportReplayHtml(); break;
+          case 'export_replay_gif': await handleExportReplayGif(); break;
+          case 'export_teaching_record': await handleExportTeachingRecord(); break;
           case 'get_state': await handleGetState(); break;
           case 'screenshot': await handleScreenshot(); break;
           case 'heartbeat': port.postMessage({ type: 'heartbeat_ack' }); break;
@@ -4232,7 +5412,10 @@ chrome.runtime.onConnect.addListener((port) => {
 
     port.onDisconnect.addListener(() => {
       sidePanel = null;
-      if (currentExecution) currentExecution.cancelled = true;
+      if (currentExecution) {
+        currentExecution.cancelled = true;
+        finalizeTaskRecording(currentExecution, 'cancelled', { error: 'Side panel disconnected' });
+      }
     });
   }
 });
@@ -4330,8 +5513,13 @@ async function handleNewTask(task, settings, images = []) {
     interruptRequested: false,
     interruptAbortPending: false,
     lastPlannerStep: 0,
-    lastPlannerReason: ''
+    lastPlannerReason: '',
+    recorder: null
   };
+
+  if (isTaskRecordingEnabled(settings)) {
+    ensureTaskRecorder(currentExecution);
+  }
 
   eventManager.subscribe('*', (event) => sendToPanel({ type: 'execution_event', ...event }));
   await loadContextRules(tab.url);
@@ -4343,6 +5531,7 @@ async function handleNewTask(task, settings, images = []) {
 
   try { await runExecutor(); } catch (error) {
     sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId, details: { error: error.message } });
+    await finalizeTaskRecording(currentExecution, 'failed', { error: error.message });
   } finally {
     // Hide visual indicator when task ends
     await hideAgentVisualIndicator(tab.id);
@@ -4548,6 +5737,61 @@ function getPlannerTrigger(exec, lastActionResult, pendingUpdate = null) {
   return null;
 }
 
+function isExecutionCancelled(exec) {
+  return !exec || exec.cancelled || currentExecution !== exec;
+}
+
+function getExplorationPolicyBlock(exec, actionName, actionPayload, pageState) {
+  if (!exec || !actionName) return null;
+  const interactiveClickAction = actionName === 'click_element' || actionName === 'click_at';
+  const inputLikeAction = actionName === 'input_text' || actionName === 'send_keys';
+  if (!interactiveClickAction && !inputLikeAction) return null;
+
+  const recent = Array.isArray(exec.actionHistory) ? exec.actionHistory.slice(-8) : [];
+  const exploreActions = new Set([
+    'find_text',
+    'get_accessibility_tree',
+    'scroll_down',
+    'scroll_up',
+    'scroll_to_text',
+    'scroll_element',
+    'hover_element',
+    'zoom_page',
+    'wait_for_element',
+    'wait_for_stable'
+  ]);
+
+  const recentExploreCount = recent.filter((entry) => exploreActions.has(entry?.action)).length;
+  const failedClicks = recent.filter((entry) =>
+    entry &&
+    (entry.action === 'click_element' || entry.action === 'click_at') &&
+    entry.success === false
+  ).length;
+  const noEffectClicks = recent.filter((entry) =>
+    entry &&
+    entry.action === 'click_element' &&
+    entry.success &&
+    /\[effect:none\]/i.test(String(entry.details || ''))
+  ).length;
+
+  // Guardrail 1: prevent blind click chains without intermediate exploration.
+  if (interactiveClickAction && (failedClicks + noEffectClicks) >= 3 && recentExploreCount === 0) {
+    return 'EXPLORATION POLICY: repeated blind clicks detected without exploration. Use find_text, get_accessibility_tree, hover_element, or scroll before trying another click.';
+  }
+
+  // Guardrail 2: validate click_element index against latest DOM snapshot.
+  if (actionName === 'click_element') {
+    const idx = Number(actionPayload?.index);
+    const domElements = Array.isArray(pageState?.elements) ? pageState.elements : [];
+    const existsInDom = Number.isFinite(idx) && domElements.some((el) => Number(el?.index) === idx);
+    if (!existsInDom) {
+      return `EXPLORATION POLICY: click_element index ${String(actionPayload?.index)} is not in the latest DOM. Re-check current DOM and use find_text/get_accessibility_tree before clicking.`;
+    }
+  }
+
+  return null;
+}
+
 
 async function runExecutor() {
   const exec = currentExecution;
@@ -4598,10 +5842,17 @@ async function runExecutor() {
     const plannerTrigger = getPlannerTrigger(exec, lastActionResult, pendingUpdate);
     if (plannerTrigger) {
       const planResult = await runPlanner(plannerTrigger);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
       exec.lastPlannerStep = exec.step;
       exec.lastPlannerReason = plannerTrigger;
       if (planResult?.done) {
+        if (isExecutionCancelled(exec)) {
+          return;
+        }
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_OK, actor: AgentS.Actors.PLANNER, taskId: exec.taskId, details: { finalAnswer: planResult.final_answer || 'Task completed' } });
+        await finalizeTaskRecording(exec, 'completed', { finalAnswer: planResult.final_answer || 'Task completed' });
         exec.cancelled = true;
         break;
       }
@@ -4663,7 +5914,13 @@ async function runExecutor() {
 
       // Process as if model returned this
       const result = await AgentS.executeAction(directResponse.action[0], { url: tabUrl, title: 'No page' }, exec.tabId);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
       if (result.isDone) {
+        if (isExecutionCancelled(exec)) {
+          return;
+        }
         const answer = result.extractedContent || result.message;
         sendToPanel({
           type: 'execution_event',
@@ -4672,6 +5929,7 @@ async function runExecutor() {
           taskId: exec.taskId,
           details: { finalAnswer: answer, error: answer }
         });
+        await finalizeTaskRecording(exec, 'failed', { error: answer });
         exec.cancelled = true;
         return;
       }
@@ -4714,6 +5972,7 @@ async function runExecutor() {
       exec.consecutiveFailures++;
       if (exec.consecutiveFailures >= exec.maxFailures) {
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: `Cannot access page: ${pageState.error}` } });
+        await finalizeTaskRecording(exec, 'failed', { error: `Cannot access page: ${pageState.error}` });
         break;
       }
       await new Promise(r => setTimeout(r, 2000));
@@ -4880,6 +6139,18 @@ async function runExecutor() {
 
     // Get state warnings for loop prevention
     const stateWarnings = getStateWarnings();
+    let currentStepRecord = null;
+    try {
+      currentStepRecord = await beginTaskRecordingStep(exec, {
+        step: exec.step,
+        pageState,
+        screenshot,
+        plannerTrigger,
+        stateWarnings
+      });
+    } catch (e) {
+      console.warn('[Recorder] Failed to begin step record:', e.message);
+    }
 
     let userMessage = AgentSPrompts.buildNavigatorUserMessage(
       getEffectiveTaskPrompt(exec),
@@ -4939,6 +6210,9 @@ async function runExecutor() {
           emitModelImageDebug(exec, screenshot, 'navigator');
         }
         response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, exec.settings.useVision, screenshot);
+        if (isExecutionCancelled(exec)) {
+          return;
+        }
       } catch (llmError) {
         const errText = String(llmError?.message || llmError || '').toLowerCase();
         const isTimeout = errText.includes('timed out') || errText.includes('timeout');
@@ -4958,6 +6232,9 @@ async function runExecutor() {
             details: { message: 'Vision unsupported by current model/provider. Retrying without image.' }
           });
           response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, false, null);
+          if (isExecutionCancelled(exec)) {
+            return;
+          }
         } else if (isTimeout && exec.settings.useVision && screenshot) {
           exec.eventManager.emit({
             state: AgentS.ExecutionState.THINKING,
@@ -4967,6 +6244,9 @@ async function runExecutor() {
             details: { message: 'LLM request timed out with screenshot. Retrying without image.' }
           });
           response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, false, null);
+          if (isExecutionCancelled(exec)) {
+            return;
+          }
         } else if (isTimeout) {
           exec.eventManager.emit({
             state: AgentS.ExecutionState.THINKING,
@@ -4976,14 +6256,23 @@ async function runExecutor() {
             details: { message: 'LLM request timed out. Retrying once.' }
           });
           response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, exec.settings.useVision, screenshot);
+          if (isExecutionCancelled(exec)) {
+            return;
+          }
         } else {
           throw llmError;
         }
       }
       console.log('LLM returned response, length:', response?.length);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
 
       const parsed = AgentSPrompts.parseResponse(response);
       console.log('Parsed response:', parsed);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
 
       const validation = AgentSPrompts.validateNavigatorResponse(parsed);
       if (!validation.valid) throw new Error(validation.error);
@@ -5018,6 +6307,7 @@ async function runExecutor() {
 
       const actionName = Object.keys(action)[0];
       const actionParams = JSON.stringify(action[actionName]);
+      annotateTaskRecordingDecision(currentStepRecord, parsed, actionName, action[actionName]);
       const extractClickPoint = (details) => {
         const match = String(details || '').match(/at\s*\((\d+),\s*(\d+)\)/i);
         if (!match) return null;
@@ -5107,9 +6397,12 @@ async function runExecutor() {
                 taskId: exec.taskId,
                 details: { error: blockedReason }
               });
+              finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
+              await finalizeTaskRecording(exec, 'failed', { error: blockedReason });
               exec.cancelled = true;
               return;
             }
+            finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
             continue; // Skip to next step
           }
         }
@@ -5186,11 +6479,55 @@ async function runExecutor() {
               taskId: exec.taskId,
               details: { error: blockedReason }
             });
+            finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
+            await finalizeTaskRecording(exec, 'failed', { error: blockedReason });
             exec.cancelled = true;
             return;
           }
+          finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
           continue; // Skip execution, force LLM to pick another strategy.
         }
+      }
+
+      const explorationPolicyBlock = getExplorationPolicyBlock(exec, actionName, action[actionName], pageState);
+      if (explorationPolicyBlock) {
+        console.warn('[Policy] Exploration guard blocked action:', explorationPolicyBlock);
+        exec.memory = (exec.memory || '') + `\n[CRITICAL: ${explorationPolicyBlock}]`;
+        const blockResult = AgentS.createActionResult({
+          success: false,
+          error: explorationPolicyBlock,
+          message: explorationPolicyBlock
+        });
+        exec.actionHistory.push({
+          action: actionName,
+          params: action[actionName],
+          success: false,
+          details: explorationPolicyBlock
+        });
+        exec.eventManager.emit({
+          state: AgentS.ExecutionState.ACT_FAIL,
+          actor: AgentS.Actors.NAVIGATOR,
+          taskId: exec.taskId,
+          step: exec.step,
+          details: { action: actionName, success: false, error: explorationPolicyBlock }
+        });
+        lastActionResult = blockResult;
+        exec.consecutiveFailures++;
+        finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: explorationPolicyBlock });
+        if (exec.consecutiveFailures >= exec.maxFailures) {
+          await AgentS.removeHighlights(exec.tabId);
+          sendToPanel({
+            type: 'execution_event',
+            state: AgentS.ExecutionState.TASK_FAIL,
+            actor: AgentS.Actors.SYSTEM,
+            taskId: exec.taskId,
+            details: { error: explorationPolicyBlock }
+          });
+          await finalizeTaskRecording(exec, 'failed', { error: explorationPolicyBlock });
+          exec.cancelled = true;
+          return;
+        }
+        continue;
       }
 
       exec.eventManager.emit({ state: AgentS.ExecutionState.ACT_START, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { action: actionName, params: action[actionName], goal: parsed.current_state?.next_goal } });
@@ -5209,19 +6546,33 @@ async function runExecutor() {
         });
         lastActionResult = blockResult;
         exec.consecutiveFailures++;
+        finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
         if (exec.consecutiveFailures >= exec.maxFailures) {
           await AgentS.removeHighlights(exec.tabId);
           sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: blockedReason } });
+          await finalizeTaskRecording(exec, 'failed', { error: blockedReason });
           exec.cancelled = true;
           return;
         }
         continue; // Skip to next step
       }
 
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
+
       // Execute the single action
       const result = await AgentS.executeAction(action, pageState, exec.tabId);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
       exec.actionHistory.push({ action: actionName, params: action[actionName], success: result.success, details: result.message || result.error });
       exec.eventManager.emit({ state: result.success ? AgentS.ExecutionState.ACT_OK : AgentS.ExecutionState.ACT_FAIL, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { action: actionName, success: result.success, message: result.message, error: result.error } });
+      finalizeTaskRecordingStep(currentStepRecord, {
+        outcome: result.isDone ? 'done' : (result.success ? 'success' : 'failed'),
+        success: result.success,
+        details: result.message || result.error || ''
+      });
 
       // Update exec.tabId when switching/opening/closing tabs so subsequent actions use the correct tab
       if (result.success && result.newTabId && (actionName === 'switch_tab' || actionName === 'open_tab' || actionName === 'close_tab')) {
@@ -5285,6 +6636,9 @@ async function runExecutor() {
 
       // Handle task completion
       if (result.isDone) {
+        if (isExecutionCancelled(exec)) {
+          return;
+        }
         await AgentS.removeHighlights(exec.tabId);
         const answer = result.extractedContent || result.message || 'Task completed';
         sendToPanel({
@@ -5293,6 +6647,10 @@ async function runExecutor() {
           actor: AgentS.Actors.NAVIGATOR,
           taskId: exec.taskId,
           details: { finalAnswer: answer, error: result.success ? null : answer }
+        });
+        await finalizeTaskRecording(exec, result.success ? 'completed' : 'failed', {
+          finalAnswer: result.success ? answer : '',
+          error: result.success ? '' : answer
         });
         exec.cancelled = true;
         return;
@@ -5306,6 +6664,7 @@ async function runExecutor() {
         await AgentS.removeHighlights(exec.tabId);
         const lastError = lastActionResult?.error || 'Multiple actions failed';
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: `Task stopped: ${lastError}. Please try a different approach.` } });
+        await finalizeTaskRecording(exec, 'failed', { error: `Task stopped: ${lastError}. Please try a different approach.` });
         exec.cancelled = true;
         return;
       }
@@ -5340,11 +6699,13 @@ async function runExecutor() {
 
       console.error('Step error:', error);
       console.error('Error stack:', error.stack);
+      finalizeTaskRecordingStep(currentStepRecord, { outcome: 'step_error', success: false, error: error.message || String(error) });
       exec.eventManager.emit({ state: AgentS.ExecutionState.STEP_FAIL, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { error: error.message || String(error) } });
       exec.consecutiveFailures++;
       if (exec.consecutiveFailures >= exec.maxFailures) {
         await AgentS.removeHighlights(exec.tabId);
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: error.message || String(error) } });
+        await finalizeTaskRecording(exec, 'failed', { error: error.message || String(error) });
         exec.cancelled = true;
         return;
       }
@@ -5354,6 +6715,7 @@ async function runExecutor() {
   if (exec.step >= exec.maxSteps && !exec.cancelled) {
     await AgentS.removeHighlights(exec.tabId);
     sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: 'Max steps reached' } });
+    await finalizeTaskRecording(exec, 'failed', { error: 'Max steps reached' });
   }
 }
 
@@ -5537,6 +6899,7 @@ function handleCancelTask() {
     currentExecution.cancelled = true;
     sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_CANCEL, actor: AgentS.Actors.USER, taskId: currentExecution.taskId });
     AgentS.removeHighlights(currentExecution.tabId);
+    finalizeTaskRecording(currentExecution, 'cancelled', { error: 'Cancelled by user' });
     // Hide visual indicator on cancel
     hideAgentVisualIndicator(currentExecution.tabId);
   }
@@ -5570,8 +6933,117 @@ async function handleScreenshot() {
   sendToPanel({ type: 'screenshot', screenshot });
 }
 
+async function handleExportReplayHtml() {
+  let replay = lastTaskReplayArtifact;
+  if (!replay) {
+    try {
+      const stored = await chrome.storage.local.get('lastTaskReplayArtifact');
+      replay = stored.lastTaskReplayArtifact || null;
+    } catch (e) {
+      // ignore storage read errors
+    }
+  }
+  if (!replay || !Array.isArray(replay.steps) || replay.steps.length === 0) {
+    sendToPanel({
+      type: 'error',
+      error: 'No replay data available yet. Run a task with recording enabled first.'
+    });
+    return;
+  }
+
+  const html = buildReplayHtmlDocument(replay);
+  if (!html) {
+    sendToPanel({
+      type: 'error',
+      error: 'Replay export failed: no captured frames found in last task.'
+    });
+    return;
+  }
+
+  sendToPanel({
+    type: 'recording_export_data',
+    exportType: 'replay_html',
+    mimeType: 'text/html',
+    filename: `crab-agent-replay-${Date.now()}.html`,
+    content: html
+  });
+}
+
+async function handleExportReplayGif() {
+  let replay = lastTaskReplayArtifact;
+  if (!replay) {
+    try {
+      const stored = await chrome.storage.local.get('lastTaskReplayArtifact');
+      replay = stored.lastTaskReplayArtifact || null;
+    } catch (e) {
+      // ignore storage read errors
+    }
+  }
+
+  if (!replay || !Array.isArray(replay.steps) || replay.steps.length === 0) {
+    sendToPanel({
+      type: 'error',
+      error: 'No replay data available yet. Run a task with recording enabled first.'
+    });
+    return;
+  }
+
+  try {
+    const gifExport = await buildReplayGifExport(replay);
+    if (!gifExport?.base64) {
+      sendToPanel({
+        type: 'error',
+        error: 'GIF export failed: no usable replay frames found.'
+      });
+      return;
+    }
+
+    sendToPanel({
+      type: 'recording_export_data',
+      exportType: 'replay_gif',
+      mimeType: 'image/gif',
+      filename: `crab-agent-replay-${Date.now()}.gif`,
+      base64: gifExport.base64
+    });
+  } catch (error) {
+    sendToPanel({
+      type: 'error',
+      error: `GIF export failed: ${error?.message || String(error)}`
+    });
+  }
+}
+
+async function handleExportTeachingRecord() {
+  let record = lastTaskTeachingRecord;
+  if (!record) {
+    try {
+      const stored = await chrome.storage.local.get('lastTaskTeachingRecord');
+      record = stored.lastTaskTeachingRecord || null;
+    } catch (e) {
+      // ignore storage read errors
+    }
+  }
+
+  if (!record) {
+    sendToPanel({
+      type: 'error',
+      error: 'No teaching record available yet. Run a task with recording enabled first.'
+    });
+    return;
+  }
+
+  const json = JSON.stringify(record, null, 2);
+  sendToPanel({
+    type: 'recording_export_data',
+    exportType: 'teaching_json',
+    mimeType: 'application/json',
+    filename: `crab-agent-teaching-record-${Date.now()}.json`,
+    content: json
+  });
+}
+
 async function loadSettings() {
-  const defaults = { provider: 'openai', apiKey: '', model: 'gpt-4o', customModel: '', baseUrl: '', useVision: true, autoScroll: true, enableThinking: false, thinkingBudgetTokens: 1024, maxSteps: 100, planningInterval: 3, maxFailures: 3, maxInputTokens: 128000, llmTimeoutMs: 120000 };
+  const defaults = { provider: 'openai', apiKey: '', model: 'gpt-4o', customModel: '', baseUrl: '', useVision: true, autoScroll: true, enableThinking: false, enableTaskRecording: true, thinkingBudgetTokens: 1024, maxSteps: 100, planningInterval: 3, maxFailures: 3, maxInputTokens: 128000, llmTimeoutMs: 120000 };
   const { settings } = await chrome.storage.local.get('settings');
   return { ...defaults, ...settings };
 }
