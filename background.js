@@ -179,6 +179,205 @@ class StateManager {
 }
 
 // ============================================================================
+// VISUAL STATE TRACKER (Before/After Screenshot Comparison)
+// ============================================================================
+
+class VisualStateTracker {
+  constructor() {
+    this.previousScreenshot = null;
+    this.previousDomHash = null;
+    this.previousUrl = null;
+    this.comparisonHistory = [];
+  }
+
+  reset() {
+    this.previousScreenshot = null;
+    this.previousDomHash = null;
+    this.previousUrl = null;
+    this.comparisonHistory = [];
+  }
+
+  captureBeforeState(screenshot, domHash, url) {
+    this.previousScreenshot = screenshot;
+    this.previousDomHash = domHash;
+    this.previousUrl = url;
+  }
+
+  compareWithCurrent(currentScreenshot, currentDomHash, currentUrl) {
+    const result = {
+      hasBefore: !!this.previousScreenshot,
+      beforeScreenshot: this.previousScreenshot,
+      afterScreenshot: currentScreenshot,
+      domChanged: this.previousDomHash !== currentDomHash,
+      urlChanged: this.previousUrl !== currentUrl,
+      likelyNoChange: false
+    };
+
+    // If we have both screenshots and DOM didn't change, likely no visual change
+    if (result.hasBefore && !result.domChanged && !result.urlChanged) {
+      result.likelyNoChange = true;
+    }
+
+    // Store comparison
+    this.comparisonHistory.push({
+      timestamp: Date.now(),
+      domChanged: result.domChanged,
+      urlChanged: result.urlChanged
+    });
+
+    // Keep only last 10 comparisons
+    if (this.comparisonHistory.length > 10) {
+      this.comparisonHistory.shift();
+    }
+
+    return result;
+  }
+
+  getNoChangeStreak() {
+    let streak = 0;
+    for (let i = this.comparisonHistory.length - 1; i >= 0; i--) {
+      if (!this.comparisonHistory[i].domChanged && !this.comparisonHistory[i].urlChanged) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
+}
+
+let globalVisualTracker = null;
+
+function getVisualTracker() {
+  if (!globalVisualTracker) {
+    globalVisualTracker = new VisualStateTracker();
+    console.log('[Crab-Agent] VisualStateTracker initialized');
+  }
+  return globalVisualTracker;
+}
+
+// ============================================================================
+// CRAB PERSONALITY SYSTEM
+// ============================================================================
+
+const CrabPersonality = {
+  // Response templates by mood
+  moods: {
+    greeting: [
+      '🦀 Ê!', '🦀 Yoo!', '🦀 Hehe, chào nha!', '🦀 Hi hi!'
+    ],
+    success: [
+      '✅ Xong rồi nè!', '✅ Được luôn!', '✅ Ez game!', '✅ Okela!',
+      '🦀 Done nha!', '🦀 Xử xong rồi!'
+    ],
+    thinking: [
+      '🤔 Để cua xem...', '💭 Hmm...', '🦀 Coi coi...', '🦀 Wait tí...'
+    ],
+    failed: [
+      '😅 Lỗi rồi, thử lại nha', '🦀 Oops, không được', '😬 Fail rồi...',
+      '🦀 Hông được, thử cách khác nha'
+    ],
+    confused: [
+      '❓ Cua chưa hiểu lắm...', '🦀 Giải thích thêm được không?',
+      '🤔 Ý bạn là sao nhỉ?', '❓ Cần thêm info nha'
+    ],
+    asking: [
+      '🦀 Cua hỏi tí nha:', '❓ Cho cua hỏi:', '🤔 Này này:'
+    ],
+    suggesting: [
+      '💡 Cua gợi ý nè:', '🦀 Hay là:', '💭 Cua nghĩ:'
+    ],
+    working: [
+      '🦀 Đang làm...', '⚡ On it!', '🦀 Chờ tí nha...'
+    ]
+  },
+
+  // Pick random from array
+  pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  },
+
+  // Detect user's style from message
+  detectStyle(message) {
+    if (!message) return 'friendly';
+    const lower = message.toLowerCase();
+
+    // Casual Vietnamese
+    if (/\b(ê|ơi|nha|nè|đi|luôn|hen|ha|á|ạ|nhé)\b/.test(lower)) return 'casual';
+    // Formal
+    if (/\b(please|could you|would you|kindly|xin|vui lòng)\b/.test(lower)) return 'formal';
+    // Short commands
+    if (message.length < 30 && /^(click|go|open|search|type|send)/i.test(lower)) return 'brief';
+
+    return 'friendly';
+  },
+
+  // Format response based on mood and style
+  format(text, mood = 'success', userStyle = 'friendly') {
+    const prefix = this.pick(this.moods[mood] || this.moods.success);
+
+    // Simplify technical terms for non-formal styles
+    let simplified = text;
+    if (userStyle !== 'formal') {
+      simplified = simplified
+        .replace(/element\s*\d+/gi, 'cái đó')
+        .replace(/clicked?\s*(on\s*)?/gi, 'bấm ')
+        .replace(/navigat(ed|ing)\s*(to)?/gi, 'chuyển đến ')
+        .replace(/successfully/gi, '')
+        .replace(/\[effect:[^\]]+\]/gi, '')
+        .replace(/\[trusted\]/gi, '')
+        .replace(/at\s*\(\d+,\s*\d+\)/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    // For brief style, keep it very short
+    if (userStyle === 'brief' && simplified.length > 50) {
+      simplified = simplified.substring(0, 47) + '...';
+    }
+
+    return `${prefix} ${simplified}`.trim();
+  },
+
+  // Format ask_user response
+  formatQuestion(question, options = []) {
+    const prefix = this.pick(this.moods.asking);
+    let formatted = `${prefix}\n${question}`;
+
+    if (options && options.length > 0) {
+      formatted += '\n\n' + options.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
+    }
+
+    return formatted;
+  },
+
+  // Format suggest_rule response
+  formatSuggestion(rule, reason = '') {
+    const prefix = this.pick(this.moods.suggesting);
+    let formatted = `${prefix}\n"${rule}"`;
+
+    if (reason) {
+      formatted += `\n\n(${reason})`;
+    }
+
+    formatted += '\n\n👆 Thêm rule này vào Context Rules không?';
+
+    return formatted;
+  }
+};
+
+// Store detected user style for session
+let sessionUserStyle = 'friendly';
+
+function updateUserStyle(userMessage) {
+  sessionUserStyle = CrabPersonality.detectStyle(userMessage);
+}
+
+function formatCrabResponse(text, mood = 'success') {
+  return CrabPersonality.format(text, mood, sessionUserStyle);
+}
+
+// ============================================================================
 // STATE MANAGEMENT INTEGRATION
 // ============================================================================
 
@@ -330,7 +529,8 @@ NEVER decide based only on:
 # Output Structure (JSON ONLY - Chain of Thought REQUIRED)
 {
   "thought": {
-    "observation": "What I see on the current page (elements, state)",
+    "observation": "What I see on the current page (elements, state, layout)",
+    "visual_reasoning": "Analyze UI structure: What visual cues indicate interactivity (icons, colors, borders)? What spatial relationships suggest hierarchy (headers, panels, nested areas)? What universal symbols do I see (arrows←→, X, ☰, ⚙)?",
     "analysis": "Analysis of current state vs goal, identify gaps",
     "plan": "Why I'm choosing this specific action"
   },
@@ -345,7 +545,9 @@ NEVER decide based only on:
 }
 
 CRITICAL: The "thought" field is MANDATORY and MUST come FIRST.
-Think step-by-step before deciding on action.
+- "visual_reasoning" is REQUIRED: analyze what you SEE, not what you assume
+- Think step-by-step: observe → analyze visually → plan → act
+- Use visual_reasoning to explain WHY you're clicking a specific element based on what it looks like
 
 # Action Rules
 1. Only one action can be provided at once
@@ -396,11 +598,12 @@ Think step-by-step before deciding on action.
 - close_tab: {"close_tab": {"tab_id": 123}}
 
 ## SCROLLING:
-- scroll_down: {"scroll_down": {}}
-- scroll_up: {"scroll_up": {}}
+- scroll_down: {"scroll_down": {}} // Scroll main page down
+- scroll_up: {"scroll_up": {}} // Scroll main page up
 - scroll_to_top: {"scroll_to_top": {}}
 - scroll_to_bottom: {"scroll_to_bottom": {}}
 - scroll_to_text: {"scroll_to_text": {"text": "target"}}
+- scroll_element: {"scroll_element": {"index": 5, "direction": "down"}} // Scroll INSIDE a specific panel/container (e.g., sidebar, modal). direction: "up" or "down"
 
 ## UTILITIES:
 - wait: {"wait": {"seconds": 2}}
@@ -410,6 +613,13 @@ Think step-by-step before deciding on action.
   **RESPONSE STYLE**: Write "text" in natural, friendly language for the user:
   - Do NOT mention: URL parameters, DOM elements, technical implementation details
   - Keep it short and human-friendly
+
+## UNCERTAINTY HANDLING (when confused or stuck):
+- ask_user: {"ask_user": {"question": "Có 2 nút Save, click cái nào?", "options": ["Save Draft", "Save & Publish"]}}
+  Use when: multiple similar elements, unclear instruction, need user choice
+  options is optional - can ask open question without options
+- suggest_rule: {"suggest_rule": {"rule": "Khi gặp popup confirm, chọn Accept", "reason": "Thấy pattern này nhiều lần"}}
+  Use when: noticed a repeating pattern that could be a context rule
 
 ## COORDINATE-BASED (FALLBACK - only when element has no index):
 - click_at: {"click_at": {"x": 500, "y": 300}} // Use ONLY when DOM index unavailable
@@ -456,35 +666,71 @@ Think step-by-step before deciding on action.
    - click_at is your backup when DOM-based clicking doesn't work
 15. ELEMENT NOT FOUND - CRITICAL:
    - If you get "Element X not found", the DOM has changed - DO NOT retry same index
-16. ADMINISTRATIVE ACTIONS (delete, edit, settings, rename, etc.):
-   - These actions are NEVER on content items (images, messages, posts) directly
-   - Look for: menu icons (...), settings icons (gear ⚙), hamburger menu (☰), or kebab menu (⋮)
-   - Usually located in: top-right corner, header area, or next to the item name
-   - Common flow: click menu icon → dropdown appears → click the action
-17. COLLAPSE/EXPAND PANEL ICONS:
-   - These are small arrow icons (>, <, ▶, ◀) or chevron icons for showing/hiding side panels
-   - **MANDATORY COORDINATE CHECK**: Collapse icons are at FAR RIGHT - verify x > 75% of viewport width
-   - If x < 70% of viewport width, you're clicking WRONG AREA for collapse icons!
-   - Usually in the header/toolbar row, NOT in the main content area
-   - Look for elements with aria-label containing "expand", "collapse", "panel", "info", "details"
-   - DO NOT confuse with images in chat - collapse icons are TINY and at screen EDGES
-   - If looking for group/channel settings panel, find icons in the HEADER area on the RIGHT side
-18. FULLSCREEN IMAGE/MODAL RECOVERY:
-   - If you accidentally opened a fullscreen image or modal, press Escape or click outside to close it
-   - Do NOT continue clicking on the image - send_keys "Escape" first to dismiss the overlay
-   - After closing, re-identify the correct collapse icon at the RIGHT EDGE of screen
-19. COORDINATES WARNING:
-   - WARNING: The element INDEX (e.g. 1020) is NOT the same as x,y COORDINATES!
-   - Look at the DOM list for elements with @(x,y) coordinates, e.g. "@(750,820)" means x=750, y=820
-   - Or look at the screenshot bounding boxes to estimate pixel position visually
-   - For chat/messaging: the input field is usually at BOTTOM of chat window (y > 75% of viewport height), look for "Aa" placeholder
-20. MESSAGING APPS:
-   - Message input field: Look for element with [EDITABLE INPUT] tag, role="textbox", or placeholder like "Aa", "Enter a message"
-   - The input is usually a <div> with contenteditable, NOT a regular <input>
-   - Click on the input field FIRST (use click_at on center of input area if click_element fails)
-   - THEN use input_text or type with send_keys
-   - After typing, press Enter or click send button
-21. Do not output reasoning in JSON. Output structured fields only.
+## VISUAL ANALYSIS PRINCIPLES (General - apply to ALL UI situations)
+
+16. UNDERSTAND UI THROUGH VISUAL REASONING:
+   Instead of memorizing specific patterns, ANALYZE what you see:
+
+   a) IDENTIFY INTERACTIVE ELEMENTS by visual cues:
+      - Buttons: colored backgrounds, borders, rounded corners, hover states
+      - Links: underlined text, different color (usually blue)
+      - Icons: small symbols that suggest action (arrows, X, gear, hamburger ☰)
+      - Input fields: rectangular areas with borders or placeholder text
+
+   b) UNDERSTAND SPATIAL HIERARCHY:
+      - Headers/toolbars: top of page/panel, contain navigation and actions
+      - Sidebars/panels: left or right edge, can be opened/closed
+      - Main content: center area, usually largest
+      - Footers/input areas: bottom of page/panel
+
+   c) RECOGNIZE UNIVERSAL SYMBOLS:
+      - ← or < : back, close, collapse (go to previous state)
+      - → or > : forward, expand, open (go to next state)
+      - X or × : close, delete, remove
+      - ☰ (hamburger) : menu
+      - ⚙ (gear) : settings
+      - ⋮ or ... : more options menu
+      - + : add, create new
+      - 🔍 : search
+
+17. MULTI-STEP INTERACTIONS:
+   - Opening something (dropdown, panel, modal) is step 1 - you still need to interact with what opened
+   - After any click, ALWAYS check the new screenshot to see what appeared/changed
+   - The NEW elements have NEW indices - don't use old indices for new UI
+   - If something opened then closed unexpectedly, the action may have toggled - try again
+
+18. SELF-EXPLORATION BEFORE ASKING:
+   When unsure how to proceed:
+   1. SCROLL to reveal more context (maybe the button is off-screen)
+   2. HOVER on elements to see tooltips or expanded states
+   3. Look for VISUAL CUES - icons, colors, text hints
+   4. Try a DIFFERENT APPROACH - keyboard shortcuts, alternative paths
+   5. After 2-3 attempts, use ask_user with specific question about what you tried
+
+   NEVER give up without exploring. NEVER assume without visual evidence.
+
+19. VISUAL VERIFICATION:
+   - ALWAYS verify screenshot AFTER each action
+   - If UI didn't change as expected → action may have failed, try different approach
+   - If [BEFORE/AFTER COMPARISON] images look identical → definitely failed
+   - If new elements appeared → action succeeded, identify next target
+
+20. COORDINATES vs INDICES:
+   - Element INDEX (e.g. 233) is for click_element - use the number from SoM label
+   - COORDINATES (e.g. x=750, y=820) are pixel positions for click_at
+   - INDEX ≠ COORDINATES - never confuse them
+
+21. INPUT FIELDS:
+   - Usually at BOTTOM of chat windows or in form areas
+   - Look for: [EDITABLE INPUT], role="textbox", placeholder text like "Aa", "Type here"
+   - CLICK to focus FIRST, then type
+   - After typing, press Enter or click submit button
+
+22. SCROLLING - choose the right action:
+   - scroll_down/scroll_up: scroll the MAIN PAGE
+   - scroll_element: scroll INSIDE a specific panel, sidebar, modal, or container
+   - If you need to see more content in a SIDE PANEL (like conversation info, settings panel), use scroll_element with an element index from that panel
+   - Visual cue: if the content is inside a bordered/separated area, it's likely a scrollable container
 </system_instructions>
 `,
 
@@ -573,13 +819,19 @@ If the user's request is a simple greeting or question that doesn't require brow
 `,
 
   navigatorExample: {
+    thought: {
+      observation: "Page shows a chat app with sidebar on left, main chat in center, and a panel on right with '< Quản lý nhóm' header",
+      visual_reasoning: "The '<' symbol at the top-left of the right panel is a universal back/close indicator. It's positioned like a navigation element in the header. Clicking it should close this panel.",
+      analysis: "User wants to close this panel. The visual cue '< Title' pattern indicates a back button.",
+      plan: "Click on element 228 which contains the '<' back arrow to close the panel"
+    },
     current_state: {
       evaluation_previous_goal: "N/A - first action",
-      memory: "",
-      next_goal: "Click on the search input field to focus it"
+      memory: "Task: close panel | [ ] find close button [✓] identified '< Quản lý nhóm' as back button",
+      next_goal: "Click the back button to close the panel"
     },
     action: [
-      { click_element: { index: 0 } }
+      { click_element: { index: 228 } }
     ]
   },
 
@@ -721,7 +973,7 @@ Field relationships:
     message += `FALLBACK: click_at (use only when element has no index)\n`;
     message += `NAVIGATION: search_google, go_to_url, go_back, switch_tab, open_tab, close_tab\n`;
     message += `KEYBOARD: send_keys (Enter, ArrowDown, ArrowUp, Escape, Tab)\n`;
-    message += `SCROLL: scroll_down, scroll_up, scroll_to_text\n`;
+    message += `SCROLL: scroll_down, scroll_up, scroll_to_text, scroll_element (for panels/sidebars)\n`;
     message += `UTILITY: wait, wait_for_element, wait_for_stable, done\n\n`;
     message += `# Output format (JSON with Chain of Thought):\n`;
     message += `{\n`;
@@ -1029,16 +1281,45 @@ const AgentS = {
         case 'scroll_to_text':
           result = await AgentS.actions.scrollToText(params.text, tabId);
           break;
+        case 'scroll_element':
+          result = await AgentS.actions.scrollElement(params.index, params.direction || 'down', tabId);
+          break;
         case 'wait_for_element':
           result = await AgentS.actions.waitForElement(params.selector, params.timeout || 5000, tabId);
           break;
         case 'wait_for_stable':
           result = await AgentS.actions.waitForDomStable(params.timeout || 2000, tabId);
           break;
+        case 'ask_user':
+          // New action: Ask user for clarification
+          result = AgentS.createActionResult({
+            isDone: false,
+            success: true,
+            isAskUser: true,
+            question: params.question || 'Cần thêm thông tin',
+            options: params.options || [],
+            message: CrabPersonality.formatQuestion(params.question, params.options)
+          });
+          break;
+        case 'suggest_rule':
+          // New action: Suggest a context rule to user
+          result = AgentS.createActionResult({
+            isDone: false,
+            success: true,
+            isSuggestRule: true,
+            rule: params.rule || '',
+            reason: params.reason || '',
+            message: CrabPersonality.formatSuggestion(params.rule, params.reason)
+          });
+          break;
         case 'done':
+          // Apply crab personality to response
+          const doneText = params.text || '';
+          const mood = params.success !== false ? 'success' : 'failed';
+          const formattedText = formatCrabResponse(doneText, mood);
           result = AgentS.createActionResult({
             isDone: true, success: params.success !== false,
-            extractedContent: params.text, message: params.text
+            extractedContent: formattedText, message: formattedText
           });
           break;
         case 'wait':
@@ -1306,7 +1587,7 @@ const AgentS = {
           targetEl.dispatchEvent(new MouseEvent('mousedown', eventOptions));
           targetEl.dispatchEvent(new MouseEvent('mouseup', eventOptions));
           targetEl.dispatchEvent(new MouseEvent('click', eventOptions));
-          if (typeof targetEl.click === 'function') targetEl.click();
+          // REMOVED: targetEl.click() was causing double-click that closes dropdowns
 
           let effectBits = collectEffects(targetEl, baseline);
           for (let i = 0; i < 4 && effectBits.length === 0; i++) {
@@ -1357,11 +1638,10 @@ const AgentS = {
       let trustedError = null;
       const isAnchorLikePreRetry = String(baseResult.tag || '').toLowerCase() === 'a';
       const hasStrongEffectPreRetry = effectBits.includes('url') || effectBits.includes('state');
-      const domOnlyLowSignalPreRetry = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      // Only retry if NO effect at all - don't retry if DOM changed (would close dropdown!)
       const shouldRetryWithTrusted =
         effectBits.length === 0 ||
-        (isAnchorLikePreRetry && !hasStrongEffectPreRetry) ||
-        domOnlyLowSignalPreRetry;
+        (isAnchorLikePreRetry && !hasStrongEffectPreRetry && !effectBits.includes('dom'));
 
       if (shouldRetryWithTrusted) {
         // Recalculate coordinates and verify no overlay element blocks the target
@@ -1493,8 +1773,9 @@ const AgentS = {
       const effectLabel = effectBits.join('+') || 'none';
       const isAnchorLike = String(baseResult.tag || '').toLowerCase() === 'a';
       const anchorHasStrongEffect = effectBits.includes('url') || effectBits.includes('state');
-      // Disabled: was causing false negatives - any DOM change is valid
-      const domOnlyLowSignal = false;
+      // DOM-only changes are ambiguous - could be real (dropdown) or noise (hover)
+      // Don't auto-fail, let model check screenshot. Only fail if NO mutations at all.
+      const domOnlyLowSignal = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta === 0;
       await new Promise(r => setTimeout(r, 350));
       if (isAnchorLike && !anchorHasStrongEffect) {
         const href = String(baseResult.href || '').trim();
@@ -1540,9 +1821,17 @@ const AgentS = {
           message: noEffectMsg
         });
       }
+
+      // Warn if only DOM changed - might be a dropdown that needs follow-up click
+      let dropdownWarning = '';
+      const isOnlyDomChange = effectBits.length === 1 && effectBits[0] === 'dom';
+      if (isOnlyDomChange) {
+        dropdownWarning = ' [WARNING: Only DOM changed - a dropdown/menu may have appeared. Check screenshot for new menu items to click!]';
+      }
+
       return AgentS.createActionResult({
         success: true,
-        message: `Clicked element ${safeIndex} <${baseResult.tag || ''}> "${baseResult.text || ''}" at (${baseResult.clickX}, ${baseResult.clickY}) [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}`
+        message: `Clicked element ${safeIndex} <${baseResult.tag || ''}> "${baseResult.text || ''}" at (${baseResult.clickX}, ${baseResult.clickY}) [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${dropdownWarning}`
       });
     },
 
@@ -1709,8 +1998,7 @@ const AgentS = {
             clickedElements.push((el.tagName || '').toLowerCase());
           }
 
-          // Also try native click on the best target
-          if (typeof target.click === 'function') target.click();
+          // REMOVED: target.click() was causing double-click that closes dropdowns
 
           let effectBits = collectEffects(target, baseline);
           for (let i = 0; i < 4 && effectBits.length === 0; i++) {
@@ -1787,11 +2075,10 @@ const AgentS = {
       let trustedError = null;
       const isAnchorLikePreRetry = String(baseResult.targetTag || '').toLowerCase() === 'a';
       const hasStrongEffectPreRetry = effectBits.includes('url') || effectBits.includes('state');
-      const domOnlyLowSignalPreRetry = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      // Only retry if NO effect at all - don't retry if DOM changed (would close dropdown!)
       const shouldRetryWithTrusted =
         effectBits.length === 0 ||
-        (isAnchorLikePreRetry && !hasStrongEffectPreRetry) ||
-        domOnlyLowSignalPreRetry;
+        (isAnchorLikePreRetry && !hasStrongEffectPreRetry && !effectBits.includes('dom'));
 
       if (shouldRetryWithTrusted) {
         const trusted = await AgentS.actions.dispatchTrustedClick(tabId, baseResult.baseX, baseResult.baseY);
@@ -1864,8 +2151,9 @@ const AgentS = {
       const effectLabel = effectBits.join('+') || 'none';
       const isAnchorLike = String(baseResult.targetTag || '').toLowerCase() === 'a';
       const anchorHasStrongEffect = effectBits.includes('url') || effectBits.includes('state');
-      // Disabled: was causing false negatives - any DOM change is valid
-      const domOnlyLowSignal = false;
+      // DOM-only changes are ambiguous - could be real (dropdown) or noise (hover)
+      // Don't auto-fail, let model check screenshot. Only fail if NO mutations at all.
+      const domOnlyLowSignal = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta === 0;
       await new Promise(r => setTimeout(r, 250));
       if (isAnchorLike && !anchorHasStrongEffect) {
         const href = String(baseResult.href || '').trim();
@@ -1922,6 +2210,13 @@ const AgentS = {
         containerWarning = ' [WARNING: Clicked on CONTAINER, not menu item. Use coordinates of the specific ITEM text]';
       }
 
+      // Warn if only DOM changed - might be a dropdown that needs follow-up click
+      let dropdownWarning = '';
+      const isOnlyDomChange = effectBits.length === 1 && effectBits[0] === 'dom';
+      if (isOnlyDomChange && !containerWarning) {
+        dropdownWarning = ' [WARNING: Only DOM changed - a dropdown/menu may have appeared. Check screenshot for new menu items to click!]';
+      }
+
       // Build context info for model to evaluate
       const parentCtx = (baseResult.parentContext || []).join(' > ') || 'none';
       const targetClass = baseResult.targetClass ? ` class="${baseResult.targetClass.slice(0, 50)}"` : '';
@@ -1931,7 +2226,7 @@ const AgentS = {
 
       return AgentS.createActionResult({
         success: true,
-        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${targetId}${targetClass}> clicked:[${(baseResult.clickedElements || []).join(',')}] parents:[${parentCtx}]${posInfo} [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${containerWarning}`
+        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${targetId}${targetClass}> clicked:[${(baseResult.clickedElements || []).join(',')}] parents:[${parentCtx}]${posInfo} [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${containerWarning}${dropdownWarning}`
       });
     },
 
@@ -2732,6 +3027,81 @@ const AgentS = {
       return AgentS.createActionResult({ success: true, message: `Scrolled ${direction}` });
     },
 
+    async scrollElement(index, direction, tabId) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (idx, dir) => {
+          // Find the element by index
+          const domState = window.AgentSDom?.lastBuildResult;
+          let el = domState?.elementMap?.[idx];
+
+          if (!el) {
+            return { success: false, error: `Element ${idx} not found` };
+          }
+
+          // Find the scrollable container - either the element itself or its parent
+          const findScrollableParent = (element) => {
+            let current = element;
+            while (current && current !== document.body) {
+              const style = window.getComputedStyle(current);
+              const overflowY = style.overflowY;
+              const isScrollable = (overflowY === 'auto' || overflowY === 'scroll') &&
+                                   current.scrollHeight > current.clientHeight;
+              if (isScrollable) return current;
+              current = current.parentElement;
+            }
+            return null;
+          };
+
+          const scrollable = findScrollableParent(el) || el;
+
+          if (!scrollable || scrollable === document.body) {
+            return { success: false, error: `No scrollable container found for element ${idx}` };
+          }
+
+          const scrollAmount = scrollable.clientHeight * 0.7;
+          const beforeScroll = scrollable.scrollTop;
+
+          if (dir === 'up') {
+            scrollable.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
+          } else {
+            scrollable.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+          }
+
+          // Wait a bit for smooth scroll
+          return new Promise(resolve => {
+            setTimeout(() => {
+              const afterScroll = scrollable.scrollTop;
+              const scrolled = Math.abs(afterScroll - beforeScroll);
+              resolve({
+                success: true,
+                scrolled: scrolled > 5,
+                direction: dir,
+                elementTag: (scrollable.tagName || '').toLowerCase(),
+                beforeScroll,
+                afterScroll
+              });
+            }, 300);
+          });
+        },
+        args: [index, direction]
+      });
+
+      const res = result[0]?.result || { success: false, error: 'Script failed' };
+      if (!res.success) {
+        return AgentS.createActionResult(res);
+      }
+
+      const scrolledMsg = res.scrolled
+        ? `Scrolled ${res.direction} inside <${res.elementTag}> container`
+        : `Container already at ${res.direction === 'up' ? 'top' : 'bottom'} - cannot scroll further`;
+
+      return AgentS.createActionResult({
+        success: true,
+        message: scrolledMsg
+      });
+    },
+
     async scrollToText(text, tabId) {
       const result = await chrome.scripting.executeScript({
         target: { tabId },
@@ -2801,7 +3171,7 @@ const AgentS = {
           target.dispatchEvent(new MouseEvent('mousedown', opts));
           target.dispatchEvent(new MouseEvent('mouseup', opts));
           target.dispatchEvent(new MouseEvent('click', opts));
-          target.click(); // Native click - most reliable
+          // REMOVED: target.click() was causing double-click that closes dropdowns
 
           return {
             success: true,
@@ -3166,6 +3536,317 @@ const AgentS = {
     } catch (e) {
       console.error('Failed to annotate screenshot:', e);
       return screenshotDataUrl; // Return original if annotation fails
+    }
+  },
+
+  /**
+   * Draw click indicator on canvas (orange circle like Claude)
+   * @param {CanvasRenderingContext2D} ctx - Canvas context
+   * @param {number} x - X coordinate
+   * @param {number} y - Y coordinate
+   * @param {number} scaleFactor - Scale factor for high-DPI
+   */
+  drawClickIndicator(ctx, x, y, scaleFactor = 1) {
+    ctx.save();
+
+    // Outer glow
+    ctx.beginPath();
+    ctx.arc(x, y, 18 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(255, 107, 53, 0.3)'; // Crab orange
+    ctx.fill();
+
+    // Middle ring
+    ctx.beginPath();
+    ctx.arc(x, y, 12 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(255, 107, 53, 0.5)';
+    ctx.fill();
+
+    // Inner circle
+    ctx.beginPath();
+    ctx.arc(x, y, 6 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(255, 107, 53, 0.9)';
+    ctx.fill();
+
+    // Border
+    ctx.beginPath();
+    ctx.arc(x, y, 12 * scaleFactor, 0, 2 * Math.PI);
+    ctx.strokeStyle = 'rgba(255, 107, 53, 1)';
+    ctx.lineWidth = 2 * scaleFactor;
+    ctx.stroke();
+
+    ctx.restore();
+  },
+
+  /**
+   * Draw drag path with arrow on canvas
+   * @param {CanvasRenderingContext2D} ctx - Canvas context
+   * @param {number} startX - Start X coordinate
+   * @param {number} startY - Start Y coordinate
+   * @param {number} endX - End X coordinate
+   * @param {number} endY - End Y coordinate
+   * @param {number} scaleFactor - Scale factor for high-DPI
+   */
+  drawDragPath(ctx, startX, startY, endX, endY, scaleFactor = 1) {
+    ctx.save();
+
+    // Draw line
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.strokeStyle = '#dc2626'; // Red
+    ctx.lineWidth = 3 * scaleFactor;
+    ctx.stroke();
+
+    // Draw arrowhead at end
+    const angle = Math.atan2(endY - startY, endX - startX);
+    const arrowLength = 15 * scaleFactor;
+
+    ctx.beginPath();
+    ctx.moveTo(endX, endY);
+    ctx.lineTo(
+      endX - arrowLength * Math.cos(angle - Math.PI / 6),
+      endY - arrowLength * Math.sin(angle - Math.PI / 6)
+    );
+    ctx.lineTo(
+      endX - arrowLength * Math.cos(angle + Math.PI / 6),
+      endY - arrowLength * Math.sin(angle + Math.PI / 6)
+    );
+    ctx.closePath();
+    ctx.fillStyle = '#dc2626';
+    ctx.fill();
+
+    // Draw start marker (white circle with orange border)
+    ctx.beginPath();
+    ctx.arc(startX, startY, 6 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#FF6B35';
+    ctx.lineWidth = 2 * scaleFactor;
+    ctx.stroke();
+
+    // Draw end marker (white circle with red border)
+    ctx.beginPath();
+    ctx.arc(endX, endY, 6 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#dc2626';
+    ctx.lineWidth = 2 * scaleFactor;
+    ctx.stroke();
+
+    ctx.restore();
+  },
+
+  /**
+   * Draw action label on canvas
+   * @param {CanvasRenderingContext2D} ctx - Canvas context
+   * @param {string} text - Label text
+   * @param {number} x - X coordinate
+   * @param {number} y - Y coordinate
+   * @param {number} scaleFactor - Scale factor for high-DPI
+   */
+  drawActionLabel(ctx, text, x, y, scaleFactor = 1) {
+    ctx.save();
+
+    const fontSize = 14 * scaleFactor;
+    ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+
+    const metrics = ctx.measureText(text);
+    const textWidth = metrics.width;
+    const textHeight = 20 * scaleFactor;
+    const padding = 8 * scaleFactor;
+
+    // Adjust position if too close to edges
+    let labelX = x + 20 * scaleFactor;
+    let labelY = y - 10 * scaleFactor;
+
+    if (labelX + textWidth + padding * 2 > ctx.canvas.width) {
+      labelX = x - textWidth - padding * 2 - 20 * scaleFactor;
+    }
+    if (labelY < 0) {
+      labelY = y + 20 * scaleFactor;
+    }
+
+    const bgX = labelX;
+    const bgY = labelY;
+    const bgWidth = textWidth + padding * 2;
+    const bgHeight = textHeight + padding;
+    const radius = 6 * scaleFactor;
+
+    // Draw rounded background
+    ctx.beginPath();
+    ctx.moveTo(bgX + radius, bgY);
+    ctx.lineTo(bgX + bgWidth - radius, bgY);
+    ctx.quadraticCurveTo(bgX + bgWidth, bgY, bgX + bgWidth, bgY + radius);
+    ctx.lineTo(bgX + bgWidth, bgY + bgHeight - radius);
+    ctx.quadraticCurveTo(bgX + bgWidth, bgY + bgHeight, bgX + bgWidth - radius, bgY + bgHeight);
+    ctx.lineTo(bgX + radius, bgY + bgHeight);
+    ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - radius);
+    ctx.lineTo(bgX, bgY + radius);
+    ctx.quadraticCurveTo(bgX, bgY, bgX + radius, bgY);
+    ctx.closePath();
+
+    // Shadow
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+    ctx.shadowBlur = 4 * scaleFactor;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 2 * scaleFactor;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fill();
+
+    // Reset shadow
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    // Draw text
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, bgX + padding, bgY + padding);
+
+    ctx.restore();
+  },
+
+  /**
+   * Annotate screenshot with action indicators (click, drag, etc.)
+   * @param {string} screenshotDataUrl - Base64 data URL of screenshot
+   * @param {Object} action - Action object with type, coordinates, etc.
+   * @param {Object} viewportInfo - Viewport information
+   * @returns {Promise<string>} Annotated screenshot data URL
+   */
+  async annotateScreenshotWithAction(screenshotDataUrl, action, viewportInfo = {}) {
+    if (!screenshotDataUrl || !action) return screenshotDataUrl;
+
+    try {
+      const response = await fetch(screenshotDataUrl);
+      const blob = await response.blob();
+      const bitmap = await createImageBitmap(blob);
+
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext('2d');
+
+      // Draw original screenshot
+      ctx.drawImage(bitmap, 0, 0);
+
+      // Calculate scale factor
+      const viewportWidth = viewportInfo.width || bitmap.width;
+      const scaleFactor = bitmap.width / viewportWidth;
+
+      // Draw click indicator for click actions
+      if (action.coordinate && (
+        action.type?.includes('click') ||
+        action.type === 'click_element' ||
+        action.type === 'click_at' ||
+        action.type === 'scroll'
+      )) {
+        const [x, y] = Array.isArray(action.coordinate) ? action.coordinate : [action.coordinate.x, action.coordinate.y];
+        const scaledX = x * scaleFactor;
+        const scaledY = y * scaleFactor;
+        this.drawClickIndicator(ctx, scaledX, scaledY, scaleFactor);
+
+        // Draw action label
+        if (action.description || action.type) {
+          const label = action.description || action.type;
+          this.drawActionLabel(ctx, label, scaledX, scaledY, scaleFactor);
+        }
+      }
+
+      // Draw drag path for drag actions
+      if (action.type === 'drag' || action.type === 'left_click_drag') {
+        const startCoord = action.start_coordinate || action.startCoordinate;
+        const endCoord = action.coordinate || action.end_coordinate || action.endCoordinate;
+
+        if (startCoord && endCoord) {
+          const [startX, startY] = Array.isArray(startCoord) ? startCoord : [startCoord.x, startCoord.y];
+          const [endX, endY] = Array.isArray(endCoord) ? endCoord : [endCoord.x, endCoord.y];
+
+          this.drawDragPath(
+            ctx,
+            startX * scaleFactor,
+            startY * scaleFactor,
+            endX * scaleFactor,
+            endY * scaleFactor,
+            scaleFactor
+          );
+
+          if (action.description || action.type) {
+            this.drawActionLabel(ctx, action.description || action.type, endX * scaleFactor, endY * scaleFactor, scaleFactor);
+          }
+        }
+      }
+
+      // Draw label for type/key actions (top-left)
+      if (!action.coordinate && (action.type === 'type' || action.type === 'send_keys' || action.type === 'key')) {
+        const label = action.description || `${action.type}: ${action.text || action.keys || ''}`;
+        this.drawActionLabel(ctx, label.substring(0, 50), 20 * scaleFactor, 20 * scaleFactor, scaleFactor);
+      }
+
+      // Convert back to data URL
+      const annotatedBlob = await canvas.convertToBlob({ type: 'image/png' });
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(annotatedBlob);
+      });
+    } catch (e) {
+      console.error('Failed to annotate screenshot with action:', e);
+      return screenshotDataUrl;
+    }
+  },
+
+  /**
+   * Resize screenshot to max dimension while maintaining aspect ratio
+   * @param {string} screenshotDataUrl - Base64 data URL
+   * @param {number} maxDimension - Max width or height
+   * @param {string} format - Output format (png, jpeg, webp)
+   * @param {number} quality - Quality for lossy formats (0-1)
+   * @returns {Promise<string>} Resized screenshot data URL
+   */
+  async resizeScreenshot(screenshotDataUrl, maxDimension = 1280, format = 'png', quality = 0.85) {
+    if (!screenshotDataUrl) return screenshotDataUrl;
+
+    try {
+      const response = await fetch(screenshotDataUrl);
+      const blob = await response.blob();
+      const bitmap = await createImageBitmap(blob);
+
+      // Check if resize is needed
+      if (bitmap.width <= maxDimension && bitmap.height <= maxDimension) {
+        // Still convert format if different
+        if (format !== 'png') {
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(bitmap, 0, 0);
+          const newBlob = await canvas.convertToBlob({ type: `image/${format}`, quality });
+          return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.readAsDataURL(newBlob);
+          });
+        }
+        return screenshotDataUrl;
+      }
+
+      // Calculate new dimensions
+      const ratio = Math.min(maxDimension / bitmap.width, maxDimension / bitmap.height);
+      const newWidth = Math.round(bitmap.width * ratio);
+      const newHeight = Math.round(bitmap.height * ratio);
+
+      const canvas = new OffscreenCanvas(newWidth, newHeight);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, newWidth, newHeight);
+
+      const resizedBlob = await canvas.convertToBlob({ type: `image/${format}`, quality });
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(resizedBlob);
+      });
+    } catch (e) {
+      console.error('Failed to resize screenshot:', e);
+      return screenshotDataUrl;
     }
   },
 
@@ -3560,6 +4241,57 @@ function sendToPanel(message) {
   if (sidePanel) try { sidePanel.postMessage(message); } catch (e) {}
 }
 
+// Visual indicator helpers
+async function showAgentVisualIndicator(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'SHOW_AGENT_INDICATORS' });
+  } catch (e) {
+    console.log('[Visual] Could not show indicator:', e.message);
+  }
+}
+
+async function hideAgentVisualIndicator(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'HIDE_AGENT_INDICATORS' });
+  } catch (e) {
+    console.log('[Visual] Could not hide indicator:', e.message);
+  }
+}
+
+async function hideVisualForToolUse(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'HIDE_FOR_TOOL_USE' });
+  } catch (e) {}
+}
+
+async function showVisualAfterToolUse(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'SHOW_AFTER_TOOL_USE' });
+  } catch (e) {}
+}
+
+// Handle messages from content scripts (visual indicator)
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  switch (message.type) {
+    case 'STOP_AGENT':
+      handleCancelTask();
+      sendResponse({ success: true });
+      break;
+    case 'OPEN_SIDEPANEL':
+      chrome.sidePanel.open({ windowId: sender.tab?.windowId }).catch(() => {});
+      sendResponse({ success: true });
+      break;
+    case 'STATIC_INDICATOR_HEARTBEAT':
+      sendResponse({ success: !!currentExecution && !currentExecution.cancelled });
+      break;
+  }
+  return false;
+});
+
 async function handleNewTask(task, settings, images = []) {
   if (currentExecution) {
     currentExecution.cancelled = true;
@@ -3568,6 +4300,15 @@ async function handleNewTask(task, settings, images = []) {
 
   // Reset switch tab attempt counter for new task
   AgentS._switchTabAttempts = {};
+
+  // Reset visual tracker and state manager for new task
+  const visualTracker = getVisualTracker();
+  if (visualTracker) visualTracker.reset();
+  const stateManager = getStateManager();
+  if (stateManager) stateManager.reset();
+
+  // Update user style from task message
+  updateUserStyle(task);
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) { sendToPanel({ type: 'error', error: 'No active tab' }); return; }
@@ -3597,8 +4338,14 @@ async function handleNewTask(task, settings, images = []) {
 
   sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_START, actor: AgentS.Actors.SYSTEM, taskId, details: { task } });
 
+  // Show visual indicator when task starts
+  await showAgentVisualIndicator(tab.id);
+
   try { await runExecutor(); } catch (error) {
     sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId, details: { error: error.message } });
+  } finally {
+    // Hide visual indicator when task ends
+    await hideAgentVisualIndicator(tab.id);
   }
 }
 
@@ -3938,9 +4685,21 @@ async function runExecutor() {
       // Ignore - content script may not be ready
     }
 
-    // Build DOM tree without highlighting (cleaner view)
+    // PARALLEL: Build DOM tree + fetch tab context simultaneously
     console.log('[DOM] Building DOM tree for exec.tabId:', exec.tabId, 'currentTab.id:', currentTab?.id, 'currentTab.url:', currentTab?.url?.substring(0, 50));
-    const pageState = await AgentS.buildDomTree(exec.tabId, { highlightElements: false, viewportOnly: true });
+    const [pageState, tabsResult] = await Promise.all([
+      AgentS.buildDomTree(exec.tabId, { highlightElements: false, viewportOnly: true }),
+      chrome.tabs.query({ currentWindow: true }).catch(() => [])
+    ]);
+
+    // Pre-build tab context from parallel fetch
+    let tabContext = null;
+    try {
+      tabContext = {
+        currentTab: currentTab ? { id: currentTab.id, url: currentTab.url || '', title: currentTab.title || '' } : { id: exec.tabId, url: pageState.url || '', title: pageState.title || '' },
+        openTabs: tabsResult.map(tab => ({ id: tab.id, url: tab.url || '', title: tab.title || '' }))
+      };
+    } catch (e) {}
     console.log('[DOM] Built DOM tree:', {
       execTabId: exec.tabId,
       elementCount: pageState.elementCount,
@@ -4049,8 +4808,15 @@ async function runExecutor() {
         );
       }
 
-      // Note: SoM overlay is kept on page for user reference until next step
-      // It will be cleaned up when new DOM is built in next iteration
+      // Clean up SoM overlay immediately after screenshot to keep UI clean
+      if (somDrawnOnPage) {
+        try {
+          await chrome.tabs.sendMessage(exec.tabId, { type: 'cleanup_som' });
+          console.log('[SoM] Cleaned up overlay from page after screenshot');
+        } catch (e) {
+          console.warn('[SoM] Failed to cleanup overlay:', e.message);
+        }
+      }
     } else {
       emitModelImageDebug(
         exec,
@@ -4061,15 +4827,41 @@ async function runExecutor() {
       );
     }
 
-    // Build user message with current page state
-    let tabContext = null;
-    try {
-      const tabs = await chrome.tabs.query({ currentWindow: true });
-      tabContext = {
-        currentTab: currentTab ? { id: currentTab.id, url: currentTab.url || '', title: currentTab.title || '' } : { id: exec.tabId, url: pageState.url || '', title: pageState.title || '' },
-        openTabs: tabs.map(tab => ({ id: tab.id, url: tab.url || '', title: tab.title || '' }))
-      };
-    } catch (e) {}
+    // Visual state tracking for before/after comparison
+    const visualTracker = getVisualTracker();
+    let visualDiffWarning = '';
+    let beforeScreenshot = null;
+
+    if (screenshot && exec.step > 1) {
+      // Compare with previous state
+      const comparison = visualTracker.compareWithCurrent(
+        screenshot,
+        pageState.domHash,
+        pageState.url
+      );
+
+      if (comparison.hasBefore) {
+        beforeScreenshot = comparison.beforeScreenshot;
+
+        // Check for no-change streak
+        const noChangeStreak = visualTracker.getNoChangeStreak();
+        if (noChangeStreak >= 2) {
+          visualDiffWarning = `[VISUAL WARNING] No visible change detected for ${noChangeStreak} consecutive actions. Your actions may not be hitting the correct targets. Try a different approach.`;
+          console.log('[VisualDiff] No change streak:', noChangeStreak);
+        }
+
+        if (comparison.likelyNoChange) {
+          visualDiffWarning = `[VISUAL COMPARISON] DOM and URL unchanged since last action. Verify the action actually worked before proceeding.`;
+        }
+      }
+    }
+
+    // Store current screenshot for next comparison
+    if (screenshot) {
+      visualTracker.captureBeforeState(screenshot, pageState.domHash, pageState.url);
+    }
+
+    // tabContext already fetched in parallel above
 
     if (exec.interruptRequested) {
       const preActionInterrupt = flushPendingFollowUps(exec);
@@ -4102,12 +4894,25 @@ async function runExecutor() {
       stateWarnings
     );
 
-    // Add note about vision if screenshot is available
-    if (screenshot) {
-      userMessage = `[Screenshot with SoM overlay attached - numbered labels match element [index] in DOM list]\n\n${userMessage}`;
+    // Add visual diff warning if detected
+    if (visualDiffWarning) {
+      userMessage = `${visualDiffWarning}\n\n${userMessage}`;
     }
 
-    exec.messageManager.addStateMessage(userMessage, screenshot ? [screenshot] : []);
+    // Add note about vision if screenshot is available
+    let screenshotsToSend = [];
+    if (screenshot) {
+      if (beforeScreenshot && exec.step > 1) {
+        // Send both before and after for comparison
+        userMessage = `[BEFORE/AFTER COMPARISON - Image 1: BEFORE action, Image 2: AFTER action]\n[Compare carefully to verify if action produced visible change]\n\n${userMessage}`;
+        screenshotsToSend = [beforeScreenshot, screenshot];
+      } else {
+        userMessage = `[Screenshot with SoM overlay attached - numbered labels match element [index] in DOM list]\n\n${userMessage}`;
+        screenshotsToSend = [screenshot];
+      }
+    }
+
+    exec.messageManager.addStateMessage(userMessage, screenshotsToSend);
     exec.eventManager.emit({ state: AgentS.ExecutionState.THINKING, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { message: 'Analyzing...' } });
 
     try {
@@ -4439,6 +5244,45 @@ async function runExecutor() {
 
       if (result.includeInMemory && result.extractedContent) exec.memory += '\n' + result.extractedContent;
 
+      // Handle ask_user action - pause for user input
+      if (result.isAskUser) {
+        sendToPanel({
+          type: 'execution_event',
+          state: 'ASK_USER',
+          actor: AgentS.Actors.NAVIGATOR,
+          taskId: exec.taskId,
+          step: exec.step,
+          details: {
+            question: result.question,
+            options: result.options,
+            message: result.message
+          }
+        });
+        // Don't mark as done - wait for user response which will come as follow-up
+        exec.memory += `\n[ASKED USER: ${result.question}]`;
+        lastActionResult = result;
+        continue;
+      }
+
+      // Handle suggest_rule action - offer context rule to user
+      if (result.isSuggestRule) {
+        sendToPanel({
+          type: 'execution_event',
+          state: 'SUGGEST_RULE',
+          actor: AgentS.Actors.NAVIGATOR,
+          taskId: exec.taskId,
+          step: exec.step,
+          details: {
+            rule: result.rule,
+            reason: result.reason,
+            message: result.message
+          }
+        });
+        exec.memory += `\n[SUGGESTED RULE: ${result.rule}]`;
+        lastActionResult = result;
+        continue;
+      }
+
       // Handle task completion
       if (result.isDone) {
         await AgentS.removeHighlights(exec.tabId);
@@ -4582,6 +5426,16 @@ async function runPlanner(triggerReason = 'interval') {
           'screenshot_unavailable'
         );
       }
+
+      // Clean up SoM overlay after screenshot
+      if (somDrawn) {
+        try {
+          await chrome.tabs.sendMessage(exec.tabId, { type: 'cleanup_som' });
+          console.log('[Planner SoM] Cleaned up overlay from page');
+        } catch (e) {
+          console.warn('[Planner SoM] Failed to cleanup overlay:', e.message);
+        }
+      }
     } else {
       emitModelImageDebug(
         exec,
@@ -4683,6 +5537,8 @@ function handleCancelTask() {
     currentExecution.cancelled = true;
     sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_CANCEL, actor: AgentS.Actors.USER, taskId: currentExecution.taskId });
     AgentS.removeHighlights(currentExecution.tabId);
+    // Hide visual indicator on cancel
+    hideAgentVisualIndicator(currentExecution.tabId);
   }
 }
 

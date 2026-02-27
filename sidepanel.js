@@ -35,6 +35,60 @@ const CRAB_ENERGY_TICK_MS = 15000;
 const CRAB_IDLE_TIRED_MS = 90000;
 const LIVE_ACTIVITY_FADE_MS = 220;
 
+// Notification sound using Web Audio API
+let audioContext = null;
+
+function playNotificationSound(type = 'success') {
+  try {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
+    const now = audioContext.currentTime;
+
+    if (type === 'success') {
+      // Pleasant two-note chime for success
+      const frequencies = [523.25, 659.25]; // C5, E5
+      frequencies.forEach((freq, i) => {
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+
+        gain.gain.setValueAtTime(0, now + i * 0.15);
+        gain.gain.linearRampToValueAtTime(0.3, now + i * 0.15 + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.15 + 0.4);
+
+        osc.connect(gain);
+        gain.connect(audioContext.destination);
+
+        osc.start(now + i * 0.15);
+        osc.stop(now + i * 0.15 + 0.5);
+      });
+    } else if (type === 'error') {
+      // Low tone for error
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.value = 220; // A3
+
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.25, now + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+
+      osc.connect(gain);
+      gain.connect(audioContext.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.4);
+    }
+  } catch (e) {
+    console.log('[Sound] Could not play notification:', e.message);
+  }
+}
+
 function buildCrabFrame(options = {}) {
   const {
     offset = 0,
@@ -127,16 +181,27 @@ const elements = {
   listView: document.getElementById('listView'),
   chatView: document.getElementById('chatView'),
   settingsPanel: document.getElementById('settingsPanel'),
+  historyPanel: document.getElementById('historyPanel'),
 
-  // List view
+  // Header buttons (new UI)
+  historyBtn: document.getElementById('historyBtn'),
+  menuBtn: document.getElementById('menuBtn'),
+  dropdownMenu: document.getElementById('dropdownMenu'),
+  newChatBtn: document.getElementById('newChatBtn'),
+  historyMenuBtn: document.getElementById('historyMenuBtn'),
+  settingsMenuBtn: document.getElementById('settingsMenuBtn'),
+  modelDisplay: document.getElementById('modelDisplay'),
+
+  // History panel
+  historyBackBtn: document.getElementById('historyBackBtn'),
   taskList: document.getElementById('taskList'),
   searchInput: document.getElementById('searchInput'),
+
+  // Legacy (hidden compatibility)
   newTaskBtn: document.getElementById('newTaskBtn'),
   contextRulesContent: document.getElementById('contextRulesContent'),
   rulesList: document.getElementById('rulesList'),
   addRuleBtn: document.getElementById('addRuleBtn'),
-
-  // Tabs
   tabs: document.querySelectorAll('.tab'),
 
   // Chat view
@@ -144,6 +209,7 @@ const elements = {
   chatMessages: document.getElementById('chatMessages'),
   chatInput: document.getElementById('chatInput'),
   sendBtn: document.getElementById('sendBtn'),
+  charCounter: document.getElementById('charCounter'),
   backBtn: document.getElementById('backBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
   timerDisplay: document.getElementById('timerDisplay'),
@@ -178,6 +244,7 @@ const elements = {
   blockedDomainsInput: document.getElementById('blockedDomainsInput'),
   exportDataBtn: document.getElementById('exportDataBtn'),
   clearHistoryBtn: document.getElementById('clearHistoryBtn'),
+  themeSelect: document.getElementById('themeSelect'),
 
   // Options buttons
   modelBtn: document.getElementById('modelBtn'),
@@ -287,6 +354,9 @@ async function init() {
   initMascotCrab();
   resetLiveActivityPanel(false);
 
+  // Start with a new task ready
+  startNewTask();
+
   // Start heartbeat
   setInterval(sendHeartbeat, 30000);
 }
@@ -365,6 +435,7 @@ function handleExecutionEvent(event) {
       removeThinkingIndicator();
       addAssistantMessage(details?.finalAnswer || 'Task completed successfully!');
       saveCurrentTask();
+      playNotificationSound('success');
       break;
 
     case 'TASK_FAIL':
@@ -375,6 +446,7 @@ function handleExecutionEvent(event) {
       const errorMsg = details?.error || details?.finalAnswer || 'Unknown error';
       addSystemMessage(errorMsg, 'error');
       saveCurrentTask();
+      playNotificationSound('error');
       break;
 
     case 'TASK_CANCEL':
@@ -439,6 +511,20 @@ function handleExecutionEvent(event) {
       setExecutionText('Evaluating progress...');
       notifyCrabActivity('curious', details?.message || 'planning');
       break;
+
+    case 'ASK_USER':
+      // Agent is asking for user clarification
+      setExecutionText('Waiting for your input...');
+      notifyCrabActivity('curious', 'asking user');
+      addAskUserMessage(details?.message || details?.question, details?.options);
+      break;
+
+    case 'SUGGEST_RULE':
+      // Agent is suggesting a context rule
+      setExecutionText('Suggesting a rule...');
+      notifyCrabActivity('happy', 'suggesting rule');
+      addSuggestRuleMessage(details?.message, details?.rule, details?.reason);
+      break;
   }
 }
 
@@ -446,7 +532,61 @@ function handleExecutionEvent(event) {
  * Setup event listeners
  */
 function setupEventListeners() {
-  // Tab switching
+  // New UI: Menu button & dropdown
+  if (elements.menuBtn && elements.dropdownMenu) {
+    elements.menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      elements.dropdownMenu.classList.toggle('hidden');
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', () => {
+      elements.dropdownMenu.classList.add('hidden');
+    });
+
+    elements.dropdownMenu.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+  }
+
+  // New UI: History button
+  if (elements.historyBtn) {
+    elements.historyBtn.addEventListener('click', () => {
+      showView('history');
+    });
+  }
+
+  if (elements.historyMenuBtn) {
+    elements.historyMenuBtn.addEventListener('click', () => {
+      elements.dropdownMenu.classList.add('hidden');
+      showView('history');
+    });
+  }
+
+  // New UI: New chat button
+  if (elements.newChatBtn) {
+    elements.newChatBtn.addEventListener('click', () => {
+      elements.dropdownMenu.classList.add('hidden');
+      startNewTask();
+    });
+  }
+
+  // New UI: Settings from menu
+  if (elements.settingsMenuBtn) {
+    elements.settingsMenuBtn.addEventListener('click', () => {
+      elements.dropdownMenu.classList.add('hidden');
+      showView('settings');
+    });
+  }
+
+  // New UI: History back button
+  if (elements.historyBackBtn) {
+    elements.historyBackBtn.addEventListener('click', () => {
+      showView('chat');
+    });
+  }
+
+  // Legacy: Tab switching (hidden)
   elements.tabs.forEach(tab => {
     tab.addEventListener('click', () => {
       elements.tabs.forEach(t => t.classList.remove('active'));
@@ -454,43 +594,51 @@ function setupEventListeners() {
 
       const tabName = tab.dataset.tab;
       if (tabName === 'tasks') {
-        elements.taskList.classList.remove('hidden');
-        elements.contextRulesContent.classList.add('hidden');
-        triggerAnimation(elements.taskList, 'view-enter');
+        if (elements.taskList) elements.taskList.classList.remove('hidden');
+        if (elements.contextRulesContent) elements.contextRulesContent.classList.add('hidden');
       } else if (tabName === 'context') {
-        elements.taskList.classList.add('hidden');
-        elements.contextRulesContent.classList.remove('hidden');
+        if (elements.taskList) elements.taskList.classList.add('hidden');
+        if (elements.contextRulesContent) elements.contextRulesContent.classList.remove('hidden');
         renderContextRules();
-        triggerAnimation(elements.contextRulesContent, 'view-enter');
       }
     });
   });
 
-  // New task button
-  elements.newTaskBtn.addEventListener('click', () => {
-    startNewTask();
-  });
+  // New task button (legacy)
+  if (elements.newTaskBtn) {
+    elements.newTaskBtn.addEventListener('click', () => {
+      startNewTask();
+    });
+  }
 
   // Search
-  elements.searchInput.addEventListener('input', () => {
-    renderTasks(elements.searchInput.value);
-  });
+  if (elements.searchInput) {
+    elements.searchInput.addEventListener('input', () => {
+      renderTasks(elements.searchInput.value);
+    });
+  }
 
-  // Back button
-  elements.backBtn.addEventListener('click', () => {
-    showView('list');
-  });
+  // Back button (legacy)
+  if (elements.backBtn) {
+    elements.backBtn.addEventListener('click', () => {
+      showView('history');
+    });
+  }
 
   // Settings button
-  elements.settingsBtn.addEventListener('click', () => {
-    showView('settings');
-  });
+  if (elements.settingsBtn) {
+    elements.settingsBtn.addEventListener('click', () => {
+      showView('settings');
+    });
+  }
 
   // Settings back button
-  elements.settingsBackBtn.addEventListener('click', () => {
-    saveSettings();
-    showView('chat');
-  });
+  if (elements.settingsBackBtn) {
+    elements.settingsBackBtn.addEventListener('click', () => {
+      saveSettings();
+      showView('chat');
+    });
+  }
 
   // Send message
   elements.sendBtn.addEventListener('click', sendMessage);
@@ -501,10 +649,11 @@ function setupEventListeners() {
     }
   });
 
-  // Auto-resize textarea
+  // Auto-resize textarea and update char counter
   elements.chatInput.addEventListener('input', () => {
     elements.chatInput.style.height = 'auto';
     elements.chatInput.style.height = Math.min(elements.chatInput.scrollHeight, 120) + 'px';
+    updateCharCounter();
     notifyCrabActivity('user');
   });
 
@@ -544,7 +693,6 @@ function setupEventListeners() {
   // Vision toggle button
   elements.visionBtn.addEventListener('click', () => {
     settings.useVision = !settings.useVision;
-    elements.visionBtn.textContent = `Vision: ${settings.useVision ? 'ON' : 'OFF'}`;
     elements.visionBtn.classList.toggle('active', settings.useVision);
     // Sync with settings panel toggle
     elements.visionToggle.classList.toggle('active', settings.useVision);
@@ -555,7 +703,6 @@ function setupEventListeners() {
   elements.visionToggle.addEventListener('click', () => {
     elements.visionToggle.classList.toggle('active');
     settings.useVision = elements.visionToggle.classList.contains('active');
-    elements.visionBtn.textContent = `Vision: ${settings.useVision ? 'ON' : 'OFF'}`;
     // Sync with chat option button
     elements.visionBtn.classList.toggle('active', settings.useVision);
     saveSettings();
@@ -650,11 +797,11 @@ function setupEventListeners() {
 
   // Model modal
   elements.modelModalCancel.addEventListener('click', () => {
-    elements.modelModal.classList.remove('active');
+    elements.modelModal.classList.add('hidden');
   });
   elements.modelModal.addEventListener('click', (e) => {
     if (e.target === elements.modelModal) {
-      elements.modelModal.classList.remove('active');
+      elements.modelModal.classList.add('hidden');
     }
   });
 
@@ -669,6 +816,15 @@ function setupEventListeners() {
       renderTasks();
     }
   });
+
+  // Theme selector
+  if (elements.themeSelect) {
+    elements.themeSelect.addEventListener('change', () => {
+      const theme = elements.themeSelect.value;
+      applyTheme(theme);
+      saveSettings();
+    });
+  }
 }
 
 /**
@@ -677,21 +833,54 @@ function setupEventListeners() {
 function showView(view) {
   currentView = view;
 
-  elements.listView.classList.toggle('hidden', view !== 'list');
-  elements.chatView.classList.toggle('active', view === 'chat');
-  elements.settingsPanel.classList.toggle('active', view === 'settings');
+  // Legacy list view (hidden by default in new UI)
+  if (elements.listView) {
+    elements.listView.classList.toggle('hidden', view !== 'list');
+  }
 
-  const targetView = view === 'list'
-    ? elements.listView
-    : view === 'chat'
-      ? elements.chatView
-      : elements.settingsPanel;
-  triggerAnimation(targetView, 'view-enter');
+  // New panel system - panels overlay the chat view
+  if (elements.historyPanel) {
+    elements.historyPanel.classList.toggle('hidden', view !== 'history');
+  }
+  if (elements.settingsPanel) {
+    elements.settingsPanel.classList.toggle('hidden', view !== 'settings');
+  }
 
-  if (view === 'settings') {
+  // Chat view is always active as base
+  if (elements.chatView) {
+    elements.chatView.classList.toggle('active', view === 'chat' || view === 'history' || view === 'settings');
+  }
+
+  // Close dropdown menu when switching views
+  if (elements.dropdownMenu) {
+    elements.dropdownMenu.classList.add('hidden');
+  }
+
+  // Determine target view for animation
+  let targetView = elements.chatView;
+  if (view === 'history' && elements.historyPanel) {
+    targetView = elements.historyPanel;
+  } else if (view === 'settings' && elements.settingsPanel) {
+    targetView = elements.settingsPanel;
+  } else if (view === 'list' && elements.listView) {
+    targetView = elements.listView;
+  }
+
+  if (targetView) {
+    triggerAnimation(targetView, 'view-enter');
+  }
+
+  // Stagger animation for settings sections
+  if (view === 'settings' && elements.settingsPanel) {
     elements.settingsPanel.querySelectorAll('.settings-section').forEach((section, index) => {
       section.style.setProperty('--stagger-delay', `${Math.min(index * 26, 180)}ms`);
     });
+  }
+
+  // Load tasks when showing history
+  if (view === 'history') {
+    const searchValue = elements.searchInput?.value || '';
+    renderTasks(searchValue);
   }
 }
 
@@ -713,6 +902,7 @@ function startNewTask() {
   elements.chatInput.placeholder = 'What would you like me to do?';
   clearPendingImages();
   resetLiveActivityPanel(false);
+  updateCharCounter();
 
   showView('chat');
   elements.chatInput.focus();
@@ -762,6 +952,18 @@ async function sendMessage() {
   const text = elements.chatInput.value.trim();
   const images = pendingImages.map(image => image.dataUrl);
   if (!text && images.length === 0) return;
+
+  // Check character limit
+  if (text.length > CHAR_LIMIT) {
+    addSystemMessage(`Message too long (${text.length.toLocaleString()} / ${CHAR_LIMIT.toLocaleString()} characters). Please shorten your message.`, 'error');
+    return;
+  }
+
+  // Ensure currentTask exists
+  if (!currentTask) {
+    startNewTask();
+  }
+
   notifyCrabActivity('user');
   const historyBeforeSend = Array.isArray(currentTask?.messages) ? [...currentTask.messages] : [];
 
@@ -777,6 +979,7 @@ async function sendMessage() {
   addUserMessage(taskText, true, images);
   elements.chatInput.value = '';
   elements.chatInput.style.height = 'auto';
+  updateCharCounter();
 
   // Update task title if it's the first message
   if (currentTask.messages.length === 1) {
@@ -791,10 +994,9 @@ async function sendMessage() {
     ? buildFollowUpContext(historyBeforeSend)
     : '';
 
-  // Use customModel if provider is openai-compatible and model is "custom"
-  const effectiveModel = (settings.provider === 'openai-compatible' && settings.model === 'custom')
-    ? settings.customModel
-    : settings.model;
+  // Use customModel if provided for openai-compatible or ollama
+  const useCustom = ['openai-compatible', 'ollama'].includes(settings.provider) && settings.customModel?.trim();
+  const effectiveModel = useCustom ? settings.customModel.trim() : settings.model;
 
   port.postMessage({
     type: isFollowUp ? 'follow_up_task' : 'new_task',
@@ -967,6 +1169,120 @@ function addSystemMessage(content, type = 'info', save = true) {
 }
 
 /**
+ * Add ask_user message with options for user to respond
+ */
+function addAskUserMessage(message, options = []) {
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'message assistant ask-user';
+
+  // Message text
+  const textDiv = document.createElement('div');
+  textDiv.className = 'ask-user-text';
+  textDiv.textContent = message || 'Cần thêm thông tin...';
+  messageDiv.appendChild(textDiv);
+
+  // Options buttons if provided
+  if (options && options.length > 0) {
+    const optionsDiv = document.createElement('div');
+    optionsDiv.className = 'ask-user-options';
+
+    options.forEach((option, index) => {
+      const btn = document.createElement('button');
+      btn.className = 'ask-user-option';
+      btn.textContent = option;
+      btn.addEventListener('click', () => {
+        // Send selected option as follow-up message
+        const input = elements.chatInput;
+        if (input) {
+          input.value = option;
+          // Trigger send
+          const sendBtn = document.getElementById('sendBtn');
+          if (sendBtn) sendBtn.click();
+        }
+        // Disable all option buttons
+        optionsDiv.querySelectorAll('button').forEach(b => b.disabled = true);
+        btn.classList.add('selected');
+      });
+      optionsDiv.appendChild(btn);
+    });
+
+    messageDiv.appendChild(optionsDiv);
+  }
+
+  triggerAnimation(messageDiv, 'message-enter');
+  elements.chatMessages.appendChild(messageDiv);
+  scrollToBottom();
+
+  if (currentTask) {
+    currentTask.messages.push({ role: 'assistant', content: message, type: 'ask_user', options, timestamp: Date.now() });
+  }
+}
+
+/**
+ * Add suggest_rule message with accept/reject buttons
+ */
+function addSuggestRuleMessage(message, rule, reason = '') {
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'message assistant suggest-rule';
+
+  // Message text
+  const textDiv = document.createElement('div');
+  textDiv.className = 'suggest-rule-text';
+  textDiv.textContent = message || `Gợi ý rule: "${rule}"`;
+  messageDiv.appendChild(textDiv);
+
+  // Action buttons
+  const actionsDiv = document.createElement('div');
+  actionsDiv.className = 'suggest-rule-actions';
+
+  const acceptBtn = document.createElement('button');
+  acceptBtn.className = 'suggest-rule-btn accept';
+  acceptBtn.textContent = '✅ Thêm rule này';
+  acceptBtn.addEventListener('click', async () => {
+    // Add to context rules
+    const { contextRules = [] } = await chrome.storage.local.get('contextRules');
+    const newRule = {
+      id: Date.now(),
+      domain: '*', // Apply to all domains
+      rule: rule,
+      enabled: true
+    };
+    contextRules.push(newRule);
+    await chrome.storage.local.set({ contextRules });
+
+    // Update UI
+    acceptBtn.disabled = true;
+    rejectBtn.disabled = true;
+    acceptBtn.textContent = '✅ Đã thêm!';
+    renderContextRules();
+
+    // Notify user
+    addSystemMessage(`Rule đã được thêm: "${rule}"`);
+  });
+  actionsDiv.appendChild(acceptBtn);
+
+  const rejectBtn = document.createElement('button');
+  rejectBtn.className = 'suggest-rule-btn reject';
+  rejectBtn.textContent = '❌ Không cần';
+  rejectBtn.addEventListener('click', () => {
+    acceptBtn.disabled = true;
+    rejectBtn.disabled = true;
+    rejectBtn.textContent = '❌ Đã bỏ qua';
+  });
+  actionsDiv.appendChild(rejectBtn);
+
+  messageDiv.appendChild(actionsDiv);
+
+  triggerAnimation(messageDiv, 'message-enter');
+  elements.chatMessages.appendChild(messageDiv);
+  scrollToBottom();
+
+  if (currentTask) {
+    currentTask.messages.push({ role: 'assistant', content: message, type: 'suggest_rule', rule, reason, timestamp: Date.now() });
+  }
+}
+
+/**
  * Compact utility for short UI strings
  */
 function toCompactText(value, maxLen = 220) {
@@ -975,9 +1291,76 @@ function toCompactText(value, maxLen = 220) {
   return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}...` : normalized;
 }
 
+/**
+ * Convert technical action to human-readable description
+ * This makes the UI more production-ready by hiding technical details
+ */
+function humanizeAction(action, params) {
+  const actionMap = {
+    'click': () => {
+      const target = params?.text || params?.element_text || '';
+      return target ? `Clicking "${toCompactText(target, 30)}"` : 'Clicking element';
+    },
+    'input_text': () => {
+      const text = params?.text || '';
+      return text ? `Typing "${toCompactText(text, 25)}"` : 'Entering text';
+    },
+    'scroll_down': () => 'Scrolling down',
+    'scroll_up': () => 'Scrolling up',
+    'scroll_to_text': () => {
+      const text = params?.text || '';
+      return text ? `Scrolling to "${toCompactText(text, 25)}"` : 'Scrolling to element';
+    },
+    'hover': () => {
+      const target = params?.text || params?.element_text || '';
+      return target ? `Hovering over "${toCompactText(target, 25)}"` : 'Hovering element';
+    },
+    'go_to_url': () => {
+      const url = params?.url || '';
+      try {
+        const hostname = new URL(url).hostname;
+        return `Navigating to ${hostname}`;
+      } catch {
+        return 'Navigating to page';
+      }
+    },
+    'go_back': () => 'Going back',
+    'go_forward': () => 'Going forward',
+    'refresh': () => 'Refreshing page',
+    'wait': () => 'Waiting...',
+    'screenshot': () => 'Taking screenshot',
+    'extract_content': () => 'Reading page content',
+    'get_dom_tree': () => 'Analyzing page',
+    'done': () => 'Task completed',
+    'select_option': () => {
+      const option = params?.option || params?.value || '';
+      return option ? `Selecting "${toCompactText(option, 25)}"` : 'Selecting option';
+    },
+    'press_key': () => {
+      const key = params?.key || '';
+      return key ? `Pressing ${key}` : 'Pressing key';
+    },
+    'switch_tab': () => 'Switching tab',
+    'open_tab': () => 'Opening new tab',
+    'close_tab': () => 'Closing tab'
+  };
+
+  const actionLower = (action || '').toLowerCase().replace(/-/g, '_');
+  const humanizer = actionMap[actionLower];
+
+  if (humanizer) {
+    return humanizer();
+  }
+
+  // Fallback: capitalize and clean up action name
+  return action
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
 function setLiveActivityHint(text) {
   if (!elements.liveActivityHint) return;
-  elements.liveActivityHint.textContent = toCompactText(text || 'Waiting for first action...', 100);
+  elements.liveActivityHint.textContent = toCompactText(text || 'Ready', 100);
 }
 
 function buildLiveActivityEmptyCard(text) {
@@ -988,12 +1371,8 @@ function buildLiveActivityEmptyCard(text) {
 }
 
 function formatLiveActionParams(params) {
-  if (!params) return '';
-  if (typeof params !== 'object') return toCompactText(params, 80);
-  return Object.entries(params)
-    .slice(0, 6)
-    .map(([key, value]) => `${key}=${toCompactText(value, 50)}`)
-    .join(', ');
+  // Hide technical params from users - return empty for cleaner UI
+  return '';
 }
 
 function swapLiveActivityCard(slotEl, nextCard, animate = true) {
@@ -1028,23 +1407,23 @@ function swapLiveActivityCard(slotEl, nextCard, animate = true) {
 function renderLiveActionCard(action, params, status, message = '', animate = true) {
   if (!elements.liveActionSlot) return;
 
-  const actionName = toCompactText(action || 'action', 80);
   const statusKey = status === 'success' ? 'success' : status === 'error' ? 'error' : 'running';
   const previousAction = liveActivityState?.action || null;
-  const mergedParams = params || (previousAction?.actionName === actionName ? previousAction.params : null);
-  const paramsText = formatLiveActionParams(mergedParams);
-  const mainText = paramsText ? `${actionName} (${paramsText})` : actionName;
-  const noteText = toCompactText(message, 220);
+  const mergedParams = params || (previousAction?.actionName === action ? previousAction.params : null);
+
+  // Use human-readable action description
+  const humanText = humanizeAction(action, mergedParams);
+  const noteText = toCompactText(message, 180);
 
   const title = document.createElement('div');
   title.className = 'live-activity-card-title';
-  if (statusKey === 'success') title.textContent = 'Action success';
-  else if (statusKey === 'error') title.textContent = 'Action failed';
-  else title.textContent = 'Action running';
+  if (statusKey === 'success') title.textContent = '✓ Completed';
+  else if (statusKey === 'error') title.textContent = '✗ Failed';
+  else title.textContent = '⋯ Working';
 
   const main = document.createElement('div');
   main.className = 'live-activity-card-main';
-  main.textContent = mainText;
+  main.textContent = humanText;
 
   const card = document.createElement('div');
   card.className = `live-activity-card status-${statusKey}`;
@@ -1060,15 +1439,15 @@ function renderLiveActionCard(action, params, status, message = '', animate = tr
 
   swapLiveActivityCard(elements.liveActionSlot, card, animate);
   liveActivityState.action = {
-    actionName,
+    actionName: action,
     params: mergedParams,
     status: statusKey,
     message: noteText
   };
 
-  if (statusKey === 'success') setLiveActivityHint(`Done: ${actionName}`);
-  else if (statusKey === 'error') setLiveActivityHint(`Failed: ${actionName}`);
-  else setLiveActivityHint(`Running: ${actionName}`);
+  if (statusKey === 'success') setLiveActivityHint(humanText);
+  else if (statusKey === 'error') setLiveActivityHint(`Failed: ${humanText}`);
+  else setLiveActivityHint(humanText);
 }
 
 function renderLiveImageCard(content, image, animate = true) {
@@ -1081,13 +1460,13 @@ function renderLiveImageCard(content, image, animate = true) {
 
   const title = document.createElement('div');
   title.className = 'live-activity-card-title';
-  title.textContent = 'Latest visual context';
+  title.textContent = 'Current view';
   card.appendChild(title);
 
   const imageEl = document.createElement('img');
   imageEl.className = 'live-activity-image';
   imageEl.src = image;
-  imageEl.alt = 'Latest debug image sent to model';
+  imageEl.alt = 'Screenshot of current page';
   imageEl.loading = 'lazy';
   card.appendChild(imageEl);
 
@@ -1117,7 +1496,7 @@ function resetLiveActivityPanel(animate = false) {
     elements.liveImageSlot.classList.add('is-empty');
     elements.liveImageSlot.innerHTML = '';
   }
-  setLiveActivityHint('Waiting for first action...');
+  setLiveActivityHint('Ready');
 }
 
 function hydrateLiveActivityFromHistory(messages) {
@@ -1451,6 +1830,44 @@ function registerCrabError(contextText = '') {
 }
 
 /**
+ * Character counter constants and function
+ */
+const CHAR_LIMIT = 10000;
+const CHAR_WARNING_THRESHOLD = 0.8; // 80% = warning
+const CHAR_ERROR_THRESHOLD = 0.95; // 95% = error
+
+function updateCharCounter() {
+  const counter = elements.charCounter;
+  if (!counter) return;
+
+  const length = elements.chatInput.value.length;
+  const formattedLength = length.toLocaleString();
+  const formattedLimit = CHAR_LIMIT.toLocaleString();
+
+  counter.textContent = `${formattedLength} / ${formattedLimit}`;
+
+  // Remove all classes
+  counter.classList.remove('warning', 'error');
+
+  // Add appropriate class based on length
+  const ratio = length / CHAR_LIMIT;
+  if (ratio >= CHAR_ERROR_THRESHOLD) {
+    counter.classList.add('error');
+  } else if (ratio >= CHAR_WARNING_THRESHOLD) {
+    counter.classList.add('warning');
+  }
+
+  // Disable send button if over limit
+  if (length > CHAR_LIMIT) {
+    elements.sendBtn.disabled = true;
+    elements.sendBtn.title = `Message too long (${formattedLength} / ${formattedLimit} characters)`;
+  } else {
+    elements.sendBtn.disabled = false;
+    elements.sendBtn.title = '';
+  }
+}
+
+/**
  * Track generic activity and context transitions
  */
 function notifyCrabActivity(type = 'neutral', text = '') {
@@ -1609,6 +2026,20 @@ function formatMarkdown(text) {
 }
 
 /**
+ * Apply theme to the document
+ */
+function applyTheme(theme) {
+  const root = document.documentElement;
+
+  if (theme === 'system') {
+    // Remove explicit theme, let CSS media query handle it
+    root.removeAttribute('data-theme');
+  } else {
+    root.setAttribute('data-theme', theme);
+  }
+}
+
+/**
  * Load settings from storage
  */
 async function loadSettings() {
@@ -1625,11 +2056,15 @@ async function loadSettings() {
     maxSteps: 100,
     planningInterval: 3,
     allowedDomains: '',
-    blockedDomains: ''
+    blockedDomains: '',
+    theme: 'system'
   };
 
   const stored = await chrome.storage.local.get('settings');
   settings = { ...defaultSettings, ...stored.settings };
+
+  // Apply theme on load
+  applyTheme(settings.theme);
 }
 
 /**
@@ -1652,6 +2087,7 @@ async function saveSettings() {
   settings.planningInterval = parseInt(elements.planningIntervalInput.value) || 3;
   settings.allowedDomains = elements.allowedDomainsInput.value;
   settings.blockedDomains = elements.blockedDomainsInput.value;
+  settings.theme = elements.themeSelect?.value || 'system';
 
   await chrome.storage.local.set({ settings });
 }
@@ -1679,11 +2115,13 @@ function updateSettingsUI() {
   elements.planningIntervalInput.value = settings.planningInterval;
   elements.allowedDomainsInput.value = settings.allowedDomains || '';
   elements.blockedDomainsInput.value = settings.blockedDomains || '';
+  if (elements.themeSelect) {
+    elements.themeSelect.value = settings.theme || 'system';
+  }
 
   // Update option buttons
   updateModelButton();
   updateCustomModelVisibility();
-  elements.visionBtn.textContent = `Vision: ${settings.useVision ? 'ON' : 'OFF'}`;
   elements.visionBtn.classList.toggle('active', settings.useVision);
 }
 
@@ -1716,15 +2154,17 @@ function updateThinkingControls() {
  * Update custom model input visibility
  */
 function updateCustomModelVisibility() {
-  const showCustom = settings.provider === 'openai-compatible' && settings.model === 'custom';
+  // Show custom model input for openai-compatible (always) and ollama
+  const showCustom = ['openai-compatible', 'ollama'].includes(settings.provider);
   const showBaseUrl = ['openai-compatible', 'ollama'].includes(settings.provider);
 
   if (elements.customModelItem) {
-    elements.customModelItem.style.display = showCustom ? 'flex' : 'none';
+    // Use classList because .hidden has !important
+    elements.customModelItem.classList.toggle('hidden', !showCustom);
   }
   if (elements.baseUrlItem) {
     // Always show base URL for openai-compatible and ollama
-    elements.baseUrlItem.style.display = showBaseUrl ? 'flex' : 'none';
+    elements.baseUrlItem.classList.toggle('hidden', !showBaseUrl);
   }
 }
 
@@ -1734,7 +2174,10 @@ function updateCustomModelVisibility() {
 function updateModelButton() {
   const models = modelsByProvider[settings.provider] || [];
   const model = models.find(m => m.id === settings.model);
-  elements.modelBtn.textContent = model?.name || settings.model;
+  // Update the span inside the model button, not the button itself
+  if (elements.modelDisplay) {
+    elements.modelDisplay.textContent = model?.name || settings.model;
+  }
 }
 
 /**
@@ -1761,11 +2204,11 @@ function showModelModal() {
       elements.modelSelect.value = settings.model;
       updateModelButton();
       saveSettings();
-      elements.modelModal.classList.remove('active');
+      elements.modelModal.classList.add('hidden');
     });
   });
 
-  elements.modelModal.classList.add('active');
+  elements.modelModal.classList.remove('hidden');
   triggerAnimation(elements.modelModal.querySelector('.modal'), 'view-enter');
 }
 

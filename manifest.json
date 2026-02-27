@@ -41,13 +41,20 @@
       "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["lib/visualIndicator.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
       "resources": [
         "lib/buildDomTree.js",
-        "lib/stateManager.js"
+        "lib/stateManager.js",
+        "lib/visualIndicator.js"
       ],
       "matches": ["<all_urls>"]
     }
