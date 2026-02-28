@@ -617,6 +617,84 @@ CRITICAL: The "thought" field is MANDATORY and MUST come FIRST.
   - Do NOT mention: URL parameters, DOM elements, technical implementation details
   - Keep it short and human-friendly
 
+## CANVAS / ADVANCED INTERACTION:
+
+### PRIORITY ORDER for Canvas Apps (Excalidraw, Figma, Miro, Canva, Google Docs):
+1. **FIRST TRY: Canvas Toolkit** (cdp_drag, paste_flowchart, smart_paste) - MOST RELIABLE
+2. **FALLBACK: javascript_tool** - Only if Canvas Toolkit doesn't work
+
+IMPORTANT: For drawing diagrams/flowcharts on canvas apps, ALWAYS try Canvas Toolkit FIRST:
+- paste_flowchart: Instant flowchart with nodes and arrows
+- cdp_drag: Click tool then drag to draw shapes
+- smart_paste: Paste SVG/HTML directly into canvas
+
+## CANVAS TOOLKIT (Universal Canvas/WebGL Interaction via CDP) - USE THIS FIRST!
+For ANY Canvas/WebGL app (Figma, Miro, Canva, Google Docs, etc.) that lacks DOM elements:
+
+### CDP Native Interaction (Hardware-level simulation):
+- cdp_click: {"cdp_click": {"x": 500, "y": 300}} // Click at pixel coordinates
+- cdp_double_click: {"cdp_double_click": {"x": 500, "y": 300}} // Double click - USE THIS to open documents from Google Docs home!
+- cdp_right_click: {"cdp_right_click": {"x": 500, "y": 300}} // Right click / context menu
+- cdp_drag: {"cdp_drag": {"startX": 100, "startY": 100, "endX": 300, "endY": 200}} // Drag from A to B (for drawing shapes)
+- cdp_type: {"cdp_type": {"text": "Hello World"}} // Type text character by character
+- cdp_press_key: {"cdp_press_key": {"key": "v", "modifiers": {"ctrl": true}}} // Press key with modifiers (Ctrl+V, etc.)
+- cdp_scroll: {"cdp_scroll": {"x": 500, "y": 300, "deltaX": 0, "deltaY": -100}} // Scroll at position
+
+### Smart Paste (Inject SVG/HTML into Canvas) - YOU CONTROL THE DESIGN:
+- smart_paste: {"smart_paste": {"x": 500, "y": 300, "contentType": "svg", "payload": "<svg>...</svg>"}}
+  contentType: "svg" | "html" | "text"
+
+- paste_svg: {"paste_svg": {"x": 500, "y": 300, "svg": "YOUR_CUSTOM_SVG_CODE"}}
+  **YOU write the SVG** - full creative control! SVG reference:
+  - Rectangle: <rect x="0" y="0" width="100" height="50" rx="5" fill="#3B82F6" stroke="#1D4ED8"/>
+  - Circle: <circle cx="50" cy="50" r="40" fill="#10B981"/>
+  - Ellipse: <ellipse cx="50" cy="30" rx="50" ry="30" fill="#8B5CF6"/>
+  - Diamond: <polygon points="50,0 100,50 50,100 0,50" fill="#F59E0B"/>
+  - Line: <line x1="0" y1="0" x2="100" y2="100" stroke="#333" stroke-width="2"/>
+  - Arrow: <line ... marker-end="url(#arrow)"/> with <marker id="arrow"><polygon points="0 0,10 5,0 10"/></marker>
+  - Path: <path d="M0 0 L100 0 L100 100 Z" fill="#EC4899"/> (M=move, L=line, C=curve, Z=close)
+  - Text: <text x="50" y="30" text-anchor="middle" font-size="14">Label</text>
+  - Group: <g transform="translate(100,50)">...elements...</g>
+
+  Example - Custom diagram YOU design:
+  {"paste_svg": {"x": 300, "y": 200, "svg": "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='400'><defs><marker id='arr' markerWidth='10' markerHeight='7' refX='9' refY='3.5' orient='auto'><polygon points='0 0,10 3.5,0 7' fill='#333'/></marker></defs><rect x='50' y='50' width='120' height='60' rx='8' fill='#3B82F6'/><text x='110' y='85' text-anchor='middle' fill='#fff' font-size='14'>Step 1</text><line x1='170' y1='80' x2='230' y2='80' stroke='#333' stroke-width='2' marker-end='url(#arr)'/><rect x='240' y='50' width='120' height='60' rx='8' fill='#10B981'/><text x='300' y='85' text-anchor='middle' fill='#fff' font-size='14'>Step 2</text></svg>"}}
+
+- paste_html: {"paste_html": {"x": 500, "y": 300, "html": "<table>...</table>"}}
+  **YOU write the HTML** - for tables, formatted text, etc.
+
+- paste_table: {"paste_table": {"x": 500, "y": 300, "data": [["H1","H2"],["A","B"]], "options": {"headers": true}}}
+  Quick helper for simple tables
+
+- paste_flowchart: {"paste_flowchart": {"x": 500, "y": 300, "nodes": [...], "edges": [...]}}
+  Quick helper for flowcharts. Node types: start, end, rect, decision, database, io, document
+
+### Draw Shape (Select tool + drag):
+- draw_shape: {"draw_shape": {"toolX": 50, "toolY": 100, "startX": 200, "startY": 200, "endX": 400, "endY": 350}}
+  First clicks tool at (toolX, toolY), then drags on canvas from (startX, startY) to (endX, endY)
+
+### Canvas Workflow - YOU DECIDE HOW TO DRAW:
+1. **Screenshot** - Analyze the canvas app UI (toolbar, canvas area, available tools)
+2. **Choose your approach:**
+   - **Native tools**: cdp_click on tool button -> cdp_drag on canvas (for apps like Excalidraw, Figma)
+   - **Custom SVG**: Write your own SVG code -> paste_svg (full creative control, works everywhere)
+   - **Quick helpers**: paste_flowchart, paste_table (for common diagrams)
+3. **Screenshot** - Verify result
+
+### Design Tips for YOUR SVG/diagrams:
+- Layout: Plan positions (x,y) for each element, use consistent spacing
+- Colors: Use a color palette (e.g., blue=#3B82F6, green=#10B981, red=#EF4444)
+- Arrows: Define <marker> in <defs>, then use marker-end="url(#markerID)"
+- Shadows: Use <filter> with feDropShadow for depth
+- Multi-row: Position elements at different y values for vertical layouts
+- Branching: Use <path> with curves (C command) for non-straight connections
+
+YOU are the designer - analyze what the user wants and create the best visual representation!
+
+## JAVASCRIPT_TOOL (FALLBACK - only if Canvas Toolkit fails):
+- javascript_tool: Use ONLY when Canvas Toolkit actions don't work
+  - RENDER mode: {"javascript_tool":{"mode":"render","markdown":"# Report"}}
+  - OPS mode: {"javascript_tool":{"mode":"ops","operations":[{"op":"drag","from":{"x":100,"y":100},"to":{"x":300,"y":200}}]}}
+
 ## UNCERTAINTY HANDLING (when confused or stuck):
 - ask_user: {"ask_user": {"question": "Có 2 nút Save, click cái nào?", "options": ["Save Draft", "Save & Publish"]}}
   Use when: multiple similar elements, unclear instruction, need user choice
@@ -670,6 +748,22 @@ CRITICAL: The "thought" field is MANDATORY and MUST come FIRST.
    - click_at is your backup when DOM-based clicking doesn't work
 15. ELEMENT NOT FOUND - CRITICAL:
    - If you get "Element X not found", the DOM has changed - DO NOT retry same index
+16. CANVAS APPS (Excalidraw, Figma, Miro, Canva, Google Docs/Slides) - CRITICAL:
+   - **YOU are the designer** - analyze what user wants and choose the best approach:
+     a) Use app's native tools: cdp_click on toolbar -> cdp_drag to draw
+     b) Write custom SVG: paste_svg with your own SVG code (most flexible)
+     c) Use quick helpers: paste_flowchart, paste_table (for standard diagrams)
+   - Consider layout, colors, spacing - make it look professional!
+   - For complex custom diagrams, write your own SVG code - you have full control
+17. GOOGLE DOCS HOME PAGE - CRITICAL:
+   - To open a document from Google Docs home page, you need to DOUBLE-CLICK on the document thumbnail
+   - If single click doesn't open document, try: go_to_url with the direct document URL
+   - Or click on document name text (not thumbnail), which sometimes works better
+   - If stuck, create NEW document: click "Tài liệu trống" (Blank document) template
+18. CDP TIMEOUT HANDLING:
+   - If cdp_click or cdp_type fails with timeout, try regular click_at or input_text instead
+   - Google Docs may show debugger warning - this can cause CDP commands to timeout
+   - Fallback to DOM-based actions when CDP fails
 ## VISUAL ANALYSIS PRINCIPLES (General - apply to ALL UI situations)
 
 16. UNDERSTAND UI THROUGH VISUAL REASONING:
@@ -782,6 +876,7 @@ You receive:
 ### Completion:
 - done: {"done": {"text": "result message", "success": true}}
 - wait: {"wait": {"seconds": 2}}
+- javascript_tool: {"javascript_tool": {"mode": "render", "flow": {"nodes": ["Client", "API", "DB"], "edges": [{"from": "n1", "to": "n2"}, {"from": "n2", "to": "n3"}]}}}
 
 ## RESPONSE FORMAT (JSON only)
 {
@@ -805,7 +900,7 @@ You receive:
 7. Only use "done" when task is truly complete or impossible
 8. Check clearly the all information through screenshot image and DOM before making decisions
 9. For DELETE/EDIT/SETTINGS: Look for menu icons (...) or settings icons (⚙) in header/nav area - NOT on content/images
-
+10. Priority using cdp tools for canvas/webgl apps (Figma, Miro, Canva, Google Docs) - use click_at only if cdp fails or unavailable but you need to confirm with user first before using click_at for canvas apps
 ## VIEWING IMAGE/MEDIA FILES
 When the browser displays a raw image file (png, jpg, etc.):
 - Use the screenshot/vision to analyze the image content
@@ -978,6 +1073,7 @@ Field relationships:
     message += `NAVIGATION: search_google, go_to_url, go_back, switch_tab, open_tab, close_tab\n`;
     message += `KEYBOARD: send_keys (Enter, ArrowDown, ArrowUp, Escape, Tab)\n`;
     message += `SCROLL: scroll_down, scroll_up, scroll_to_text, scroll_element (for panels/sidebars)\n`;
+    message += `CANVAS/ADVANCED: javascript_tool (render/script for docs/charts/flow diagrams via native app API when available; ops for low-level drag/wheel/shortcut only). For draw-flow requests: use render.flow/diagram, not markdown, and do not use ops to draw.\n`;
     message += `UTILITY: wait, wait_for_element, wait_for_stable, find_text, zoom_page, get_accessibility_tree, done\n\n`;
     message += `# Output format (JSON with Chain of Thought):\n`;
     message += `{\n`;
@@ -1303,6 +1399,9 @@ const AgentS = {
         case 'wait_for_stable':
           result = await AgentS.actions.waitForDomStable(params.timeout || 2000, tabId);
           break;
+        case 'javascript_tool':
+          result = await AgentS.actions.javascriptTool(params || {}, tabId);
+          break;
         case 'ask_user':
           // New action: Ask user for clarification
           result = AgentS.createActionResult({
@@ -1338,6 +1437,46 @@ const AgentS = {
         case 'wait':
           await new Promise(resolve => setTimeout(resolve, (params.seconds || 2) * 1000));
           result = AgentS.createActionResult({ success: true, message: `Waited ${params.seconds || 2}s` });
+          break;
+        // ===== CANVAS TOOLKIT ACTIONS =====
+        case 'cdp_click':
+          result = await AgentS.actions.cdpClick(params.x, params.y, params.options || {}, tabId);
+          break;
+        case 'cdp_double_click':
+          result = await AgentS.actions.cdpDoubleClick(params.x, params.y, tabId);
+          break;
+        case 'cdp_right_click':
+          result = await AgentS.actions.cdpRightClick(params.x, params.y, tabId);
+          break;
+        case 'cdp_drag':
+          result = await AgentS.actions.cdpDrag(params.startX, params.startY, params.endX, params.endY, params.options || {}, tabId);
+          break;
+        case 'cdp_type':
+          result = await AgentS.actions.cdpType(params.text, params.options || {}, tabId);
+          break;
+        case 'cdp_press_key':
+          result = await AgentS.actions.cdpPressKey(params.key, params.modifiers || {}, tabId);
+          break;
+        case 'cdp_scroll':
+          result = await AgentS.actions.cdpScroll(params.x, params.y, params.deltaX, params.deltaY, tabId);
+          break;
+        case 'smart_paste':
+          result = await AgentS.actions.smartPaste(params.x, params.y, params.contentType, params.payload, tabId);
+          break;
+        case 'paste_svg':
+          result = await AgentS.actions.pasteSvg(params.x, params.y, params.svg, tabId);
+          break;
+        case 'paste_html':
+          result = await AgentS.actions.pasteHtml(params.x, params.y, params.html, tabId);
+          break;
+        case 'paste_table':
+          result = await AgentS.actions.pasteTable(params.x, params.y, params.data, params.options || {}, tabId);
+          break;
+        case 'paste_flowchart':
+          result = await AgentS.actions.pasteFlowchart(params.x, params.y, params.nodes, params.edges, tabId);
+          break;
+        case 'draw_shape':
+          result = await AgentS.actions.drawShape(params.toolX, params.toolY, params.startX, params.startY, params.endX, params.endY, tabId);
           break;
         default:
           result = AgentS.createActionResult({ success: false, error: `Unknown action: ${actionName}` });
@@ -3864,6 +4003,1420 @@ const AgentS = {
       });
 
       return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
+    },
+
+    async javascriptTool(rawParams, tabId) {
+      const params = rawParams && typeof rawParams === 'object' ? rawParams : {};
+      const hasImplicitRenderPayload =
+        params.markdown != null ||
+        params.html != null ||
+        params.text != null ||
+        params.table != null ||
+        params.chart != null ||
+        params.document != null;
+      const mode = String(params.mode || (params.script ? 'script' : (hasImplicitRenderPayload ? 'render' : 'ops'))).toLowerCase();
+      const settleMs = Math.max(0, Math.min(3000, Number(params.settle_ms ?? params.settleMs ?? 80) || 80));
+      const defaultTarget = params.target && typeof params.target === 'object' ? params.target : {};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      const resolvePoint = async (targetSpec = {}) => {
+        const result = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: (inputSpec) => {
+            const spec = inputSpec && typeof inputSpec === 'object' ? inputSpec : {};
+            const toNumber = (value, fallback = null) => {
+              const num = typeof value === 'number' ? value : Number(value);
+              return Number.isFinite(num) ? num : fallback;
+            };
+            const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+            const vw = window.innerWidth || 0;
+            const vh = window.innerHeight || 0;
+
+            let target = null;
+            const idx = toNumber(spec.index, null);
+            if (idx !== null) {
+              target = window.AgentSDom?.lastBuildResult?.elementMap?.[idx] || null;
+            }
+            if (!target && typeof spec.selector === 'string' && spec.selector.trim()) {
+              target = document.querySelector(spec.selector.trim());
+            }
+            if (!target) {
+              target = document.activeElement instanceof Element ? document.activeElement : null;
+            }
+            if (!target || !(target instanceof Element)) {
+              target = document.querySelector('canvas, svg, [contenteditable="true"], [role="application"], [role="textbox"], textarea, input') || document.body;
+            }
+
+            let x = toNumber(spec.x, null);
+            let y = toNumber(spec.y, null);
+            if (x === null || y === null) {
+              const rect = target?.getBoundingClientRect?.();
+              if (rect && rect.width > 0 && rect.height > 0) {
+                const ox = toNumber(spec.offset_x ?? spec.offsetX, 0.5);
+                const oy = toNumber(spec.offset_y ?? spec.offsetY, 0.5);
+                x = rect.left + rect.width * ox;
+                y = rect.top + rect.height * oy;
+              } else {
+                x = vw / 2;
+                y = vh / 2;
+              }
+            }
+
+            x = clamp(Math.round(x), 0, Math.max(0, vw - 1));
+            y = clamp(Math.round(y), 0, Math.max(0, vh - 1));
+
+            const hit = document.elementFromPoint(x, y) || target || document.body;
+            const rect = hit?.getBoundingClientRect?.();
+            return {
+              success: true,
+              x,
+              y,
+              target: {
+                tag: (hit?.tagName || '').toLowerCase(),
+                id: hit?.id || '',
+                role: hit?.getAttribute?.('role') || '',
+                text: (hit?.innerText || hit?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+                rect: rect ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } : null
+              }
+            };
+          },
+          args: [targetSpec]
+        });
+        return result?.[0]?.result || { success: false, error: 'Failed to resolve target point' };
+      };
+
+      const dispatchTrustedMouseEvents = async (events) => {
+        const target = { tabId };
+        let attachedByAgent = false;
+        try {
+          try {
+            await chrome.debugger.attach(target, '1.3');
+            attachedByAgent = true;
+          } catch (attachError) {
+            const msg = String(attachError?.message || attachError || '');
+            if (!/already attached|another debugger/i.test(msg)) {
+              return { success: false, error: `Debugger attach failed: ${msg}` };
+            }
+          }
+          for (const event of events) {
+            await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', event);
+          }
+          return { success: true };
+        } catch (error) {
+          return { success: false, error: `Trusted mouse dispatch failed: ${error?.message || String(error)}` };
+        } finally {
+          if (attachedByAgent) {
+            try { await chrome.debugger.detach(target); } catch (e) {}
+          }
+        }
+      };
+
+      const runRenderMode = async () => {
+        const renderPayload = {
+          markdown: params.markdown,
+          html: params.html,
+          text: params.text,
+          table: params.table,
+          chart: params.chart,
+          document: params.document,
+          append: params.append === true
+        };
+
+        const hasRenderable =
+          renderPayload.markdown != null ||
+          renderPayload.html != null ||
+          renderPayload.text != null ||
+          renderPayload.table != null ||
+          renderPayload.chart != null ||
+          renderPayload.document != null;
+
+        if (!hasRenderable) {
+          return AgentS.createActionResult({
+            success: false,
+            error: 'javascript_tool render mode requires at least one of: markdown, html, text, table, chart, document.'
+          });
+        }
+
+        const buildRenderSuccessResult = (renderedPayload, message = 'javascript_tool render executed') => (
+          AgentS.createActionResult({
+            success: true,
+            message,
+            includeInMemory: params.include_in_memory === true || params.includeInMemory === true,
+            extractedContent: renderedPayload ? JSON.stringify(renderedPayload).slice(0, 5000) : ''
+          })
+        );
+
+        let result;
+        try {
+          result = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: async (payload, targetSpec, settleDelay) => {
+            const sleepInner = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+            const toNumber = (value, fallback = null) => {
+              const num = typeof value === 'number' ? value : Number(value);
+              return Number.isFinite(num) ? num : fallback;
+            };
+            const escapeHtml = (value) => String(value || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
+            const parseInlineMarkdown = (line) => {
+              let html = escapeHtml(line);
+              html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+              html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+              html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+              html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+              html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+              return html;
+            };
+            const markdownToHtml = (input) => {
+              const lines = String(input || '').replace(/\r\n/g, '\n').split('\n');
+              const blocks = [];
+              let inList = false;
+              const closeList = () => {
+                if (inList) {
+                  blocks.push('</ul>');
+                  inList = false;
+                }
+              };
+              const isTableSeparator = (line) => /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(line || '');
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const trimmed = line.trim();
+                if (!trimmed) {
+                  closeList();
+                  blocks.push('<p></p>');
+                  continue;
+                }
+                const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+                if (headingMatch) {
+                  closeList();
+                  const level = headingMatch[1].length;
+                  blocks.push(`<h${level}>${parseInlineMarkdown(headingMatch[2])}</h${level}>`);
+                  continue;
+                }
+                if (/^[-*]\s+/.test(trimmed)) {
+                  if (!inList) {
+                    blocks.push('<ul>');
+                    inList = true;
+                  }
+                  blocks.push(`<li>${parseInlineMarkdown(trimmed.replace(/^[-*]\s+/, ''))}</li>`);
+                  continue;
+                }
+                if (trimmed.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+                  closeList();
+                  const headers = trimmed.split('|').map((item) => item.trim()).filter(Boolean);
+                  i += 1;
+                  const rows = [];
+                  while (i + 1 < lines.length) {
+                    const next = lines[i + 1];
+                    if (!next || !next.includes('|') || !next.trim()) break;
+                    i += 1;
+                    rows.push(next.split('|').map((item) => item.trim()).filter((_, idx, arr) => !(idx === 0 && arr.length > headers.length && !arr[0])));
+                  }
+                  const thead = `<thead><tr>${headers.map((h) => `<th>${parseInlineMarkdown(h)}</th>`).join('')}</tr></thead>`;
+                  const tbody = `<tbody>${rows.map((row) => `<tr>${headers.map((_, colIdx) => `<td>${parseInlineMarkdown(row[colIdx] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+                  blocks.push(`<table data-crab-js-table="1">${thead}${tbody}</table>`);
+                  continue;
+                }
+                closeList();
+                blocks.push(`<p>${parseInlineMarkdown(trimmed)}</p>`);
+              }
+              closeList();
+              return blocks.join('\n');
+            };
+            const resolveTarget = (spec = {}) => {
+              const root = spec && typeof spec === 'object' ? spec : {};
+              let target = null;
+              const idx = toNumber(root.index, null);
+              if (idx !== null) target = window.AgentSDom?.lastBuildResult?.elementMap?.[idx] || null;
+              if (!target && typeof root.selector === 'string' && root.selector.trim()) target = document.querySelector(root.selector.trim());
+              if (!target) target = document.activeElement instanceof Element ? document.activeElement : null;
+              if (!target || !(target instanceof Element)) {
+                target = document.querySelector('[contenteditable="true"], [contenteditable=""], textarea, input[type="text"], input:not([type]), canvas') || document.body;
+              }
+              return target;
+            };
+            const isTextInput = (el) => el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+            const dispatchEditableEvents = (el) => {
+              if (!el) return;
+              try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+              try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            };
+            const applyRenderedContent = ({ target, html = '', text = '', append = false }) => {
+              const el = target || document.body;
+              if (isTextInput(el)) {
+                const next = append ? ((el.value || '') + (el.value ? '\n' : '') + String(text || '')) : String(text || '');
+                el.value = next;
+                dispatchEditableEvents(el);
+                return { mode: 'input', chars: next.length };
+              }
+              if (el instanceof HTMLCanvasElement) {
+                const wrapper = document.createElement('div');
+                wrapper.setAttribute('data-crab-js-render', '1');
+                wrapper.style.maxWidth = '100%';
+                wrapper.style.overflow = 'auto';
+                wrapper.style.background = '#fff';
+                wrapper.style.border = '1px solid rgba(0,0,0,0.12)';
+                wrapper.style.padding = '12px';
+                wrapper.style.margin = '10px 0';
+                wrapper.innerHTML = html || `<pre>${escapeHtml(String(text || ''))}</pre>`;
+                if (append) el.insertAdjacentElement('afterend', wrapper);
+                else {
+                  const next = el.nextElementSibling;
+                  if (next && next.getAttribute && next.getAttribute('data-crab-js-render') === '1') {
+                    next.replaceWith(wrapper);
+                  } else {
+                    el.insertAdjacentElement('afterend', wrapper);
+                  }
+                }
+                return { mode: 'canvas-sibling', chars: (wrapper.innerText || wrapper.textContent || '').length };
+              }
+              if (el instanceof HTMLElement && el.isContentEditable) {
+                if (append) {
+                  if (html) el.insertAdjacentHTML('beforeend', html);
+                  else el.appendChild(document.createTextNode(String(text || '')));
+                } else if (html) {
+                  el.innerHTML = html;
+                } else {
+                  el.textContent = String(text || '');
+                }
+                dispatchEditableEvents(el);
+                return { mode: 'contenteditable', chars: (el.innerText || el.textContent || '').length };
+              }
+              if (el instanceof HTMLElement) {
+                const wrapper = document.createElement('div');
+                wrapper.setAttribute('data-crab-js-render', '1');
+                wrapper.style.maxWidth = '100%';
+                wrapper.style.overflow = 'auto';
+                wrapper.innerHTML = html || `<pre>${escapeHtml(String(text || ''))}</pre>`;
+                if (append) el.appendChild(wrapper);
+                else {
+                  el.innerHTML = '';
+                  el.appendChild(wrapper);
+                }
+                return { mode: 'element', chars: (wrapper.innerText || wrapper.textContent || '').length };
+              }
+              return { mode: 'none', chars: 0 };
+            };
+            const buildTableHtml = (tableSpec = {}) => {
+              const spec = tableSpec && typeof tableSpec === 'object' ? tableSpec : {};
+              const headers = Array.isArray(spec.headers) ? spec.headers.map((h) => String(h ?? '')) : [];
+              const rows = Array.isArray(spec.rows) ? spec.rows : [];
+              if (!headers.length && rows.length > 0 && Array.isArray(rows[0])) {
+                const first = rows[0];
+                for (let i = 0; i < first.length; i++) headers.push(`Col ${i + 1}`);
+              }
+              const finalHeaders = headers.length ? headers : ['Column 1'];
+              const tbodyRows = rows.map((row) => {
+                if (Array.isArray(row)) return finalHeaders.map((_, idx) => String(row[idx] ?? ''));
+                if (row && typeof row === 'object') return finalHeaders.map((header) => String(row[header] ?? row[header.toLowerCase()] ?? ''));
+                return [String(row ?? '')];
+              });
+              const thead = `<thead><tr>${finalHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>`;
+              const tbody = `<tbody>${tbodyRows.map((row) => `<tr>${finalHeaders.map((_, idx) => `<td>${escapeHtml(row[idx] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+              return `<table data-crab-js-table="1">${thead}${tbody}</table>`;
+            };
+            const ensureCanvas = (canvasSpec = {}) => {
+              const spec = canvasSpec && typeof canvasSpec === 'object' ? canvasSpec : {};
+              const explicitCanvas =
+                spec.reuse === true ||
+                spec.index != null ||
+                typeof spec.selector === 'string' ||
+                (spec.target && typeof spec.target === 'object');
+              if (explicitCanvas) {
+                const existing = resolveTarget(spec.target || spec);
+                if (existing instanceof HTMLCanvasElement) return existing;
+                const selectorCanvas = typeof spec.selector === 'string' ? document.querySelector(spec.selector) : null;
+                if (selectorCanvas instanceof HTMLCanvasElement) return selectorCanvas;
+              }
+              let panel = document.getElementById('__crab_js_render_panel');
+              if (!panel) {
+                panel = document.createElement('div');
+                panel.id = '__crab_js_render_panel';
+                panel.style.position = 'fixed';
+                panel.style.right = '12px';
+                panel.style.bottom = '12px';
+                panel.style.maxWidth = 'min(90vw, 980px)';
+                panel.style.maxHeight = '70vh';
+                panel.style.overflow = 'auto';
+                panel.style.zIndex = '2147483646';
+                panel.style.background = 'rgba(255,255,255,0.98)';
+                panel.style.border = '1px solid rgba(0,0,0,0.16)';
+                panel.style.borderRadius = '10px';
+                panel.style.boxShadow = '0 14px 30px rgba(0,0,0,0.22)';
+                panel.style.padding = '10px';
+                document.body.appendChild(panel);
+              }
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.max(200, Math.min(2400, Number(spec.width) || 960));
+              canvas.height = Math.max(140, Math.min(1800, Number(spec.height) || 540));
+              canvas.style.maxWidth = '100%';
+              canvas.style.border = '1px solid rgba(0,0,0,0.12)';
+              canvas.style.background = '#fff';
+              canvas.setAttribute('data-crab-js-chart', '1');
+              panel.appendChild(canvas);
+              return canvas;
+            };
+            const renderChart = (chartSpec = {}) => {
+              const spec = chartSpec && typeof chartSpec === 'object' ? chartSpec : {};
+              const chartType = String(spec.type || 'bar').toLowerCase();
+              const labels = Array.isArray(spec.labels) ? spec.labels.map((item, idx) => String(item ?? `#${idx + 1}`)) : [];
+              const datasets = Array.isArray(spec.datasets) ? spec.datasets : [];
+              const data = datasets.map((dataset, idx) => {
+                const values = Array.isArray(dataset?.data) ? dataset.data.map((v) => Number(v) || 0) : [];
+                return {
+                  label: String(dataset?.label || `Series ${idx + 1}`),
+                  values,
+                  color: String(dataset?.color || dataset?.stroke || ['#2B6CB0', '#E53E3E', '#2F855A', '#B7791F'][idx % 4])
+                };
+              });
+              const canvas = ensureCanvas(spec.canvas || spec.target || {});
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return { rendered: false, error: 'Canvas context unavailable' };
+              const width = canvas.width;
+              const height = canvas.height;
+              const padding = { left: 64, right: 24, top: 36, bottom: 56 };
+              const chartW = Math.max(80, width - padding.left - padding.right);
+              const chartH = Math.max(60, height - padding.top - padding.bottom);
+              ctx.clearRect(0, 0, width, height);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, width, height);
+              ctx.strokeStyle = '#E2E8F0';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+              const allValues = data.flatMap((series) => series.values);
+              const maxValue = allValues.length ? Math.max(...allValues, 1) : 1;
+              const safeLabels = labels.length ? labels : (data[0]?.values || []).map((_, idx) => `#${idx + 1}`);
+              const count = Math.max(1, safeLabels.length);
+              const mapY = (value) => padding.top + chartH - (value / maxValue) * chartH;
+              ctx.strokeStyle = '#CBD5E0';
+              ctx.beginPath();
+              ctx.moveTo(padding.left, padding.top);
+              ctx.lineTo(padding.left, padding.top + chartH);
+              ctx.lineTo(padding.left + chartW, padding.top + chartH);
+              ctx.stroke();
+              if (chartType === 'line') {
+                data.forEach((series) => {
+                  ctx.strokeStyle = series.color;
+                  ctx.lineWidth = 2;
+                  ctx.beginPath();
+                  series.values.forEach((value, idx) => {
+                    const x = padding.left + (count <= 1 ? chartW / 2 : (idx / (count - 1)) * chartW);
+                    const y = mapY(value);
+                    if (idx === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                  });
+                  ctx.stroke();
+                });
+              } else {
+                const seriesCount = Math.max(1, data.length);
+                const groupW = chartW / count;
+                data.forEach((series, seriesIdx) => {
+                  ctx.fillStyle = series.color;
+                  series.values.forEach((value, idx) => {
+                    const barW = (groupW * 0.75) / seriesCount;
+                    const x = padding.left + idx * groupW + groupW * 0.125 + seriesIdx * barW;
+                    const y = mapY(value);
+                    const h = padding.top + chartH - y;
+                    ctx.fillRect(x, y, barW, h);
+                  });
+                });
+              }
+              return { rendered: true, type: 'chart', chartType, width, height, series: data.length, points: count };
+            };
+            try {
+              const doc = payload.document && typeof payload.document === 'object' ? payload.document : {};
+              const target = resolveTarget(doc.target || targetSpec || {});
+              let bodyHtml = '';
+              if (payload.html != null || doc.html != null) bodyHtml = String(payload.html ?? doc.html);
+              else if (payload.markdown != null || doc.markdown != null) bodyHtml = markdownToHtml(String(payload.markdown ?? doc.markdown));
+              else if (payload.text != null || doc.text != null) bodyHtml = `<pre>${escapeHtml(String(payload.text ?? doc.text))}</pre>`;
+              const tableSpec = payload.table ?? doc.table;
+              if (tableSpec != null) {
+                const tableHtml = buildTableHtml(tableSpec);
+                bodyHtml = bodyHtml ? `${bodyHtml}\n${tableHtml}` : tableHtml;
+              }
+              const title = payload.document?.title ?? doc.title;
+              const subtitle = payload.document?.subtitle ?? doc.subtitle;
+              if (bodyHtml || title || subtitle) {
+                const titleHtml = title ? `<h1>${escapeHtml(String(title))}</h1>` : '';
+                const subtitleHtml = subtitle ? `<h2>${escapeHtml(String(subtitle))}</h2>` : '';
+                const wrapped = `<section data-crab-js-doc="1">${titleHtml}${subtitleHtml}${bodyHtml}</section>`;
+                applyRenderedContent({
+                  target,
+                  html: wrapped,
+                  text: [title, subtitle, payload.text, payload.markdown].filter(Boolean).join('\n\n'),
+                  append: payload.append === true || doc.append === true
+                });
+              }
+              const chartSpec = payload.chart ?? doc.chart;
+              let chartResult = null;
+              if (chartSpec != null) {
+                chartResult = renderChart(chartSpec);
+              }
+              await sleepInner(Math.max(0, Math.min(1000, Number(settleDelay) || 0)));
+              return { success: true, result: { rendered: true, chart: chartResult } };
+            } catch (error) {
+              return { success: false, error: `render mode failed: ${error?.message || String(error)}` };
+            }
+          },
+          args: [renderPayload, defaultTarget, settleMs]
+          });
+        } catch (error) {
+          return AgentS.createActionResult({
+            success: false,
+            error: `javascript_tool render injection failed: ${error?.message || String(error)}`
+          });
+        }
+
+        const payload = result?.[0]?.result || { success: false, error: 'javascript_tool render failed' };
+        if (!payload.success) {
+          return AgentS.createActionResult({
+            success: false,
+            error: String(payload.error || 'javascript_tool render failed')
+          });
+        }
+        return buildRenderSuccessResult(payload.result);
+      };
+
+      const runScriptMode = async () => {
+        let script = String(params.script || '').trim();
+        const scriptArgs = params.args && typeof params.args === 'object' ? params.args : {};
+        const worldParam = String(params.world || '').toLowerCase();
+        const usePageWorld = worldParam === 'page' || worldParam === 'main';
+        const hasRenderPayload =
+          params.markdown != null ||
+          params.html != null ||
+          params.text != null ||
+          params.table != null ||
+          params.chart != null ||
+          params.document != null;
+
+        if (!script && hasRenderPayload) {
+          return runRenderMode();
+        }
+
+        if (!script) {
+          return AgentS.createActionResult({
+            success: false,
+            error: 'javascript_tool script mode requires "script". Use mode "render" for markdown/html/table/chart payloads.'
+          });
+        }
+
+        // Execute in PAGE world via CDP Runtime.evaluate (bypasses CSP, accesses app APIs like window.excalidrawAPI)
+        if (usePageWorld) {
+          const target = { tabId };
+          let attachedByAgent = false;
+          try {
+            try {
+              await chrome.debugger.attach(target, '1.3');
+              attachedByAgent = true;
+            } catch (attachError) {
+              const attachMsg = String(attachError?.message || attachError || '');
+              if (!/already attached|another debugger/i.test(attachMsg)) {
+                return AgentS.createActionResult({ success: false, error: `CDP attach failed: ${attachMsg}` });
+              }
+            }
+
+            const argsJson = JSON.stringify(scriptArgs);
+            const wrappedExpression = `(async () => {
+              try {
+                const context = { args: ${argsJson} };
+                const __fn__ = async (context) => { ${script} };
+                const __result__ = await __fn__(context);
+                return { success: true, result: __result__ };
+              } catch (e) {
+                return { success: false, error: e?.message || String(e) };
+              }
+            })()`;
+
+            const evalResult = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+              expression: wrappedExpression,
+              awaitPromise: true,
+              returnByValue: true,
+              userGesture: true
+            });
+
+            if (evalResult?.exceptionDetails) {
+              const detail = evalResult.exceptionDetails;
+              const desc = detail?.exception?.description || detail?.text || 'Runtime.evaluate exception';
+              return AgentS.createActionResult({ success: false, error: desc });
+            }
+
+            const value = evalResult?.result?.value;
+            if (value && typeof value === 'object') {
+              if (!value.success) {
+                return AgentS.createActionResult({ success: false, error: value.error || 'Script failed in page world' });
+              }
+              let extracted = '';
+              try {
+                extracted = JSON.stringify(value.result);
+                if (extracted.length > 5000) extracted = extracted.slice(0, 5000) + '...';
+              } catch (e) {
+                extracted = String(value.result || '').slice(0, 5000);
+              }
+              return AgentS.createActionResult({
+                success: true,
+                message: 'javascript_tool script executed in page world',
+                includeInMemory: params.include_in_memory === true || params.includeInMemory === true,
+                extractedContent: extracted
+              });
+            }
+            return AgentS.createActionResult({ success: false, error: 'Runtime.evaluate returned no usable result' });
+          } catch (error) {
+            return AgentS.createActionResult({ success: false, error: `CDP Runtime.evaluate failed: ${error?.message || String(error)}` });
+          } finally {
+            if (attachedByAgent) {
+              try { await chrome.debugger.detach(target); } catch (e) {}
+            }
+          }
+        }
+
+        // Execute in ISOLATED world via chrome.scripting.executeScript (default)
+        const defaultTarget = params.target && typeof params.target === 'object' ? params.target : {};
+        const result = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: async (source, args, targetSpec, settleDelay) => {
+            const sleepInner = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+            const toNumber = (value, fallback = null) => {
+              const num = typeof value === 'number' ? value : Number(value);
+              return Number.isFinite(num) ? num : fallback;
+            };
+            const resolve = (spec = {}) => {
+              let target = null;
+              const idx = toNumber(spec.index, null);
+              if (idx !== null) target = window.AgentSDom?.lastBuildResult?.elementMap?.[idx] || null;
+              if (!target && typeof spec.selector === 'string' && spec.selector.trim()) target = document.querySelector(spec.selector.trim());
+              if (!target) target = document.elementFromPoint(Math.round((window.innerWidth || 0) / 2), Math.round((window.innerHeight || 0) / 2)) || document.body;
+              const rect = target?.getBoundingClientRect?.();
+              const x = clamp(Math.round(toNumber(spec.x, rect ? rect.left + rect.width / 2 : (window.innerWidth || 0) / 2)), 0, Math.max(0, (window.innerWidth || 1) - 1));
+              const y = clamp(Math.round(toNumber(spec.y, rect ? rect.top + rect.height / 2 : (window.innerHeight || 0) / 2)), 0, Math.max(0, (window.innerHeight || 1) - 1));
+              return { target, x, y };
+            };
+            const pointer = async (spec = {}) => {
+              const { target, x, y } = resolve(spec.target || spec);
+              const el = target || document.elementFromPoint(x, y) || document.body;
+              const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: 1 };
+              if (typeof PointerEvent === 'function') {
+                el.dispatchEvent(new PointerEvent('pointerdown', options));
+                el.dispatchEvent(new PointerEvent('pointerup', options));
+              }
+              el.dispatchEvent(new MouseEvent('mousedown', options));
+              el.dispatchEvent(new MouseEvent('mouseup', options));
+              el.dispatchEvent(new MouseEvent('click', options));
+              return { x, y };
+            };
+            const key = async (combo) => {
+              const value = String(combo || '').trim();
+              if (!value) return;
+              const active = document.activeElement instanceof Element ? document.activeElement : document.body;
+              if (typeof active.focus === 'function') active.focus();
+              const parts = value.split('+').map((part) => part.trim()).filter(Boolean);
+              const main = parts[parts.length - 1] || value;
+              const modifiers = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false };
+              for (const part of parts.slice(0, -1)) {
+                const lower = part.toLowerCase();
+                if (lower === 'ctrl' || lower === 'control') modifiers.ctrlKey = true;
+                if (lower === 'shift') modifiers.shiftKey = true;
+                if (lower === 'alt') modifiers.altKey = true;
+                if (lower === 'meta' || lower === 'cmd' || lower === 'command') modifiers.metaKey = true;
+              }
+              const keyCode = main.length === 1 ? main.toUpperCase().charCodeAt(0) : 0;
+              const init = { key: main, code: main.length === 1 ? `Key${main.toUpperCase()}` : main, keyCode, which: keyCode, bubbles: true, cancelable: true, ...modifiers };
+              active.dispatchEvent(new KeyboardEvent('keydown', init));
+              active.dispatchEvent(new KeyboardEvent('keyup', init));
+            };
+            const isTextInput = (el) => el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+            const isEditableTarget = (el) => !!(isTextInput(el) || (el instanceof HTMLElement && el.isContentEditable));
+            const dispatchEditableEvents = (el) => {
+              if (!el) return;
+              try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+              try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            };
+            const escapeHtml = (value) => String(value || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
+            const parseInlineMarkdown = (line) => {
+              let html = escapeHtml(line);
+              html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+              html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+              html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+              html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+              html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+              html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+              return html;
+            };
+            const markdownToHtml = (input) => {
+              const lines = String(input || '').replace(/\r\n/g, '\n').split('\n');
+              const blocks = [];
+              let inList = false;
+              const closeList = () => {
+                if (inList) {
+                  blocks.push('</ul>');
+                  inList = false;
+                }
+              };
+              const isTableSeparator = (line) => /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(line || '');
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const trimmed = line.trim();
+                if (!trimmed) {
+                  closeList();
+                  blocks.push('<p></p>');
+                  continue;
+                }
+                const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+                if (headingMatch) {
+                  closeList();
+                  const level = headingMatch[1].length;
+                  blocks.push(`<h${level}>${parseInlineMarkdown(headingMatch[2])}</h${level}>`);
+                  continue;
+                }
+                if (/^[-*]\s+/.test(trimmed)) {
+                  if (!inList) {
+                    blocks.push('<ul>');
+                    inList = true;
+                  }
+                  blocks.push(`<li>${parseInlineMarkdown(trimmed.replace(/^[-*]\s+/, ''))}</li>`);
+                  continue;
+                }
+                if (trimmed.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+                  closeList();
+                  const headers = trimmed.split('|').map((item) => item.trim()).filter(Boolean);
+                  i += 1;
+                  const rows = [];
+                  while (i + 1 < lines.length) {
+                    const next = lines[i + 1];
+                    if (!next || !next.includes('|') || !next.trim()) break;
+                    i += 1;
+                    rows.push(next.split('|').map((item) => item.trim()).filter((_, idx, arr) => !(idx === 0 && arr.length > headers.length && !arr[0])));
+                  }
+                  const thead = `<thead><tr>${headers.map((h) => `<th>${parseInlineMarkdown(h)}</th>`).join('')}</tr></thead>`;
+                  const tbody = `<tbody>${rows.map((row) => `<tr>${headers.map((_, colIdx) => `<td>${parseInlineMarkdown(row[colIdx] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+                  blocks.push(`<table data-crab-js-table="1">${thead}${tbody}</table>`);
+                  continue;
+                }
+                closeList();
+                blocks.push(`<p>${parseInlineMarkdown(trimmed)}</p>`);
+              }
+              closeList();
+              return blocks.join('\n');
+            };
+            const resolveWritableTarget = (spec = {}) => {
+              const resolved = resolve(spec.target || spec);
+              const candidate = resolved?.target;
+              if (candidate instanceof HTMLCanvasElement || isEditableTarget(candidate)) return candidate;
+              const active = document.activeElement;
+              if (active instanceof HTMLCanvasElement || isEditableTarget(active)) return active;
+              return document.querySelector('[contenteditable="true"], [contenteditable=""], textarea, input[type="text"], input:not([type]), canvas') || candidate || document.body;
+            };
+            const applyRenderedContent = ({ target, html = '', text = '', append = false }) => {
+              const el = target || document.body;
+              if (isTextInput(el)) {
+                const next = append ? ((el.value || '') + (el.value ? '\n' : '') + String(text || '')) : String(text || '');
+                el.value = next;
+                dispatchEditableEvents(el);
+                return { mode: 'input', chars: next.length };
+              }
+              if (el instanceof HTMLElement && el.isContentEditable) {
+                if (append) {
+                  if (html) el.insertAdjacentHTML('beforeend', html);
+                  else el.appendChild(document.createTextNode(String(text || '')));
+                } else if (html) {
+                  el.innerHTML = html;
+                } else {
+                  el.textContent = String(text || '');
+                }
+                dispatchEditableEvents(el);
+                return { mode: 'contenteditable', chars: (el.innerText || el.textContent || '').length };
+              }
+              if (el instanceof HTMLElement) {
+                const wrapper = document.createElement('div');
+                wrapper.setAttribute('data-crab-js-render', '1');
+                wrapper.style.maxWidth = '100%';
+                wrapper.style.overflow = 'auto';
+                wrapper.innerHTML = html || `<pre>${escapeHtml(String(text || ''))}</pre>`;
+                if (append) el.appendChild(wrapper);
+                else {
+                  el.innerHTML = '';
+                  el.appendChild(wrapper);
+                }
+                return { mode: 'element', chars: (wrapper.innerText || wrapper.textContent || '').length };
+              }
+              return { mode: 'none', chars: 0 };
+            };
+            const buildTableHtml = (tableSpec = {}) => {
+              const spec = tableSpec && typeof tableSpec === 'object' ? tableSpec : {};
+              const headers = Array.isArray(spec.headers) ? spec.headers.map((h) => String(h ?? '')) : [];
+              const rows = Array.isArray(spec.rows) ? spec.rows : [];
+              if (!headers.length && rows.length > 0 && Array.isArray(rows[0])) {
+                const first = rows[0];
+                for (let i = 0; i < first.length; i++) headers.push(`Col ${i + 1}`);
+              }
+              const finalHeaders = headers.length ? headers : ['Column 1'];
+              const tbodyRows = rows.map((row) => {
+                if (Array.isArray(row)) {
+                  return finalHeaders.map((_, idx) => String(row[idx] ?? ''));
+                }
+                if (row && typeof row === 'object') {
+                  return finalHeaders.map((header) => String(row[header] ?? row[header.toLowerCase()] ?? ''));
+                }
+                return [String(row ?? '')];
+              });
+              const thead = `<thead><tr>${finalHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>`;
+              const tbody = `<tbody>${tbodyRows.map((row) => `<tr>${finalHeaders.map((_, idx) => `<td>${escapeHtml(row[idx] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+              return `<table data-crab-js-table="1">${thead}${tbody}</table>`;
+            };
+            const renderDocument = async (docSpec = {}) => {
+              const spec = (typeof docSpec === 'string') ? { markdown: docSpec } : (docSpec && typeof docSpec === 'object' ? docSpec : {});
+              const target = resolveWritableTarget(spec.target || targetSpec || {});
+              let bodyHtml = '';
+              if (spec.html != null) {
+                bodyHtml = String(spec.html);
+              } else if (spec.markdown != null) {
+                bodyHtml = markdownToHtml(String(spec.markdown));
+              } else if (spec.text != null) {
+                bodyHtml = `<pre>${escapeHtml(String(spec.text))}</pre>`;
+              }
+              if (spec.table != null) {
+                const tableHtml = buildTableHtml(spec.table);
+                bodyHtml = bodyHtml ? `${bodyHtml}\n${tableHtml}` : tableHtml;
+              }
+              const titleHtml = spec.title ? `<h1>${escapeHtml(String(spec.title))}</h1>` : '';
+              const subtitleHtml = spec.subtitle ? `<h2>${escapeHtml(String(spec.subtitle))}</h2>` : '';
+              const wrapped = `<section data-crab-js-doc="1">${titleHtml}${subtitleHtml}${bodyHtml}</section>`;
+              const textFallback = [spec.title, spec.subtitle, spec.text, spec.markdown].filter(Boolean).join('\n\n');
+              const applied = applyRenderedContent({
+                target,
+                html: wrapped,
+                text: textFallback,
+                append: spec.append === true
+              });
+              return { rendered: true, type: 'document', ...applied };
+            };
+            const renderTable = async (tableSpec = {}) => {
+              const spec = tableSpec && typeof tableSpec === 'object' ? tableSpec : {};
+              return renderDocument({ table: spec, target: spec.target, append: spec.append === true });
+            };
+            const ensureCanvas = (canvasSpec = {}) => {
+              const spec = canvasSpec && typeof canvasSpec === 'object' ? canvasSpec : {};
+              const existing = resolveWritableTarget(spec.target || spec);
+              if (existing instanceof HTMLCanvasElement) return existing;
+              const selectorCanvas = typeof spec.selector === 'string' ? document.querySelector(spec.selector) : null;
+              if (selectorCanvas instanceof HTMLCanvasElement) return selectorCanvas;
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.max(200, Math.min(2400, Number(spec.width) || 960));
+              canvas.height = Math.max(140, Math.min(1800, Number(spec.height) || 540));
+              canvas.style.maxWidth = '100%';
+              canvas.style.border = '1px solid rgba(0,0,0,0.12)';
+              canvas.style.background = '#fff';
+              canvas.setAttribute('data-crab-js-chart', '1');
+              const host = existing instanceof HTMLElement ? existing : document.body;
+              if (host instanceof HTMLInputElement || host instanceof HTMLTextAreaElement) {
+                host.insertAdjacentElement('afterend', canvas);
+              } else if (host instanceof HTMLElement && host.isContentEditable) {
+                host.appendChild(canvas);
+              } else if (host instanceof HTMLElement) {
+                host.appendChild(canvas);
+              } else {
+                document.body.appendChild(canvas);
+              }
+              return canvas;
+            };
+            const renderChart = async (chartSpec = {}) => {
+              const spec = chartSpec && typeof chartSpec === 'object' ? chartSpec : {};
+              const chartType = String(spec.type || 'bar').toLowerCase();
+              const labels = Array.isArray(spec.labels) ? spec.labels.map((item, idx) => String(item ?? `#${idx + 1}`)) : [];
+              const datasets = Array.isArray(spec.datasets) ? spec.datasets : [];
+              const data = datasets.map((dataset, idx) => {
+                const values = Array.isArray(dataset?.data) ? dataset.data.map((v) => Number(v) || 0) : [];
+                return {
+                  label: String(dataset?.label || `Series ${idx + 1}`),
+                  values,
+                  color: String(dataset?.color || dataset?.stroke || ['#2B6CB0', '#E53E3E', '#2F855A', '#B7791F'][idx % 4])
+                };
+              });
+              const canvas = ensureCanvas(spec.canvas || spec.target || {});
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return { rendered: false, error: 'Canvas context unavailable' };
+              const width = canvas.width;
+              const height = canvas.height;
+              const padding = { left: 64, right: 24, top: 36, bottom: 56 };
+              const chartW = Math.max(80, width - padding.left - padding.right);
+              const chartH = Math.max(60, height - padding.top - padding.bottom);
+              ctx.clearRect(0, 0, width, height);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, width, height);
+              ctx.strokeStyle = '#E2E8F0';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+              ctx.font = '13px Arial';
+              ctx.fillStyle = '#1A202C';
+              if (spec.title) ctx.fillText(String(spec.title).slice(0, 90), padding.left, 22);
+              const allValues = data.flatMap((series) => series.values);
+              const maxValue = allValues.length ? Math.max(...allValues, 1) : 1;
+              const safeLabels = labels.length ? labels : (data[0]?.values || []).map((_, idx) => `#${idx + 1}`);
+              const count = Math.max(1, safeLabels.length);
+              const mapY = (value) => padding.top + chartH - (value / maxValue) * chartH;
+              ctx.strokeStyle = '#CBD5E0';
+              ctx.beginPath();
+              ctx.moveTo(padding.left, padding.top);
+              ctx.lineTo(padding.left, padding.top + chartH);
+              ctx.lineTo(padding.left + chartW, padding.top + chartH);
+              ctx.stroke();
+              for (let step = 0; step <= 4; step++) {
+                const tickValue = (maxValue / 4) * step;
+                const y = mapY(tickValue);
+                ctx.strokeStyle = '#EDF2F7';
+                ctx.beginPath();
+                ctx.moveTo(padding.left, y);
+                ctx.lineTo(padding.left + chartW, y);
+                ctx.stroke();
+                ctx.fillStyle = '#4A5568';
+                ctx.fillText(String(Math.round(tickValue * 100) / 100), 8, y + 4);
+              }
+              if (chartType === 'pie') {
+                const first = data[0] || { values: [] };
+                const values = first.values.slice(0, Math.max(1, count));
+                const total = values.reduce((acc, v) => acc + Math.max(0, v), 0) || 1;
+                const cx = padding.left + chartW / 2;
+                const cy = padding.top + chartH / 2;
+                const radius = Math.max(40, Math.min(chartW, chartH) * 0.35);
+                let angle = -Math.PI / 2;
+                values.forEach((value, idx) => {
+                  const next = angle + (Math.max(0, value) / total) * Math.PI * 2;
+                  ctx.fillStyle = ['#2B6CB0', '#E53E3E', '#2F855A', '#B7791F', '#805AD5', '#DD6B20'][idx % 6];
+                  ctx.beginPath();
+                  ctx.moveTo(cx, cy);
+                  ctx.arc(cx, cy, radius, angle, next);
+                  ctx.closePath();
+                  ctx.fill();
+                  angle = next;
+                });
+              } else if (chartType === 'line') {
+                data.forEach((series) => {
+                  ctx.strokeStyle = series.color;
+                  ctx.lineWidth = 2;
+                  ctx.beginPath();
+                  series.values.forEach((value, idx) => {
+                    const x = padding.left + (count <= 1 ? chartW / 2 : (idx / (count - 1)) * chartW);
+                    const y = mapY(value);
+                    if (idx === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                  });
+                  ctx.stroke();
+                });
+              } else {
+                const seriesCount = Math.max(1, data.length);
+                const groupW = chartW / count;
+                data.forEach((series, seriesIdx) => {
+                  ctx.fillStyle = series.color;
+                  series.values.forEach((value, idx) => {
+                    const barW = (groupW * 0.75) / seriesCount;
+                    const x = padding.left + idx * groupW + groupW * 0.125 + seriesIdx * barW;
+                    const y = mapY(value);
+                    const h = padding.top + chartH - y;
+                    ctx.fillRect(x, y, barW, h);
+                  });
+                });
+              }
+              ctx.fillStyle = '#2D3748';
+              ctx.font = '12px Arial';
+              safeLabels.forEach((label, idx) => {
+                const x = padding.left + (count <= 1 ? chartW / 2 : (idx / (count - 1)) * chartW);
+                ctx.save();
+                ctx.translate(x, padding.top + chartH + 16);
+                ctx.rotate(-Math.PI / 7);
+                ctx.fillText(String(label).slice(0, 20), 0, 0);
+                ctx.restore();
+              });
+              return { rendered: true, type: 'chart', chartType, width, height, series: data.length, points: count };
+            };
+            const helpers = {
+              sleep: sleepInner,
+              resolvePoint: resolve,
+              focus: async (spec = {}) => {
+                const { target } = resolve(spec.target || spec);
+                if (target && typeof target.focus === 'function') target.focus();
+                return target || null;
+              },
+              pointer,
+              drag: async ({ from = {}, to = {}, steps = 12 } = {}) => {
+                const start = resolve(from);
+                const end = resolve(to);
+                const count = Math.max(2, Math.min(60, Number(steps) || 12));
+                const startTarget = start.target || document.elementFromPoint(start.x, start.y) || document.body;
+                const fire = (el, type, x, y, buttons = 0) => {
+                  const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons };
+                  if (typeof PointerEvent === 'function') {
+                    const pointerType = type === 'mousedown' ? 'pointerdown' : type === 'mouseup' ? 'pointerup' : 'pointermove';
+                    el.dispatchEvent(new PointerEvent(pointerType, options));
+                  }
+                  el.dispatchEvent(new MouseEvent(type, options));
+                };
+                fire(startTarget, 'mousedown', start.x, start.y, 1);
+                for (let i = 1; i <= count; i++) {
+                  const t = i / count;
+                  const x = Math.round(start.x + (end.x - start.x) * t);
+                  const y = Math.round(start.y + (end.y - start.y) * t);
+                  const moveTarget = document.elementFromPoint(x, y) || startTarget;
+                  fire(moveTarget, 'mousemove', x, y, 1);
+                  await sleepInner(12);
+                }
+                const endTarget = document.elementFromPoint(end.x, end.y) || startTarget;
+                fire(endTarget, 'mouseup', end.x, end.y, 0);
+                return { from: { x: start.x, y: start.y }, to: { x: end.x, y: end.y } };
+              },
+              wheel: ({ target = {}, dx = 0, dy = 120 } = {}) => {
+                const resolved = resolve(target);
+                const el = resolved.target || document.elementFromPoint(resolved.x, resolved.y) || document.body;
+                el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: resolved.x, clientY: resolved.y, deltaX: Number(dx) || 0, deltaY: Number(dy) || 0 }));
+                return { x: resolved.x, y: resolved.y };
+              },
+              key,
+              shortcut: key,
+              typeText: async (text) => {
+                const value = String(text ?? '');
+                const active = document.activeElement;
+                if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+                  active.value = (active.value || '') + value;
+                  active.dispatchEvent(new Event('input', { bubbles: true }));
+                  active.dispatchEvent(new Event('change', { bubbles: true }));
+                } else if (active instanceof HTMLElement && active.isContentEditable) {
+                  active.focus();
+                  if (typeof document.execCommand === 'function') document.execCommand('insertText', false, value);
+                  else active.textContent = (active.textContent || '') + value;
+                  active.dispatchEvent(new Event('input', { bubbles: true }));
+                } else {
+                  await key(value);
+                }
+                return value;
+              },
+              renderDocument,
+              renderContent: renderDocument,
+              renderTable,
+              renderChart,
+              ensureCanvas
+            };
+            const context = {
+              args: args && typeof args === 'object' ? args : {},
+              page: { url: window.location.href, title: document.title, viewport: { width: window.innerWidth || 0, height: window.innerHeight || 0, dpr: window.devicePixelRatio || 1 } },
+              target: resolve(targetSpec || {})
+            };
+            const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+            const runner = new AsyncFunction('context', 'helpers', source);
+            const value = await runner(context, helpers);
+            const toSerializable = (input, depth = 0, seen = new WeakSet()) => {
+              if (input == null) return input;
+              if (typeof input === 'string' || typeof input === 'number' || typeof input === 'boolean') return input;
+              if (typeof input === 'bigint') return String(input);
+              if (typeof input === 'function') return `[Function ${input.name || 'anonymous'}]`;
+              if (input instanceof Element) {
+                return {
+                  tag: (input.tagName || '').toLowerCase(),
+                  id: input.id || '',
+                  role: input.getAttribute?.('role') || '',
+                  text: (input.innerText || input.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+                };
+              }
+              if (Array.isArray(input)) {
+                if (depth > 3) return `[Array(${input.length})]`;
+                return input.slice(0, 40).map((item) => toSerializable(item, depth + 1, seen));
+              }
+              if (typeof input === 'object') {
+                if (seen.has(input)) return '[Circular]';
+                seen.add(input);
+                if (depth > 3) return '[Object]';
+                const out = {};
+                for (const key of Object.keys(input).slice(0, 40)) {
+                  out[key] = toSerializable(input[key], depth + 1, seen);
+                }
+                return out;
+              }
+              return String(input);
+            };
+            await sleepInner(Math.max(0, Math.min(1000, Number(settleDelay) || 0)));
+            return { success: true, result: toSerializable(value) };
+          },
+          args: [script, scriptArgs, defaultTarget, settleMs]
+        });
+        const payload = result?.[0]?.result || { success: false, error: 'javascript_tool script failed' };
+        if (!payload.success) {
+          const rawError = String(payload.error || 'javascript_tool script failed');
+          const unsafeEval = /unsafe-eval|Refused to evaluate a string as JavaScript|EvalError/i.test(rawError);
+          return AgentS.createActionResult({
+            success: false,
+            error: unsafeEval
+              ? `${rawError}. This page/extension context blocks dynamic eval in script mode. Use javascript_tool mode "render" instead (ops is only for low-level pointer automation, not artifact drawing).`
+              : rawError
+          });
+        }
+        let extracted = '';
+        if (payload.result != null) {
+          try {
+            extracted = JSON.stringify(payload.result);
+            if (extracted.length > 5000) {
+              extracted = extracted.slice(0, 5000) + '...';
+            }
+          } catch (e) {
+            extracted = String(payload.result).slice(0, 5000);
+          }
+        }
+        return AgentS.createActionResult({
+          success: true,
+          message: 'javascript_tool script executed',
+          includeInMemory: params.include_in_memory === true || params.includeInMemory === true,
+          extractedContent: extracted
+        });
+      };
+
+      const runOpsMode = async () => {
+        let operations = [];
+        if (Array.isArray(params.operations)) operations = params.operations;
+        else if (Array.isArray(params.ops)) operations = params.ops;
+        else if (params.operation && typeof params.operation === 'object') operations = [params.operation];
+        else if (typeof params.operation === 'string' && params.operation.trim()) operations = [{ op: params.operation, ...params }];
+
+        if (!operations.length) {
+          return AgentS.createActionResult({ success: false, error: 'javascript_tool ops mode requires operations[].' });
+        }
+
+        const allowOpsForDiagram = params.allow_ops_for_diagram === true || params.allowOpsForDiagram === true || params.force_ops === true || params.forceOps === true;
+        let activeTaskText = '';
+        try {
+          const execRef = currentExecution;
+          activeTaskText = String(execRef?.latestUserUpdate || execRef?.originalTask || execRef?.task || '');
+        } catch (e) {
+          activeTaskText = '';
+        }
+        const hasFlowOrDiagramIntent = /(flow|diagram|sơ\s*đồ|luồng)/i.test(activeTaskText);
+        if (!allowOpsForDiagram && hasFlowOrDiagramIntent) {
+          const canvasProbe = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+              const elements = Array.from(document.querySelectorAll('canvas, svg, [role="application"]'));
+              const viewportArea = Math.max(1, (window.innerWidth || 1) * (window.innerHeight || 1));
+              const hasLargeSurface = elements.some((el) => {
+                const rect = el?.getBoundingClientRect?.();
+                if (!rect) return false;
+                return (rect.width * rect.height) >= viewportArea * 0.2;
+              });
+              const titleText = String(document.title || '').toLowerCase();
+              const bodyText = String(document.body?.innerText || '').slice(0, 3000).toLowerCase();
+              const editorHint = /whiteboard|diagram|draw|canvas|excalidraw/.test(titleText) || /whiteboard|diagram|draw|canvas|excalidraw/.test(bodyText);
+              return { isCanvasEditor: hasLargeSurface || editorHint };
+            }
+          });
+          const isCanvasEditor = canvasProbe?.[0]?.result?.isCanvasEditor === true;
+          if (isCanvasEditor) {
+            return AgentS.createActionResult({
+              success: false,
+              error: 'javascript_tool policy block: mode "ops" is disabled for flow/diagram drawing on canvas editors. Use mode "script" with world:"page" to access the canvas app API directly.'
+            });
+          }
+        }
+
+        const summary = [];
+        const pickButton = (value) => {
+          const normalized = String(value || 'left').toLowerCase();
+          return ['left', 'middle', 'right'].includes(normalized) ? normalized : 'left';
+        };
+
+        for (let i = 0; i < operations.length; i++) {
+          const rawOp = operations[i];
+          const op = typeof rawOp === 'string' ? { op: rawOp } : (rawOp && typeof rawOp === 'object' ? rawOp : null);
+          if (!op) return AgentS.createActionResult({ success: false, error: `javascript_tool operation #${i + 1} is invalid.` });
+          const opName = String(op.op || op.type || op.action || '').toLowerCase();
+          if (!opName) return AgentS.createActionResult({ success: false, error: `javascript_tool operation #${i + 1} missing "op".` });
+          const mergedTarget = {
+            ...(defaultTarget && typeof defaultTarget === 'object' ? defaultTarget : {}),
+            ...(op.target && typeof op.target === 'object' ? op.target : {})
+          };
+
+          if (opName === 'wait') {
+            const waitMs = Math.max(0, Math.min(15000, Number(op.ms ?? op.wait_ms ?? op.milliseconds ?? (Number(op.seconds || 0) * 1000)) || settleMs));
+            await sleep(waitMs);
+            summary.push(`[${i + 1}] wait ${waitMs}ms`);
+            continue;
+          }
+
+          if (opName === 'type') {
+            if (op.target || (defaultTarget && typeof defaultTarget === 'object' && Object.keys(defaultTarget).length > 0)) {
+              const focusPoint = await resolvePoint(mergedTarget);
+              if (focusPoint?.success) {
+                await chrome.scripting.executeScript({
+                  target: { tabId },
+                  func: (x, y) => {
+                    const el = document.elementFromPoint(x, y) || document.body;
+                    if (el && typeof el.focus === 'function') {
+                      try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+                    }
+                  },
+                  args: [focusPoint.x, focusPoint.y]
+                });
+              }
+            }
+            const text = String(op.text ?? op.value ?? '');
+            if (text) {
+              const typeResult = await AgentS.actions.sendKeys(text, tabId);
+              if (!typeResult?.success) {
+                return AgentS.createActionResult({ success: false, error: `javascript_tool type failed at #${i + 1}: ${typeResult?.error || typeResult?.message || 'typing failed'}` });
+              }
+            }
+            if (op.enter === true || op.submit === true) {
+              const enterResult = await AgentS.actions.sendKeys('Enter', tabId);
+              if (!enterResult?.success) {
+                return AgentS.createActionResult({ success: false, error: `javascript_tool enter failed at #${i + 1}: ${enterResult?.error || enterResult?.message || 'enter failed'}` });
+              }
+            }
+            summary.push(`[${i + 1}] type "${text.slice(0, 32)}"`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'key' || opName === 'shortcut') {
+            const combo = String(op.keys || op.key || op.combo || '').trim();
+            if (!combo) return AgentS.createActionResult({ success: false, error: `javascript_tool ${opName} requires keys at #${i + 1}.` });
+            const keyResult = await AgentS.actions.sendKeys(combo, tabId);
+            if (!keyResult?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool ${opName} failed at #${i + 1}: ${keyResult?.error || keyResult?.message || 'key failed'}` });
+            }
+            summary.push(`[${i + 1}] ${opName} ${combo}`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'focus') {
+            const point = await resolvePoint(mergedTarget);
+            if (!point?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool focus failed at #${i + 1}: ${point?.error || 'target unresolved'}` });
+            }
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              func: (x, y, clickIt) => {
+                const el = document.elementFromPoint(x, y) || document.body;
+                if (el && typeof el.focus === 'function') {
+                  try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+                }
+                if (clickIt) {
+                  const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: 1 };
+                  if (typeof PointerEvent === 'function') {
+                    el.dispatchEvent(new PointerEvent('pointerdown', options));
+                    el.dispatchEvent(new PointerEvent('pointerup', options));
+                  }
+                  el.dispatchEvent(new MouseEvent('mousedown', options));
+                  el.dispatchEvent(new MouseEvent('mouseup', options));
+                  el.dispatchEvent(new MouseEvent('click', options));
+                }
+              },
+              args: [point.x, point.y, op.click === true]
+            });
+            summary.push(`[${i + 1}] focus @(${point.x},${point.y})`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'pointer') {
+            const point = await resolvePoint({
+              ...mergedTarget,
+              x: op.x ?? mergedTarget.x,
+              y: op.y ?? mergedTarget.y,
+              offset_x: op.offset_x ?? op.offsetX ?? mergedTarget.offset_x ?? mergedTarget.offsetX,
+              offset_y: op.offset_y ?? op.offsetY ?? mergedTarget.offset_y ?? mergedTarget.offsetY
+            });
+            if (!point?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool pointer failed at #${i + 1}: ${point?.error || 'point unresolved'}` });
+            }
+            const eventName = String(op.event || op.kind || 'click').toLowerCase();
+            const button = pickButton(op.button);
+            const clickCount = Math.max(1, Math.min(3, Number(op.click_count ?? op.clickCount ?? 1) || 1));
+            let pointerResult = null;
+            if (op.trusted !== false) {
+              const trustedEvents = eventName === 'move'
+                ? [{ type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0, pointerType: 'mouse' }]
+                : eventName === 'down'
+                  ? [{ type: 'mousePressed', x: point.x, y: point.y, button, buttons: 1, clickCount, pointerType: 'mouse' }]
+                  : eventName === 'up'
+                    ? [{ type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount, pointerType: 'mouse' }]
+                    : eventName === 'dblclick'
+                      ? [
+                          { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0, pointerType: 'mouse' },
+                          { type: 'mousePressed', x: point.x, y: point.y, button, buttons: 1, clickCount: 1, pointerType: 'mouse' },
+                          { type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount: 1, pointerType: 'mouse' },
+                          { type: 'mousePressed', x: point.x, y: point.y, button, buttons: 1, clickCount: 2, pointerType: 'mouse' },
+                          { type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount: 2, pointerType: 'mouse' }
+                        ]
+                      : [
+                          { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0, pointerType: 'mouse' },
+                          { type: 'mousePressed', x: point.x, y: point.y, button, buttons: 1, clickCount, pointerType: 'mouse' },
+                          { type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount, pointerType: 'mouse' }
+                        ];
+              pointerResult = await dispatchTrustedMouseEvents(trustedEvents);
+            }
+            if (!pointerResult?.success) {
+              const synthetic = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: (kind, x, y, buttonName, count) => {
+                  const button = buttonName === 'middle' ? 1 : buttonName === 'right' ? 2 : 0;
+                  const el = document.elementFromPoint(x, y) || document.body;
+                  const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button, buttons: kind === 'move' ? 0 : 1, detail: count };
+                  const fire = (type) => {
+                    if (typeof PointerEvent === 'function') {
+                      const pointerType = type === 'mousemove' ? 'pointermove' : type === 'mousedown' ? 'pointerdown' : type === 'mouseup' ? 'pointerup' : null;
+                      if (pointerType) el.dispatchEvent(new PointerEvent(pointerType, options));
+                    }
+                    el.dispatchEvent(new MouseEvent(type, options));
+                  };
+                  if (kind === 'move') fire('mousemove');
+                  else if (kind === 'down') fire('mousedown');
+                  else if (kind === 'up') fire('mouseup');
+                  else if (kind === 'dblclick') {
+                    fire('mousedown'); fire('mouseup'); fire('click');
+                    fire('mousedown'); fire('mouseup'); fire('click');
+                    fire('dblclick');
+                  } else {
+                    fire('mousedown'); fire('mouseup'); fire('click');
+                  }
+                  return { success: true };
+                },
+                args: [eventName, point.x, point.y, button, clickCount]
+              });
+              pointerResult = synthetic?.[0]?.result || { success: false, error: 'Synthetic pointer failed' };
+            }
+            if (!pointerResult?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool pointer failed at #${i + 1}: ${pointerResult?.error || 'pointer failed'}` });
+            }
+            summary.push(`[${i + 1}] pointer ${eventName} @(${point.x},${point.y})`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'drag') {
+            const from = await resolvePoint(op.from && typeof op.from === 'object' ? op.from : {});
+            const to = await resolvePoint(op.to && typeof op.to === 'object' ? op.to : {});
+            if (!from?.success || !to?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool drag failed at #${i + 1}: cannot resolve from/to.` });
+            }
+            const steps = Math.max(2, Math.min(60, Number(op.steps) || 12));
+            const button = pickButton(op.button);
+            const events = [
+              { type: 'mouseMoved', x: from.x, y: from.y, button: 'none', buttons: 0, pointerType: 'mouse' },
+              { type: 'mousePressed', x: from.x, y: from.y, button, buttons: 1, clickCount: 1, pointerType: 'mouse' }
+            ];
+            for (let step = 1; step <= steps; step++) {
+              const t = step / steps;
+              const x = Math.round(from.x + (to.x - from.x) * t);
+              const y = Math.round(from.y + (to.y - from.y) * t);
+              events.push({ type: 'mouseMoved', x, y, button: 'none', buttons: 1, pointerType: 'mouse' });
+            }
+            events.push({ type: 'mouseReleased', x: to.x, y: to.y, button, buttons: 0, clickCount: 1, pointerType: 'mouse' });
+            let dragResult = null;
+            if (op.trusted !== false) {
+              dragResult = await dispatchTrustedMouseEvents(events);
+            }
+            if (!dragResult?.success) {
+              const synthetic = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: async (sx, sy, ex, ey, moveSteps) => {
+                  const sleepInner = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                  const startTarget = document.elementFromPoint(sx, sy) || document.body;
+                  const fire = (el, type, x, y, buttons = 0) => {
+                    const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons };
+                    if (typeof PointerEvent === 'function') {
+                      const pointerType = type === 'mousedown' ? 'pointerdown' : type === 'mouseup' ? 'pointerup' : 'pointermove';
+                      el.dispatchEvent(new PointerEvent(pointerType, options));
+                    }
+                    el.dispatchEvent(new MouseEvent(type, options));
+                  };
+                  fire(startTarget, 'mousedown', sx, sy, 1);
+                  for (let i = 1; i <= moveSteps; i++) {
+                    const t = i / moveSteps;
+                    const x = Math.round(sx + (ex - sx) * t);
+                    const y = Math.round(sy + (ey - sy) * t);
+                    const moveTarget = document.elementFromPoint(x, y) || startTarget;
+                    fire(moveTarget, 'mousemove', x, y, 1);
+                    await sleepInner(12);
+                  }
+                  const endTarget = document.elementFromPoint(ex, ey) || startTarget;
+                  fire(endTarget, 'mouseup', ex, ey, 0);
+                  return { success: true };
+                },
+                args: [from.x, from.y, to.x, to.y, steps]
+              });
+              dragResult = synthetic?.[0]?.result || { success: false, error: 'Synthetic drag failed' };
+            }
+            if (!dragResult?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool drag failed at #${i + 1}: ${dragResult?.error || 'drag failed'}` });
+            }
+            summary.push(`[${i + 1}] drag (${from.x},${from.y}) -> (${to.x},${to.y})`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'wheel') {
+            const point = await resolvePoint({
+              ...mergedTarget,
+              x: op.x ?? mergedTarget.x,
+              y: op.y ?? mergedTarget.y
+            });
+            if (!point?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool wheel failed at #${i + 1}: ${point?.error || 'point unresolved'}` });
+            }
+            const deltaX = Number(op.dx ?? op.delta_x ?? op.deltaX ?? 0) || 0;
+            const deltaY = Number(op.dy ?? op.delta_y ?? op.deltaY ?? 120) || 120;
+            let wheelResult = null;
+            if (op.trusted !== false) {
+              wheelResult = await dispatchTrustedMouseEvents([
+                { type: 'mouseWheel', x: point.x, y: point.y, deltaX, deltaY, button: 'none', buttons: 0, pointerType: 'mouse' }
+              ]);
+            }
+            if (!wheelResult?.success) {
+              const synthetic = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: (x, y, dx, dy) => {
+                  const el = document.elementFromPoint(x, y) || document.body;
+                  el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaX: dx, deltaY: dy }));
+                  return { success: true };
+                },
+                args: [point.x, point.y, deltaX, deltaY]
+              });
+              wheelResult = synthetic?.[0]?.result || { success: false, error: 'Synthetic wheel failed' };
+            }
+            if (!wheelResult?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool wheel failed at #${i + 1}: ${wheelResult?.error || 'wheel failed'}` });
+            }
+            summary.push(`[${i + 1}] wheel (${deltaX},${deltaY}) @(${point.x},${point.y})`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          return AgentS.createActionResult({ success: false, error: `javascript_tool operation #${i + 1} unsupported op "${opName}".` });
+        }
+
+        return AgentS.createActionResult({
+          success: true,
+          message: `javascript_tool ops completed (${operations.length} step${operations.length > 1 ? 's' : ''}): ${summary.join(' | ')}`
+        });
+      };
+
+      if (mode === 'render') {
+        return runRenderMode();
+      }
+      if (mode === 'script') {
+        return runScriptMode();
+      }
+      if (mode === 'ops') {
+        return runOpsMode();
+      }
+      return AgentS.createActionResult({ success: false, error: `Unsupported javascript_tool mode "${mode}". Supported modes: render, script, ops.` });
     }
   },
 
@@ -5741,6 +7294,39 @@ function isExecutionCancelled(exec) {
   return !exec || exec.cancelled || currentExecution !== exec;
 }
 
+function getJavascriptToolPolicyBlock(exec, actionName, actionPayload, pageState) {
+  if (!exec || actionName !== 'javascript_tool') return null;
+  const payload = actionPayload && typeof actionPayload === 'object' ? actionPayload : {};
+  const mode = String(payload.mode || (payload.script ? 'script' : 'ops')).toLowerCase();
+  if (mode !== 'ops') return null;
+  if (payload.allow_ops_for_diagram === true || payload.allowOpsForDiagram === true || payload.force_ops === true || payload.forceOps === true) {
+    return null;
+  }
+
+  const taskText = [
+    exec.latestUserUpdate,
+    exec.originalTask,
+    exec.task
+  ].filter(Boolean).join('\n');
+  const hasFlowOrDiagramIntent = /(flow|diagram|sơ\s*đồ|luồng)/i.test(taskText);
+  if (!hasFlowOrDiagramIntent) return null;
+
+  const domElements = Array.isArray(pageState?.elements) ? pageState.elements : [];
+  const canvasLikeCount = domElements.filter((el) => {
+    const tag = String(el?.tag || el?.tagName || '').toLowerCase();
+    const role = String(el?.role || el?.attributes?.role || '').toLowerCase();
+    return tag === 'canvas' || tag === 'svg' || role === 'application';
+  }).length;
+  const textRepresentation = String(pageState?.textRepresentation || '');
+  const looksLikeCanvasEditor =
+    canvasLikeCount > 0 ||
+    /<canvas|<svg|whiteboard|drawing|diagram/i.test(textRepresentation);
+
+  if (!looksLikeCanvasEditor) return null;
+
+  return 'JAVASCRIPT_TOOL POLICY: mode "ops" is blocked for flow/diagram drawing on canvas editors. Use mode "render" with flow/diagram payload so drawing uses native app API/CDP page-world. If native API is unavailable, return a clear failure instead of UI-simulated drawing.';
+}
+
 function getExplorationPolicyBlock(exec, actionName, actionPayload, pageState) {
   if (!exec || !actionName) return null;
   const interactiveClickAction = actionName === 'click_element' || actionName === 'click_at';
@@ -6489,31 +8075,33 @@ async function runExecutor() {
         }
       }
 
+      const javascriptToolPolicyBlock = getJavascriptToolPolicyBlock(exec, actionName, action[actionName], pageState);
       const explorationPolicyBlock = getExplorationPolicyBlock(exec, actionName, action[actionName], pageState);
-      if (explorationPolicyBlock) {
-        console.warn('[Policy] Exploration guard blocked action:', explorationPolicyBlock);
-        exec.memory = (exec.memory || '') + `\n[CRITICAL: ${explorationPolicyBlock}]`;
+      const policyBlock = javascriptToolPolicyBlock || explorationPolicyBlock;
+      if (policyBlock) {
+        console.warn('[Policy] Guard blocked action:', policyBlock);
+        exec.memory = (exec.memory || '') + `\n[CRITICAL: ${policyBlock}]`;
         const blockResult = AgentS.createActionResult({
           success: false,
-          error: explorationPolicyBlock,
-          message: explorationPolicyBlock
+          error: policyBlock,
+          message: policyBlock
         });
         exec.actionHistory.push({
           action: actionName,
           params: action[actionName],
           success: false,
-          details: explorationPolicyBlock
+          details: policyBlock
         });
         exec.eventManager.emit({
           state: AgentS.ExecutionState.ACT_FAIL,
           actor: AgentS.Actors.NAVIGATOR,
           taskId: exec.taskId,
           step: exec.step,
-          details: { action: actionName, success: false, error: explorationPolicyBlock }
+          details: { action: actionName, success: false, error: policyBlock }
         });
         lastActionResult = blockResult;
         exec.consecutiveFailures++;
-        finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: explorationPolicyBlock });
+        finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: policyBlock });
         if (exec.consecutiveFailures >= exec.maxFailures) {
           await AgentS.removeHighlights(exec.tabId);
           sendToPanel({
@@ -6521,9 +8109,9 @@ async function runExecutor() {
             state: AgentS.ExecutionState.TASK_FAIL,
             actor: AgentS.Actors.SYSTEM,
             taskId: exec.taskId,
-            details: { error: explorationPolicyBlock }
+            details: { error: policyBlock }
           });
-          await finalizeTaskRecording(exec, 'failed', { error: explorationPolicyBlock });
+          await finalizeTaskRecording(exec, 'failed', { error: policyBlock });
           exec.cancelled = true;
           return;
         }
@@ -7049,3 +8637,742 @@ async function loadSettings() {
 }
 
 console.log('Crab-Agent background service worker loaded');
+
+// ============================================================================
+// CANVAS TOOLKIT - CDP Native Interaction & Smart Paste
+// Universal tools for Canvas/WebGL applications (Figma, Miro, Canva, etc.)
+// ============================================================================
+
+const CanvasToolkit = {
+  // CDP Session management
+  _sessions: new Map(), // tabId -> { attached, attachedByUs }
+  _commandTimeout: 5000, // Increased timeout for slow pages
+
+  /**
+   * Ensure CDP is attached to tab
+   */
+  async ensureAttached(tabId) {
+    const target = { tabId };
+    const session = this._sessions.get(tabId) || { attached: false, attachedByUs: false };
+
+    if (session.attached) return { ok: true };
+
+    try {
+      await chrome.debugger.attach(target, '1.3');
+      session.attached = true;
+      session.attachedByUs = true;
+      this._sessions.set(tabId, session);
+      console.log('[CanvasToolkit] CDP attached to tab:', tabId);
+      return { ok: true };
+    } catch (error) {
+      const msg = String(error?.message || error || '');
+      if (/already attached|another debugger/i.test(msg)) {
+        session.attached = true;
+        session.attachedByUs = false;
+        this._sessions.set(tabId, session);
+        return { ok: true };
+      }
+      return { ok: false, error: `CDP attach failed: ${msg}` };
+    }
+  },
+
+  /**
+   * Detach CDP from tab
+   */
+  async detach(tabId) {
+    const session = this._sessions.get(tabId);
+    if (!session || !session.attachedByUs) return;
+
+    try {
+      await chrome.debugger.detach({ tabId });
+      console.log('[CanvasToolkit] CDP detached from tab:', tabId);
+    } catch (e) {
+      // Ignore detach errors
+    }
+    this._sessions.delete(tabId);
+  },
+
+  /**
+   * Send CDP command with timeout
+   */
+  async sendCommand(tabId, method, params = {}) {
+    const attachResult = await this.ensureAttached(tabId);
+    if (!attachResult.ok) throw new Error(attachResult.error);
+
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`CDP command timeout: ${method}`));
+      }, this._commandTimeout);
+
+      chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
+        clearTimeout(timeoutId);
+        if (chrome.runtime.lastError) {
+          reject(new Error(`CDP command failed: ${chrome.runtime.lastError.message}`));
+          return;
+        }
+        resolve(result);
+      });
+    });
+  },
+
+  /**
+   * CDP Click at coordinates
+   */
+  async cdpClick(x, y, options = {}, tabId) {
+    const { button = 'left', clickCount = 1, delay = 50 } = options;
+    const px = Math.round(x);
+    const py = Math.round(y);
+
+    try {
+      // Move mouse
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: px, y: py
+      });
+      await this._sleep(delay);
+
+      // Mouse down
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: px, y: py, button, clickCount
+      });
+      await this._sleep(delay);
+
+      // Mouse up
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: px, y: py, button, clickCount
+      });
+
+      console.log(`[CanvasToolkit] Click at (${px}, ${py})`);
+      return { success: true, x: px, y: py };
+    } catch (error) {
+      console.error('[CanvasToolkit] Click failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * CDP Drag from point A to B
+   */
+  async cdpDrag(startX, startY, endX, endY, options = {}, tabId) {
+    const { steps = 10, duration = 300 } = options;
+    const stepDelay = duration / steps;
+
+    try {
+      // Move to start
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: Math.round(startX), y: Math.round(startY)
+      });
+      await this._sleep(50);
+
+      // Mouse down
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: Math.round(startX), y: Math.round(startY),
+        button: 'left', clickCount: 1
+      });
+
+      // Smooth move to end
+      const deltaX = (endX - startX) / steps;
+      const deltaY = (endY - startY) / steps;
+
+      for (let i = 1; i <= steps; i++) {
+        const currentX = Math.round(startX + deltaX * i);
+        const currentY = Math.round(startY + deltaY * i);
+
+        await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved', x: currentX, y: currentY, button: 'left'
+        });
+        await this._sleep(stepDelay);
+      }
+
+      // Mouse up
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: Math.round(endX), y: Math.round(endY),
+        button: 'left', clickCount: 1
+      });
+
+      console.log(`[CanvasToolkit] Drag from (${startX}, ${startY}) to (${endX}, ${endY})`);
+      return { success: true, startX, startY, endX, endY };
+    } catch (error) {
+      console.error('[CanvasToolkit] Drag failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * CDP Type text - uses clipboard paste for Unicode/emoji support
+   */
+  async cdpType(text, options = {}, tabId) {
+    const { delay = 30, useClipboard = true } = options;
+
+    // Check if text contains non-ASCII characters (emoji, unicode)
+    const hasUnicode = /[^\x00-\x7F]/.test(text);
+
+    // Use clipboard paste for Unicode text (more reliable)
+    if (hasUnicode || useClipboard) {
+      try {
+        // Write to clipboard via page injection
+        await this._writeClipboard('text', text, tabId);
+        await this._sleep(50);
+
+        // Dispatch Ctrl+V
+        const isMac = await this._detectMac(tabId);
+        await this.cdpPressKey('v', { ctrl: !isMac, meta: isMac }, tabId);
+
+        console.log(`[CanvasToolkit] Typed (clipboard): "${text.substring(0, 20)}${text.length > 20 ? '...' : ''}"`);
+        return { success: true, text, method: 'clipboard' };
+      } catch (error) {
+        console.warn('[CanvasToolkit] Clipboard paste failed, falling back to key events:', error);
+        // Fall through to key-by-key method
+      }
+    }
+
+    // Fallback: type character by character (ASCII only)
+    try {
+      for (const char of text) {
+        // Skip non-ASCII characters in fallback mode
+        if (char.charCodeAt(0) > 127) continue;
+
+        await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyDown', text: char, key: char,
+          code: this._getKeyCode(char),
+          windowsVirtualKeyCode: char.charCodeAt(0)
+        });
+
+        await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'char', text: char
+        });
+
+        await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyUp', key: char,
+          code: this._getKeyCode(char),
+          windowsVirtualKeyCode: char.charCodeAt(0)
+        });
+
+        await this._sleep(delay);
+      }
+
+      console.log(`[CanvasToolkit] Typed (keys): "${text.substring(0, 20)}${text.length > 20 ? '...' : ''}"`);
+      return { success: true, text, method: 'keyevents' };
+    } catch (error) {
+      console.error('[CanvasToolkit] Type failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * CDP Press special key with modifiers
+   */
+  async cdpPressKey(key, modifiers = {}, tabId) {
+    const { ctrl = false, alt = false, shift = false, meta = false } = modifiers;
+
+    let modifierFlags = 0;
+    if (alt) modifierFlags |= 1;
+    if (ctrl) modifierFlags |= 2;
+    if (meta) modifierFlags |= 4;
+    if (shift) modifierFlags |= 8;
+
+    const keyDefs = {
+      'Enter': { code: 'Enter', keyCode: 13 },
+      'Tab': { code: 'Tab', keyCode: 9 },
+      'Escape': { code: 'Escape', keyCode: 27 },
+      'Backspace': { code: 'Backspace', keyCode: 8 },
+      'Delete': { code: 'Delete', keyCode: 46 },
+      'ArrowUp': { code: 'ArrowUp', keyCode: 38 },
+      'ArrowDown': { code: 'ArrowDown', keyCode: 40 },
+      'ArrowLeft': { code: 'ArrowLeft', keyCode: 37 },
+      'ArrowRight': { code: 'ArrowRight', keyCode: 39 },
+      'a': { code: 'KeyA', keyCode: 65 },
+      'c': { code: 'KeyC', keyCode: 67 },
+      'v': { code: 'KeyV', keyCode: 86 },
+      'x': { code: 'KeyX', keyCode: 88 },
+      'z': { code: 'KeyZ', keyCode: 90 }
+    };
+
+    const keyDef = keyDefs[key] || { code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0) };
+
+    try {
+      await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyDown', key, code: keyDef.code,
+        windowsVirtualKeyCode: keyDef.keyCode,
+        modifiers: modifierFlags
+      });
+
+      await this._sleep(30);
+
+      await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyUp', key, code: keyDef.code,
+        windowsVirtualKeyCode: keyDef.keyCode,
+        modifiers: modifierFlags
+      });
+
+      const modStr = `${ctrl ? 'Ctrl+' : ''}${alt ? 'Alt+' : ''}${shift ? 'Shift+' : ''}${meta ? 'Meta+' : ''}`;
+      console.log(`[CanvasToolkit] Pressed: ${modStr}${key}`);
+      return { success: true, key, modifiers };
+    } catch (error) {
+      console.error('[CanvasToolkit] PressKey failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * CDP Scroll at position
+   */
+  async cdpScroll(x, y, deltaX, deltaY, tabId) {
+    try {
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x: Math.round(x), y: Math.round(y),
+        deltaX, deltaY
+      });
+
+      console.log(`[CanvasToolkit] Scroll at (${x}, ${y}) delta: (${deltaX}, ${deltaY})`);
+      return { success: true };
+    } catch (error) {
+      console.error('[CanvasToolkit] Scroll failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Smart Paste - Write to clipboard and paste
+   */
+  async smartPaste(x, y, contentType, payload, tabId) {
+    try {
+      console.log(`[CanvasToolkit] SmartPaste at (${x}, ${y}) type: ${contentType}`);
+
+      // 1. Click to focus
+      await this.cdpClick(x, y, {}, tabId);
+      await this._sleep(100);
+
+      // 2. Write to clipboard via page injection
+      await this._writeClipboard(contentType, payload, tabId);
+      await this._sleep(50);
+
+      // 3. Dispatch Ctrl+V
+      const isMac = await this._detectMac(tabId);
+      await this.cdpPressKey('v', { ctrl: !isMac, meta: isMac }, tabId);
+
+      console.log('[CanvasToolkit] SmartPaste completed');
+      return { success: true, x, y, contentType };
+    } catch (error) {
+      console.error('[CanvasToolkit] SmartPaste failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Write content to clipboard via page injection
+   */
+  async _writeClipboard(contentType, payload, tabId) {
+    const mimeTypes = {
+      'svg': 'image/svg+xml',
+      'html': 'text/html',
+      'text': 'text/plain'
+    };
+    const mimeType = mimeTypes[contentType] || 'text/plain';
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (mType, content) => {
+        try {
+          const blob = new Blob([content], { type: mType });
+          const items = { [mType]: blob };
+          if (mType !== 'text/plain') {
+            items['text/plain'] = new Blob([content], { type: 'text/plain' });
+          }
+          await navigator.clipboard.write([new ClipboardItem(items)]);
+          return { success: true };
+        } catch (err) {
+          // Fallback: execCommand
+          const textarea = document.createElement('textarea');
+          textarea.value = content;
+          textarea.style.cssText = 'position:fixed;opacity:0;';
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+          return { success: true, method: 'execCommand' };
+        }
+      },
+      args: [mimeType, payload]
+    });
+  },
+
+  /**
+   * Detect Mac OS
+   */
+  async _detectMac(tabId) {
+    try {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => navigator.platform.toLowerCase().includes('mac')
+      });
+      return result[0]?.result || false;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Generate flowchart SVG - smart multi-row layout
+   * Supports: linear, grid, tree layouts based on node count and edges
+   */
+  generateFlowchartSVG(nodes, edges, options = {}) {
+    const nodeWidth = options.nodeWidth || 140;
+    const nodeHeight = options.nodeHeight || 50;
+    const hSpacing = options.hSpacing || 80;
+    const vSpacing = options.vSpacing || 80;
+    const padding = options.padding || 40;
+    const maxPerRow = options.maxPerRow || 4; // Auto-wrap after this many nodes
+
+    // Color palette with more variety
+    const colors = {
+      start: { fill: '#10B981', stroke: '#059669', text: '#fff' },
+      end: { fill: '#EF4444', stroke: '#DC2626', text: '#fff' },
+      diamond: { fill: '#F59E0B', stroke: '#D97706', text: '#1F2937' },
+      decision: { fill: '#F59E0B', stroke: '#D97706', text: '#1F2937' },
+      circle: { fill: '#8B5CF6', stroke: '#7C3AED', text: '#fff' },
+      database: { fill: '#8B5CF6', stroke: '#7C3AED', text: '#fff' },
+      process: { fill: '#3B82F6', stroke: '#2563EB', text: '#fff' },
+      rect: { fill: '#3B82F6', stroke: '#2563EB', text: '#fff' },
+      io: { fill: '#EC4899', stroke: '#DB2777', text: '#fff' },
+      document: { fill: '#06B6D4', stroke: '#0891B2', text: '#fff' },
+      default: { fill: '#E5E7EB', stroke: '#6B7280', text: '#1F2937' }
+    };
+
+    // Calculate grid positions for each node
+    const nodePositions = [];
+    const numRows = Math.ceil(nodes.length / maxPerRow);
+
+    nodes.forEach((node, idx) => {
+      const row = Math.floor(idx / maxPerRow);
+      const col = idx % maxPerRow;
+      // Alternate row direction for snake-like flow
+      const actualCol = row % 2 === 0 ? col : (Math.min(nodes.length - row * maxPerRow, maxPerRow) - 1 - col);
+
+      nodePositions.push({
+        x: padding + actualCol * (nodeWidth + hSpacing),
+        y: padding + row * (nodeHeight + vSpacing),
+        row,
+        col: actualCol
+      });
+    });
+
+    // Calculate SVG dimensions
+    const maxCol = Math.min(nodes.length, maxPerRow);
+    const totalWidth = maxCol * (nodeWidth + hSpacing) - hSpacing + padding * 2;
+    const totalHeight = numRows * (nodeHeight + vSpacing) - vSpacing + padding * 2;
+
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="${totalHeight}" style="font-family: 'Segoe UI', Arial, sans-serif;">`;
+
+    // Definitions
+    svg += `<defs>
+      <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#64748B"/>
+      </marker>
+      <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="1" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.1"/>
+      </filter>
+      <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#FAFBFC"/>
+        <stop offset="100%" style="stop-color:#F1F5F9"/>
+      </linearGradient>
+    </defs>`;
+
+    // Background
+    svg += `<rect width="100%" height="100%" fill="url(#bgGrad)"/>`;
+
+    // Draw edges first (so they're behind nodes)
+    edges.forEach(edge => {
+      const fromPos = nodePositions[edge.from];
+      const toPos = nodePositions[edge.to];
+      if (!fromPos || !toPos) return;
+
+      const fromCenterX = fromPos.x + nodeWidth / 2;
+      const fromCenterY = fromPos.y + nodeHeight / 2;
+      const toCenterX = toPos.x + nodeWidth / 2;
+      const toCenterY = toPos.y + nodeHeight / 2;
+
+      // Determine connection points
+      let fromX, fromY, toX, toY;
+
+      if (fromPos.row === toPos.row) {
+        // Same row - horizontal arrow
+        if (fromPos.col < toPos.col) {
+          fromX = fromPos.x + nodeWidth;
+          toX = toPos.x;
+        } else {
+          fromX = fromPos.x;
+          toX = toPos.x + nodeWidth;
+        }
+        fromY = toY = fromCenterY;
+        svg += `<line x1="${fromX}" y1="${fromY}" x2="${toX - 8}" y2="${toY}" stroke="#64748B" stroke-width="2" marker-end="url(#arrowhead)"/>`;
+      } else {
+        // Different rows - use curved path
+        if (fromPos.row < toPos.row) {
+          fromY = fromPos.y + nodeHeight;
+          toY = toPos.y;
+        } else {
+          fromY = fromPos.y;
+          toY = toPos.y + nodeHeight;
+        }
+        fromX = fromCenterX;
+        toX = toCenterX;
+
+        // Draw curved arrow
+        const midY = (fromY + toY) / 2;
+        svg += `<path d="M ${fromX} ${fromY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${toY - 8}"
+          fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrowhead)"/>`;
+      }
+
+      // Add edge label if provided
+      if (edge.label) {
+        const labelX = (fromX + toX) / 2;
+        const labelY = (fromY + toY) / 2 - 5;
+        svg += `<text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="11" fill="#64748B">${edge.label}</text>`;
+      }
+    });
+
+    // Draw nodes
+    nodes.forEach((node, idx) => {
+      const pos = nodePositions[idx];
+      const colorScheme = colors[node.type] || colors.default;
+      const nx = pos.x;
+      const ny = pos.y;
+
+      // Draw node shape based on type
+      if (node.type === 'diamond' || node.type === 'decision') {
+        const cx = nx + nodeWidth / 2;
+        const cy = ny + nodeHeight / 2;
+        const halfW = nodeWidth / 2;
+        const halfH = nodeHeight / 2;
+        svg += `<polygon points="${cx},${ny} ${nx + nodeWidth},${cy} ${cx},${ny + nodeHeight} ${nx},${cy}"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else if (node.type === 'circle' || node.type === 'database') {
+        svg += `<ellipse cx="${nx + nodeWidth/2}" cy="${ny + nodeHeight/2}" rx="${nodeWidth/2}" ry="${nodeHeight/2}"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else if (node.type === 'start' || node.type === 'end') {
+        svg += `<rect x="${nx}" y="${ny}" width="${nodeWidth}" height="${nodeHeight}" rx="${nodeHeight/2}"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else if (node.type === 'io') {
+        // Parallelogram for I/O
+        const skew = 15;
+        svg += `<polygon points="${nx + skew},${ny} ${nx + nodeWidth},${ny} ${nx + nodeWidth - skew},${ny + nodeHeight} ${nx},${ny + nodeHeight}"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else if (node.type === 'document') {
+        // Document shape with wavy bottom
+        svg += `<path d="M ${nx} ${ny + 5} Q ${nx} ${ny}, ${nx + 5} ${ny} L ${nx + nodeWidth - 5} ${ny} Q ${nx + nodeWidth} ${ny}, ${nx + nodeWidth} ${ny + 5} L ${nx + nodeWidth} ${ny + nodeHeight - 10} Q ${nx + nodeWidth * 0.75} ${ny + nodeHeight - 5}, ${nx + nodeWidth * 0.5} ${ny + nodeHeight - 10} Q ${nx + nodeWidth * 0.25} ${ny + nodeHeight - 15}, ${nx} ${ny + nodeHeight - 10} Z"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else {
+        // Default rectangle with rounded corners
+        svg += `<rect x="${nx}" y="${ny}" width="${nodeWidth}" height="${nodeHeight}" rx="8"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      }
+
+      // Node label with text wrapping for long labels
+      const label = node.label || '';
+      const maxChars = Math.floor(nodeWidth / 8);
+      const displayLabel = label.length > maxChars ? label.substring(0, maxChars - 2) + '..' : label;
+
+      svg += `<text x="${nx + nodeWidth/2}" y="${ny + nodeHeight/2 + 5}"
+        text-anchor="middle" font-size="12" font-weight="500" fill="${colorScheme.text}">${displayLabel}</text>`;
+    });
+
+    svg += '</svg>';
+    return svg;
+  },
+
+  /**
+   * Generate table HTML
+   */
+  generateTableHTML(data, options = {}) {
+    const { headers = true, border = true } = options;
+
+    let html = '<table style="border-collapse: collapse;">';
+    data.forEach((row, rowIndex) => {
+      html += '<tr>';
+      row.forEach(cell => {
+        const tag = headers && rowIndex === 0 ? 'th' : 'td';
+        const style = border
+          ? 'border: 1px solid #ccc; padding: 8px; background: ' + (headers && rowIndex === 0 ? '#f0f0f0' : '#fff')
+          : 'padding: 8px;';
+        html += `<${tag} style="${style}">${cell}</${tag}>`;
+      });
+      html += '</tr>';
+    });
+    html += '</table>';
+    return html;
+  },
+
+  // Helpers
+  _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  },
+
+  _getKeyCode(char) {
+    const code = char.toUpperCase().charCodeAt(0);
+    if (code >= 65 && code <= 90) return `Key${char.toUpperCase()}`;
+    if (code >= 48 && code <= 57) return `Digit${char}`;
+    if (char === ' ') return 'Space';
+    return `Key${char}`;
+  }
+};
+
+// ===== Add Canvas Actions to AgentS.actions =====
+
+AgentS.actions.cdpClick = async function(x, y, options, tabId) {
+  try {
+    const result = await CanvasToolkit.cdpClick(x, y, options, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP clicked at (${x}, ${y})` });
+  } catch (error) {
+    // Fallback to regular click_at if CDP fails
+    console.warn('[cdpClick] CDP failed, falling back to click_at:', error.message);
+    try {
+      return await AgentS.actions.clickAtCoordinates(x, y, tabId);
+    } catch (fallbackError) {
+      return AgentS.createActionResult({ success: false, error: `CDP and fallback both failed: ${error.message}` });
+    }
+  }
+};
+
+AgentS.actions.cdpDoubleClick = async function(x, y, tabId) {
+  try {
+    await CanvasToolkit.cdpClick(x, y, { clickCount: 2 }, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP double-clicked at (${x}, ${y})` });
+  } catch (error) {
+    // Fallback: simulate double-click with two rapid clicks
+    console.warn('[cdpDoubleClick] CDP failed, falling back to double click_at:', error.message);
+    try {
+      await AgentS.actions.clickAtCoordinates(x, y, tabId);
+      await new Promise(r => setTimeout(r, 100));
+      return await AgentS.actions.clickAtCoordinates(x, y, tabId);
+    } catch (fallbackError) {
+      return AgentS.createActionResult({ success: false, error: `CDP and fallback both failed: ${error.message}` });
+    }
+  }
+};
+
+AgentS.actions.cdpRightClick = async function(x, y, tabId) {
+  try {
+    await CanvasToolkit.cdpClick(x, y, { button: 'right' }, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP right-clicked at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.cdpDrag = async function(startX, startY, endX, endY, options, tabId) {
+  try {
+    await CanvasToolkit.cdpDrag(startX, startY, endX, endY, options, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP dragged from (${startX}, ${startY}) to (${endX}, ${endY})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.cdpType = async function(text, options, tabId) {
+  try {
+    await CanvasToolkit.cdpType(text, options, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP typed: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"` });
+  } catch (error) {
+    // Fallback to send_keys if CDP fails
+    console.warn('[cdpType] CDP failed, falling back to send_keys:', error.message);
+    try {
+      return await AgentS.actions.sendKeys(text, tabId);
+    } catch (fallbackError) {
+      return AgentS.createActionResult({ success: false, error: `CDP and fallback both failed: ${error.message}` });
+    }
+  }
+};
+
+AgentS.actions.cdpPressKey = async function(key, modifiers, tabId) {
+  try {
+    await CanvasToolkit.cdpPressKey(key, modifiers, tabId);
+    const modStr = `${modifiers.ctrl ? 'Ctrl+' : ''}${modifiers.alt ? 'Alt+' : ''}${modifiers.shift ? 'Shift+' : ''}${modifiers.meta ? 'Meta+' : ''}`;
+    return AgentS.createActionResult({ success: true, message: `CDP pressed: ${modStr}${key}` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.cdpScroll = async function(x, y, deltaX, deltaY, tabId) {
+  try {
+    await CanvasToolkit.cdpScroll(x, y, deltaX, deltaY, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP scrolled at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.smartPaste = async function(x, y, contentType, payload, tabId) {
+  try {
+    await CanvasToolkit.smartPaste(x, y, contentType, payload, tabId);
+    return AgentS.createActionResult({ success: true, message: `Smart pasted ${contentType} at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.pasteSvg = async function(x, y, svg, tabId) {
+  try {
+    // Ensure SVG has namespace
+    let svgContent = svg;
+    if (!svgContent.includes('xmlns')) {
+      svgContent = svgContent.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    await CanvasToolkit.smartPaste(x, y, 'svg', svgContent, tabId);
+    return AgentS.createActionResult({ success: true, message: `Pasted SVG at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.pasteHtml = async function(x, y, html, tabId) {
+  try {
+    await CanvasToolkit.smartPaste(x, y, 'html', html, tabId);
+    return AgentS.createActionResult({ success: true, message: `Pasted HTML at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.pasteTable = async function(x, y, data, options, tabId) {
+  try {
+    const html = CanvasToolkit.generateTableHTML(data, options);
+    await CanvasToolkit.smartPaste(x, y, 'html', html, tabId);
+    return AgentS.createActionResult({ success: true, message: `Pasted table at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.pasteFlowchart = async function(x, y, nodes, edges, tabId) {
+  try {
+    const svg = CanvasToolkit.generateFlowchartSVG(nodes, edges);
+    await CanvasToolkit.smartPaste(x, y, 'svg', svg, tabId);
+    return AgentS.createActionResult({ success: true, message: `Pasted flowchart with ${nodes.length} nodes at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.drawShape = async function(toolX, toolY, startX, startY, endX, endY, tabId) {
+  try {
+    // 1. Click tool
+    await CanvasToolkit.cdpClick(toolX, toolY, {}, tabId);
+    await CanvasToolkit._sleep(100);
+    // 2. Drag to draw
+    await CanvasToolkit.cdpDrag(startX, startY, endX, endY, {}, tabId);
+    return AgentS.createActionResult({ success: true, message: `Drew shape from (${startX}, ${startY}) to (${endX}, ${endY})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+// Cleanup CDP on tab close
+chrome.tabs.onRemoved.addListener((tabId) => {
+  CanvasToolkit._sessions.delete(tabId);
+});
+
+console.log('[CanvasToolkit] Canvas actions registered');

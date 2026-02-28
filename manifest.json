@@ -16,7 +16,10 @@
     "storage",
     "debugger",
     "webNavigation",
-    "sidePanel"
+    "sidePanel",
+    "clipboardWrite",
+    "clipboardRead",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -54,7 +57,8 @@
       "resources": [
         "lib/buildDomTree.js",
         "lib/stateManager.js",
-        "lib/visualIndicator.js"
+        "lib/visualIndicator.js",
+        "lib/canvas-toolkit/*"
       ],
       "matches": ["<all_urls>"]
     }
