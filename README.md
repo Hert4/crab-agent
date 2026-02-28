@@ -31,7 +31,13 @@ This project runs with plain JavaScript and does not require a build step.
   - Ollama
 - Vision mode (send screenshots to the model).
 - Adaptive planner checks (interval + failure/loop/follow-up triggers).
+- Exploration guardrail policy to reduce blind repeated clicks.
 - Follow-up interrupt while running: users can send a new instruction during execution.
+- Task recording for each run (step trace + visual replay frames).
+- Replay export:
+  - Export last run as interactive HTML replay.
+  - Export last run as animated GIF replay.
+  - Export last run as teaching JSON record.
 - Image attachments in prompts:
   - Up to 4 images per message.
   - Up to 5 MB per image.
@@ -90,6 +96,7 @@ In the Settings panel:
 - `Model`: choose model per provider.
 - `Base URL`: used for OpenAI Compatible, Ollama, or custom endpoints.
 - `Use Vision`: enable or disable screenshot input.
+- `Task Recording`: enable or disable step recording and replay export.
 - `Max Steps`: max execution steps per task.
 - `Planning Interval`: base planner cadence (planner can run earlier on failures/loops/user updates).
 - `Allowed Domains`, `Blocked Domains`: currently stored in settings.
@@ -101,6 +108,7 @@ Runtime default values:
 - `useVision`: `true`
 - `maxSteps`: `100`
 - `planningInterval`: `3`
+- `enableTaskRecording`: `true`
 - `maxFailures`: `3`
 - `maxInputTokens`: `128000`
 
@@ -123,13 +131,20 @@ Technical note:
 
 ### 6.3 Cancel a Task
 
-- Click `Cancel` in the execution bar.
+- Click the primary `Stop` button (square icon) in the input area while a task is running.
 
 ### 6.4 Context Rules
 
 - Open the `CONTEXT RULES` tab.
 - Add rules by domain.
 - Matching rules are injected into context when tasks run on that domain.
+
+### 6.5 Export Replay and Teaching Record
+
+- Open `Settings` -> `Data`.
+- Click `Export Replay (HTML)` to download a visual replay of the latest task.
+- Click `Export Replay (GIF)` to download an animated replay for sharing.
+- Click `Export Teaching Record` to download the latest structured step trace JSON.
 
 ## 7. Supported Browser Actions
 
@@ -148,8 +163,32 @@ Technical note:
 - `scroll_to_top`
 - `scroll_to_bottom`
 - `scroll_to_text`
+- `find_text`
+- `zoom_page`
+- `get_accessibility_tree`
+- `javascript_tool` (generic `render`/`script` mode for full docs/charts/tables/flow diagrams, prefers native app API when available, plus `ops` mode for low-level canvas interaction)
 - `wait`
 - `done`
+
+### Canvas Toolkit Actions (CDP-based)
+
+For Canvas/WebGL apps (Figma, Miro, Canva, Excalidraw, Google Docs/Slides):
+
+| Action | Description |
+|--------|-------------|
+| `cdp_click` | Click at pixel coordinates via Chrome DevTools Protocol |
+| `cdp_double_click` | Double-click (for opening documents, editing text) |
+| `cdp_right_click` | Right-click / context menu |
+| `cdp_drag` | Drag from point A to B (for drawing shapes) |
+| `cdp_type` | Type text with Unicode/emoji support (uses clipboard) |
+| `cdp_press_key` | Press key with modifiers (Ctrl+V, etc.) |
+| `cdp_scroll` | Scroll at position |
+| `smart_paste` | Paste SVG/HTML/text into canvas via clipboard |
+| `paste_svg` | Paste custom SVG code (model writes the SVG) |
+| `paste_html` | Paste HTML content |
+| `paste_table` | Quick helper for tables |
+| `paste_flowchart` | Quick helper for flowcharts |
+| `draw_shape` | Click tool + drag to draw |
 
 ## 8. Local Data Storage
 
@@ -184,6 +223,12 @@ crab-agent/
 |- README.md
 |- lib/
 |  |- buildDomTree.js
+|  |- canvas-toolkit/          # NEW: Universal Canvas Interaction
+|     |- index.js              # Entry point
+|     |- cdp-interaction.js    # CDP mouse/keyboard simulation
+|     |- clipboard-paste.js    # Smart clipboard injection
+|     |- system-prompt.js      # Agent guidance for canvas apps
+|     |- offscreen/            # MV3 clipboard handling
 |- styles/
 |  |- main.css
 |- icons/
@@ -192,26 +237,69 @@ crab-agent/
 |  |- icon128.png
 ```
 
-## 11. Troubleshooting
+## 11. Canvas Toolkit (NEW)
 
-### 11.1 Missing API Key Error
+### Purpose
+
+Enables AI agent to interact with **any Canvas/WebGL application** (Figma, Miro, Canva, Excalidraw, Google Docs/Slides) that lacks traditional DOM elements.
+
+### Architecture
+
+1. **CDP Native Interaction** (`cdp-interaction.js`)
+   - Hardware-level mouse/keyboard simulation via Chrome DevTools Protocol
+   - Bypasses JavaScript event listeners, works on any canvas
+   - Functions: `cdp_click`, `cdp_drag`, `cdp_type`, `cdp_press_key`
+
+2. **Universal Clipboard Paste** (`clipboard-paste.js`)
+   - Writes SVG/HTML/text to clipboard, then simulates Ctrl+V
+   - Most canvas apps render pasted SVG/HTML beautifully
+   - Functions: `smart_paste`, `paste_svg`, `paste_html`
+
+3. **Agent Workflow**
+   ```
+   Screenshot → Analyze UI (toolbar, canvas) → Choose approach:
+   ├── Native tools: cdp_click on tool → cdp_drag to draw
+   ├── Custom SVG: Model writes SVG → paste_svg
+   └── Quick helpers: paste_flowchart, paste_table
+   ```
+
+### Key Features
+
+- **Model-driven design**: Agent decides layout, colors, shapes
+- **Unicode/emoji support**: Uses clipboard paste instead of key-by-key typing
+- **Auto-fallback**: CDP fails → falls back to DOM-based actions
+- **Multi-row flowcharts**: Auto-wraps nodes, supports curved arrows
+- **SVG reference in prompt**: Agent knows rect, circle, path, marker syntax
+
+### Error Handling
+
+| Error | Handling |
+|-------|----------|
+| CDP attach fails | Reuses existing debugger session |
+| CDP command timeout | Increased to 5s, falls back to click_at |
+| Unicode typing fails | Uses clipboard paste method |
+| Canvas app not responding | Falls back to DOM-based input_text |
+
+## 12. Troubleshooting
+
+### 12.1 Missing API Key Error
 
 - Check the current provider.
 - If you are not using local Ollama, provide a valid API key.
 
-### 11.2 Agent Clicks the Wrong Element
+### 12.2 Agent Clicks the Wrong Element
 
 - Enable Vision.
 - Use less ambiguous prompts.
 - Send follow-up instructions to clarify the latest target.
 
-### 11.3 Task Stops After Repeated Failures
+### 12.3 Task Stops After Repeated Failures
 
 - Increase `Max Steps` for longer workflows.
 - Check whether the page layout/DOM changes too quickly.
 - Try a stronger reasoning model.
 
-### 11.4 Task History Is Too Large
+### 12.4 Task History Is Too Large
 
 - Search tasks.
 - Delete selected tasks or clear all history.

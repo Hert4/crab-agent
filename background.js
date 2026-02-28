@@ -9,6 +9,419 @@
  */
 
 // ============================================================================
+// STATE MANAGER (Inline for MV3 compatibility)
+// ============================================================================
+
+const StateManagerConfig = {
+  MAX_FAILED_ACTIONS: 20,
+  DUPLICATE_ACTION_THRESHOLD: 3,
+  STATE_HISTORY_SIZE: 50
+};
+
+class StateManager {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.stateHistory = [];
+    this.failedActions = [];
+    this.actionPatterns = new Map();
+    this.currentState = null;
+    this.stats = {
+      totalActions: 0,
+      successfulActions: 0,
+      failedActions: 0,
+      loopsDetected: 0,
+      stateUnchangedCount: 0
+    };
+  }
+
+  captureState(url, domHash, viewportInfo = {}) {
+    return {
+      url,
+      domHash,
+      scrollY: viewportInfo.scrollY || 0,
+      timestamp: Date.now(),
+      signature: `${url}|${domHash}|${viewportInfo.scrollY || 0}`
+    };
+  }
+
+  recordPreActionState(url, domHash, viewportInfo = {}) {
+    this.currentState = this.captureState(url, domHash, viewportInfo);
+    return this.currentState;
+  }
+
+  checkStateChanged(url, domHash, viewportInfo = {}) {
+    if (!this.currentState) return true;
+    const newState = this.captureState(url, domHash, viewportInfo);
+    const changed = this.currentState.url !== newState.url ||
+                    this.currentState.domHash !== newState.domHash ||
+                    Math.abs((this.currentState.scrollY || 0) - (newState.scrollY || 0)) > 50;
+
+    if (!changed) {
+      this.stats.stateUnchangedCount++;
+    } else {
+      this.stats.stateUnchangedCount = 0;
+    }
+
+    this.stateHistory.push({ before: this.currentState, after: newState, changed });
+    if (this.stateHistory.length > StateManagerConfig.STATE_HISTORY_SIZE) {
+      this.stateHistory.shift();
+    }
+    return changed;
+  }
+
+  buildActionKey(actionName, params) {
+    const safeParams = this.sanitizeParams(params);
+    return `${actionName}:${JSON.stringify(safeParams)}`;
+  }
+
+  sanitizeParams(params) {
+    if (!params || typeof params !== 'object') return params;
+    const sanitized = {};
+    for (const [key, value] of Object.entries(params)) {
+      if (/time|date|timestamp/i.test(key)) continue;
+      if (typeof value === 'string' && value.length > 100) {
+        sanitized[key] = value.slice(0, 100);
+      } else {
+        sanitized[key] = value;
+      }
+    }
+    return sanitized;
+  }
+
+  recordActionResult(actionName, params, success, details = '') {
+    this.stats.totalActions++;
+    if (success) {
+      this.stats.successfulActions++;
+    } else {
+      this.stats.failedActions++;
+    }
+
+    const actionKey = this.buildActionKey(actionName, params);
+
+    if (!success) {
+      this.failedActions.push({
+        action: actionName,
+        params: this.sanitizeParams(params),
+        details,
+        timestamp: Date.now(),
+        key: actionKey
+      });
+      if (this.failedActions.length > StateManagerConfig.MAX_FAILED_ACTIONS) {
+        this.failedActions.shift();
+      }
+    }
+
+    const currentCount = this.actionPatterns.get(actionKey) || 0;
+    this.actionPatterns.set(actionKey, currentCount + 1);
+
+    if (this.actionPatterns.get(actionKey) >= StateManagerConfig.DUPLICATE_ACTION_THRESHOLD) {
+      this.stats.loopsDetected++;
+    }
+  }
+
+  isActionBlocked(actionName, params) {
+    const actionKey = this.buildActionKey(actionName, params);
+    const count = this.actionPatterns.get(actionKey) || 0;
+
+    if (count >= StateManagerConfig.DUPLICATE_ACTION_THRESHOLD) {
+      return { blocked: true, reason: `Action repeated ${count} times without success` };
+    }
+
+    const recentFailed = this.failedActions.slice(-5).filter(a => a.key === actionKey);
+    if (recentFailed.length >= 2) {
+      return { blocked: true, reason: 'Action failed multiple times recently' };
+    }
+
+    return { blocked: false };
+  }
+
+  getWarningBlock() {
+    const warnings = [];
+
+    if (this.failedActions.length > 0) {
+      const recentFailed = this.failedActions.slice(-5);
+      const failedSummary = recentFailed
+        .map(a => `• ${a.action}(${JSON.stringify(a.params || {}).slice(0, 40)}) → ${a.details || 'failed'}`)
+        .join('\n');
+      warnings.push(
+        `[FAILED ACTIONS WARNING]\nThese actions failed recently. DO NOT repeat them:\n${failedSummary}\nTry: different element index, scroll, hover, or keyboard navigation.`
+      );
+    }
+
+    const repeatedActions = [];
+    for (const [key, count] of this.actionPatterns.entries()) {
+      if (count >= StateManagerConfig.DUPLICATE_ACTION_THRESHOLD - 1) {
+        repeatedActions.push({ key, count });
+      }
+    }
+    if (repeatedActions.length > 0) {
+      warnings.push(
+        `[LOOP DETECTION WARNING]\nYou are repeating similar actions without progress.\nStrategies: scroll, hover_element, click different element, use send_keys.`
+      );
+    }
+
+    if (this.stats.stateUnchangedCount >= 3) {
+      warnings.push(
+        `[STATE UNCHANGED WARNING]\nPage state has not changed after ${this.stats.stateUnchangedCount} actions.\nYour clicks may not be hitting the intended targets.`
+      );
+    }
+
+    return warnings.join('\n\n');
+  }
+
+  resetPatterns() {
+    this.actionPatterns.clear();
+    this.stats.stateUnchangedCount = 0;
+  }
+}
+
+// ============================================================================
+// VISUAL STATE TRACKER (Before/After Screenshot Comparison)
+// ============================================================================
+
+class VisualStateTracker {
+  constructor() {
+    this.previousScreenshot = null;
+    this.previousDomHash = null;
+    this.previousUrl = null;
+    this.comparisonHistory = [];
+  }
+
+  reset() {
+    this.previousScreenshot = null;
+    this.previousDomHash = null;
+    this.previousUrl = null;
+    this.comparisonHistory = [];
+  }
+
+  captureBeforeState(screenshot, domHash, url) {
+    this.previousScreenshot = screenshot;
+    this.previousDomHash = domHash;
+    this.previousUrl = url;
+  }
+
+  compareWithCurrent(currentScreenshot, currentDomHash, currentUrl) {
+    const result = {
+      hasBefore: !!this.previousScreenshot,
+      beforeScreenshot: this.previousScreenshot,
+      afterScreenshot: currentScreenshot,
+      domChanged: this.previousDomHash !== currentDomHash,
+      urlChanged: this.previousUrl !== currentUrl,
+      likelyNoChange: false
+    };
+
+    // If we have both screenshots and DOM didn't change, likely no visual change
+    if (result.hasBefore && !result.domChanged && !result.urlChanged) {
+      result.likelyNoChange = true;
+    }
+
+    // Store comparison
+    this.comparisonHistory.push({
+      timestamp: Date.now(),
+      domChanged: result.domChanged,
+      urlChanged: result.urlChanged
+    });
+
+    // Keep only last 10 comparisons
+    if (this.comparisonHistory.length > 10) {
+      this.comparisonHistory.shift();
+    }
+
+    return result;
+  }
+
+  getNoChangeStreak() {
+    let streak = 0;
+    for (let i = this.comparisonHistory.length - 1; i >= 0; i--) {
+      if (!this.comparisonHistory[i].domChanged && !this.comparisonHistory[i].urlChanged) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
+}
+
+let globalVisualTracker = null;
+
+function getVisualTracker() {
+  if (!globalVisualTracker) {
+    globalVisualTracker = new VisualStateTracker();
+    console.log('[Crab-Agent] VisualStateTracker initialized');
+  }
+  return globalVisualTracker;
+}
+
+// ============================================================================
+// CRAB PERSONALITY SYSTEM
+// ============================================================================
+
+const CrabPersonality = {
+  // Response templates by mood
+  moods: {
+    greeting: [
+      '🦀 Ê!', '🦀 Yoo!', '🦀 Hehe, chào nha!', '🦀 Hi hi!'
+    ],
+    success: [
+      '✅ Xong rồi nè!', '✅ Được luôn!', '✅ Ez game!', '✅ Okela!',
+      '🦀 Done nha!', '🦀 Xử xong rồi!'
+    ],
+    thinking: [
+      '🤔 Để cua xem...', '💭 Hmm...', '🦀 Coi coi...', '🦀 Wait tí...'
+    ],
+    failed: [
+      '😅 Lỗi rồi, thử lại nha', '🦀 Oops, không được', '😬 Fail rồi...',
+      '🦀 Hông được, thử cách khác nha'
+    ],
+    confused: [
+      '❓ Cua chưa hiểu lắm...', '🦀 Giải thích thêm được không?',
+      '🤔 Ý bạn là sao nhỉ?', '❓ Cần thêm info nha'
+    ],
+    asking: [
+      '🦀 Cua hỏi tí nha:', '❓ Cho cua hỏi:', '🤔 Này này:'
+    ],
+    suggesting: [
+      '💡 Cua gợi ý nè:', '🦀 Hay là:', '💭 Cua nghĩ:'
+    ],
+    working: [
+      '🦀 Đang làm...', '⚡ On it!', '🦀 Chờ tí nha...'
+    ]
+  },
+
+  // Pick random from array
+  pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  },
+
+  // Detect user's style from message
+  detectStyle(message) {
+    if (!message) return 'friendly';
+    const lower = message.toLowerCase();
+
+    // Casual Vietnamese
+    if (/\b(ê|ơi|nha|nè|đi|luôn|hen|ha|á|ạ|nhé)\b/.test(lower)) return 'casual';
+    // Formal
+    if (/\b(please|could you|would you|kindly|xin|vui lòng)\b/.test(lower)) return 'formal';
+    // Short commands
+    if (message.length < 30 && /^(click|go|open|search|type|send)/i.test(lower)) return 'brief';
+
+    return 'friendly';
+  },
+
+  // Format response based on mood and style
+  format(text, mood = 'success', userStyle = 'friendly') {
+    const prefix = this.pick(this.moods[mood] || this.moods.success);
+
+    // Simplify technical terms for non-formal styles
+    let simplified = text;
+    if (userStyle !== 'formal') {
+      simplified = simplified
+        .replace(/element\s*\d+/gi, 'cái đó')
+        .replace(/clicked?\s*(on\s*)?/gi, 'bấm ')
+        .replace(/navigat(ed|ing)\s*(to)?/gi, 'chuyển đến ')
+        .replace(/successfully/gi, '')
+        .replace(/\[effect:[^\]]+\]/gi, '')
+        .replace(/\[trusted\]/gi, '')
+        .replace(/at\s*\(\d+,\s*\d+\)/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    // For brief style, keep it very short
+    if (userStyle === 'brief' && simplified.length > 50) {
+      simplified = simplified.substring(0, 47) + '...';
+    }
+
+    return `${prefix} ${simplified}`.trim();
+  },
+
+  // Format ask_user response
+  formatQuestion(question, options = []) {
+    const prefix = this.pick(this.moods.asking);
+    let formatted = `${prefix}\n${question}`;
+
+    if (options && options.length > 0) {
+      formatted += '\n\n' + options.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
+    }
+
+    return formatted;
+  },
+
+  // Format suggest_rule response
+  formatSuggestion(rule, reason = '') {
+    const prefix = this.pick(this.moods.suggesting);
+    let formatted = `${prefix}\n"${rule}"`;
+
+    if (reason) {
+      formatted += `\n\n(${reason})`;
+    }
+
+    formatted += '\n\n👆 Thêm rule này vào Context Rules không?';
+
+    return formatted;
+  }
+};
+
+// Store detected user style for session
+let sessionUserStyle = 'friendly';
+
+function updateUserStyle(userMessage) {
+  sessionUserStyle = CrabPersonality.detectStyle(userMessage);
+}
+
+function formatCrabResponse(text, mood = 'success') {
+  return CrabPersonality.format(text, mood, sessionUserStyle);
+}
+
+// ============================================================================
+// STATE MANAGEMENT INTEGRATION
+// ============================================================================
+
+let globalStateManager = null;
+
+function getStateManager() {
+  if (!globalStateManager) {
+    globalStateManager = new StateManager();
+    console.log('[Crab-Agent] StateManager initialized');
+  }
+  return globalStateManager;
+}
+
+function getStateWarnings() {
+  const sm = getStateManager();
+  return sm ? sm.getWarningBlock() : '';
+}
+
+function recordActionForLoop(actionName, params, success, details = '') {
+  const sm = getStateManager();
+  if (sm) sm.recordActionResult(actionName, params, success, details);
+}
+
+function shouldBlockAction(actionName, params) {
+  const sm = getStateManager();
+  return sm ? sm.isActionBlocked(actionName, params) : { blocked: false };
+}
+
+function recordPreState(url, domHash, viewportInfo = {}) {
+  const sm = getStateManager();
+  return sm ? sm.recordPreActionState(url, domHash, viewportInfo) : null;
+}
+
+function checkStateChange(url, domHash, viewportInfo = {}) {
+  const sm = getStateManager();
+  return sm ? sm.checkStateChanged(url, domHash, viewportInfo) : true;
+}
+
+function resetStatePatterns() {
+  const sm = getStateManager();
+  if (sm) sm.resetPatterns();
+}
+
+// ============================================================================
 // PROMPTS SYSTEM
 // ============================================================================
 
@@ -64,10 +477,25 @@ You will receive:
 - Optional screenshot
 
 # Screenshot Guidance
+- IMPORTANT: Screenshot has Set-of-Mark (SoM) overlay with numbered labels matching DOM indices.
+- Element indices visible in screenshot (colored boxes with numbers) correspond to [index] in DOM list.
 - When both screenshot and DOM are available, you MUST cross-validate BOTH before every click decision.
-- Use click_element when the target exists in DOM and has a valid [index].
+
+## CRITICAL: click_element vs click_at Decision
+- **ALWAYS use click_element(index)** when the target element has a visible SoM label (numbered box) in the screenshot.
+- **NEVER use click_at** when click_element is possible - click_at is ONLY for elements WITHOUT SoM labels.
+- If you see a numbered label on/near your target in the screenshot, you MUST use click_element with that index.
+- click_at is a FALLBACK only when: DOM is empty, element has no index, or SoM label is missing.
+
+## Matching SoM Labels to Elements
+- Look at the colored box around the target element in screenshot
+- Read the number on that box (e.g., "233")
+- Use that exact number: {"click_element": {"index": 233}}
+- Do NOT guess coordinates - use the index from the SoM label
+
 - If screenshot and DOM conflict (wrong location/text/index), do not click blindly; reassess with scroll/wait/retry.
 - CRITICAL NO-DOM RULE: If DOM is missing/empty, you MUST use click_at with pixel coordinates from screenshot.
+- click_at coordinates are in CSS pixels (viewport coordinates), NOT physical pixels.
 - In NO-DOM situations, NEVER invent/guess an index for click_element or input_text.
 - For text input with NO-DOM/no index: click_at the input area first, then use send_keys to type and submit.
 - When multiple nearby elements have similar meaning (e.g., Folder vs Group, Search vs Message input, Settings vs More menu):
@@ -98,18 +526,28 @@ NEVER decide based only on:
 - Always use [index] for click_element and input_text.
 - You can only interact with currently visible elements from the current observation.
 
-# Output Structure (JSON ONLY)
+# Output Structure (JSON ONLY - Chain of Thought REQUIRED)
 {
-  "task_mode": "direct_response|browser_action",
+  "thought": {
+    "observation": "What I see on the current page (elements, state, layout)",
+    "visual_reasoning": "Analyze UI structure: What visual cues indicate interactivity (icons, colors, borders)? What spatial relationships suggest hierarchy (headers, panels, nested areas)? What universal symbols do I see (arrows←→, X, ☰, ⚙)?",
+    "analysis": "Analysis of current state vs goal, identify gaps",
+    "plan": "Why I'm choosing this specific action"
+  },
   "current_state": {
-    "evaluation_previous_goal": "Success|Failed|Unknown - MUST verify screenshot for visual evidence (e.g., if clicked call button, is call window visible? if not, mark as Failed)",
-    "memory": "Track as checklist: 'Task: <goal> | [✓] step1 done [✓] step2 done [ ] step3 pending [ ] step4 pending' - mark each sub-step explicitly",
+    "evaluation_previous_goal": "Success|Failed|Unknown - MUST verify screenshot for visual evidence",
+    "memory": "Track as checklist: 'Task: <goal> | [✓] done [ ] pending'",
     "next_goal": "next immediate objective"
   },
   "action": [
     {"one_action_name": {"param": "value"}}
   ]
 }
+
+CRITICAL: The "thought" field is MANDATORY and MUST come FIRST.
+- "visual_reasoning" is REQUIRED: analyze what you SEE, not what you assume
+- Think step-by-step: observe → analyze visually → plan → act
+- Use visual_reasoning to explain WHY you're clicking a specific element based on what it looks like
 
 # Action Rules
 1. Only one action can be provided at once
@@ -118,14 +556,20 @@ NEVER decide based only on:
 4. Use done as the final action once task is complete
 5. If task_mode is "direct_response", action MUST be exactly one done action and MUST NOT include browser actions.
 6. Before outputting any click action, mentally simulate whether the screenshot visually changes after that click. If the expected UI change is unclear, reassess target.
-7. PRE-DONE VERIFICATION: Before using done, replay the ENTIRE user request and verify your memory checklist - are ALL steps marked [✓]? If user said "do X WITH Y", did you actually do BOTH X and Y? If any step is [ ] pending, complete it first. Searching/typing a name is NOT the same as selecting/clicking it.
-8. SUBMIT BUTTON RULE: Before clicking submit/add/create/save buttons, verify your memory - if ANY step is [ ] pending, you MUST complete it FIRST. Do NOT click submit with pending steps. Look at screenshot to VISUALLY confirm selections (checkmarks, highlights, selected state) before submitting.
-9. LIST SELECTION: To select items in lists, click the ROW TEXT directly (not empty checkbox elements). If row click doesn't work, use click_at with coordinates left of the text.
-10. MENU ITEM SELECTION: When clicking items in dropdown menus:
+7. **PRE-CLICK COORDINATE VALIDATION for admin/settings tasks (delete, edit, settings, collapse icons)**:
+   - BEFORE clicking, check viewport from DOM header [Viewport: WxH] and state in thought: "Target x=[X], viewport width=[W], ratio=[X/W]"
+   - For collapse/panel icons: x MUST be > 70% of viewport width
+   - For settings/admin in chat apps: target should be in RIGHT zone (x > 60% of viewport)
+   - If x < 50% of viewport width and you're looking for collapse/settings, STOP - you're clicking WRONG AREA
+   - **NEVER click on <img> elements in CENTER zone (20-70% of viewport) for admin tasks - those are chat images!**
+8. PRE-DONE VERIFICATION: Before using done, replay the ENTIRE user request and verify your memory checklist - are ALL steps marked [✓]? If user said "do X WITH Y", did you actually do BOTH X and Y? If any step is [ ] pending, complete it first. Searching/typing a name is NOT the same as selecting/clicking it.
+9. SUBMIT BUTTON RULE: Before clicking submit/add/create/save buttons, verify your memory - if ANY step is [ ] pending, you MUST complete it FIRST. Do NOT click submit with pending steps. Look at screenshot to VISUALLY confirm selections (checkmarks, highlights, selected state) before submitting.
+10. LIST SELECTION: To select items in lists, click the ROW TEXT directly (not empty checkbox elements). If row click doesn't work, use click_at with coordinates left of the text.
+11. MENU ITEM SELECTION: When clicking items in dropdown menus:
    - Check the [item N/M] ordinal in DOM - it shows position from top (item 1 = top, item 7 = bottom)
    - Cross-validate with screenshot: count menu items from top to verify target position
    - Use y-coordinate in @(x,y): HIGHER y = LOWER on screen. If target is near bottom of menu, y should be larger.
-11. NESTED/CASCADING MENUS - USE KEYBOARD NAVIGATION:
+12. NESTED/CASCADING MENUS - USE KEYBOARD NAVIGATION:
    - Click coordinates often WRONG for menu items - use KEYBOARD instead:
      1. Click to open the menu (File)
      2. send_keys: "ArrowDown" to move down menu items
@@ -134,23 +578,132 @@ NEVER decide based only on:
      5. send_keys: "Enter" to select the highlighted item
 
 # Available Actions
+
+## ELEMENT-BASED (PREFERRED - use element [index] from DOM):
+- click_element: {"click_element": {"index": 5}} // HIGH PRIORITY - use index from DOM list
+- hover_element: {"hover_element": {"index": 5}} // Trigger dropdowns/tooltips before clicking
+- input_text: {"input_text": {"index": 3, "text": "hello"}}
+
+## NAVIGATION:
 - search_google: {"search_google": {"query": "search terms"}}
 - go_to_url: {"go_to_url": {"url": "https://example.com"}}
 - go_back: {"go_back": {}}
-- click_element: {"click_element": {"index": 5}} // low priority 
-- click_at: {"click_at": {"x": 500, "y": 300}} // REQUIRED when DOM/index is unavailable or hard to use click_element, high priority; use screen pixel coordinates from screenshot (not index numbers)
-- input_text: {"input_text": {"index": 3, "text": "hello"}}
-- send_keys: {"send_keys": {"keys": "Enter"}} // Also supports: ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Escape, Tab
+
+## KEYBOARD:
+- send_keys: {"send_keys": {"keys": "Enter"}} // Supports: Enter, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Escape, Tab
+
+## TAB MANAGEMENT:
 - switch_tab: {"switch_tab": {"tab_id": 123}}
 - open_tab: {"open_tab": {"url": "https://example.com"}}
 - close_tab: {"close_tab": {"tab_id": 123}}
-- scroll_down: {"scroll_down": {}}
-- scroll_up: {"scroll_up": {}}
+
+## SCROLLING:
+- scroll_down: {"scroll_down": {}} // Scroll main page down
+- scroll_up: {"scroll_up": {}} // Scroll main page up
 - scroll_to_top: {"scroll_to_top": {}}
 - scroll_to_bottom: {"scroll_to_bottom": {}}
 - scroll_to_text: {"scroll_to_text": {"text": "target"}}
-- wait: {"wait": {"seconds": 2}} // always use this if the task requires loading page content, waiting for dynamic content, or pausing before next action or waiting for check the screenshot
+- scroll_element: {"scroll_element": {"index": 5, "direction": "down"}} // Scroll INSIDE a specific panel/container (e.g., sidebar, modal). direction: "up" or "down"
+
+## UTILITIES:
+- wait: {"wait": {"seconds": 2}}
+- wait_for_element: {"wait_for_element": {"selector": ".my-class", "timeout": 5000}}
+- wait_for_stable: {"wait_for_stable": {"timeout": 2000}} // Wait for DOM to stop changing
+- find_text: {"find_text": {"text": "Settings", "max_results": 8, "scroll_to_first": true}} // Search text and interactive labels in page content
+- zoom_page: {"zoom_page": {"mode": "in", "step": 0.1}} // mode: "in" | "out" | "reset", or set {"level": 1.25} / {"percent": 125}
+- get_accessibility_tree: {"get_accessibility_tree": {"mode": "interactive", "max_depth": 6}} // mode: "interactive" or "all", optional ref_id root
 - done: {"done": {"text": "final answer", "success": true}}
+  **RESPONSE STYLE**: Write "text" in natural, friendly language for the user:
+  - Do NOT mention: URL parameters, DOM elements, technical implementation details
+  - Keep it short and human-friendly
+
+## CANVAS / ADVANCED INTERACTION:
+
+### PRIORITY ORDER for Canvas Apps (Excalidraw, Figma, Miro, Canva, Google Docs):
+1. **FIRST TRY: Canvas Toolkit** (cdp_drag, paste_flowchart, smart_paste) - MOST RELIABLE
+2. **FALLBACK: javascript_tool** - Only if Canvas Toolkit doesn't work
+
+IMPORTANT: For drawing diagrams/flowcharts on canvas apps, ALWAYS try Canvas Toolkit FIRST:
+- paste_flowchart: Instant flowchart with nodes and arrows
+- cdp_drag: Click tool then drag to draw shapes
+- smart_paste: Paste SVG/HTML directly into canvas
+
+## CANVAS TOOLKIT (Universal Canvas/WebGL Interaction via CDP) - USE THIS FIRST!
+For ANY Canvas/WebGL app (Figma, Miro, Canva, Google Docs, etc.) that lacks DOM elements:
+
+### CDP Native Interaction (Hardware-level simulation):
+- cdp_click: {"cdp_click": {"x": 500, "y": 300}} // Click at pixel coordinates
+- cdp_double_click: {"cdp_double_click": {"x": 500, "y": 300}} // Double click - USE THIS to open documents from Google Docs home!
+- cdp_right_click: {"cdp_right_click": {"x": 500, "y": 300}} // Right click / context menu
+- cdp_drag: {"cdp_drag": {"startX": 100, "startY": 100, "endX": 300, "endY": 200}} // Drag from A to B (for drawing shapes)
+- cdp_type: {"cdp_type": {"text": "Hello World"}} // Type text character by character
+- cdp_press_key: {"cdp_press_key": {"key": "v", "modifiers": {"ctrl": true}}} // Press key with modifiers (Ctrl+V, etc.)
+- cdp_scroll: {"cdp_scroll": {"x": 500, "y": 300, "deltaX": 0, "deltaY": -100}} // Scroll at position
+
+### Smart Paste (Inject SVG/HTML into Canvas) - YOU CONTROL THE DESIGN:
+- smart_paste: {"smart_paste": {"x": 500, "y": 300, "contentType": "svg", "payload": "<svg>...</svg>"}}
+  contentType: "svg" | "html" | "text"
+
+- paste_svg: {"paste_svg": {"x": 500, "y": 300, "svg": "YOUR_CUSTOM_SVG_CODE"}}
+  **YOU write the SVG** - full creative control! SVG reference:
+  - Rectangle: <rect x="0" y="0" width="100" height="50" rx="5" fill="#3B82F6" stroke="#1D4ED8"/>
+  - Circle: <circle cx="50" cy="50" r="40" fill="#10B981"/>
+  - Ellipse: <ellipse cx="50" cy="30" rx="50" ry="30" fill="#8B5CF6"/>
+  - Diamond: <polygon points="50,0 100,50 50,100 0,50" fill="#F59E0B"/>
+  - Line: <line x1="0" y1="0" x2="100" y2="100" stroke="#333" stroke-width="2"/>
+  - Arrow: <line ... marker-end="url(#arrow)"/> with <marker id="arrow"><polygon points="0 0,10 5,0 10"/></marker>
+  - Path: <path d="M0 0 L100 0 L100 100 Z" fill="#EC4899"/> (M=move, L=line, C=curve, Z=close)
+  - Text: <text x="50" y="30" text-anchor="middle" font-size="14">Label</text>
+  - Group: <g transform="translate(100,50)">...elements...</g>
+
+  Example - Custom diagram YOU design:
+  {"paste_svg": {"x": 300, "y": 200, "svg": "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='400'><defs><marker id='arr' markerWidth='10' markerHeight='7' refX='9' refY='3.5' orient='auto'><polygon points='0 0,10 3.5,0 7' fill='#333'/></marker></defs><rect x='50' y='50' width='120' height='60' rx='8' fill='#3B82F6'/><text x='110' y='85' text-anchor='middle' fill='#fff' font-size='14'>Step 1</text><line x1='170' y1='80' x2='230' y2='80' stroke='#333' stroke-width='2' marker-end='url(#arr)'/><rect x='240' y='50' width='120' height='60' rx='8' fill='#10B981'/><text x='300' y='85' text-anchor='middle' fill='#fff' font-size='14'>Step 2</text></svg>"}}
+
+- paste_html: {"paste_html": {"x": 500, "y": 300, "html": "<table>...</table>"}}
+  **YOU write the HTML** - for tables, formatted text, etc.
+
+- paste_table: {"paste_table": {"x": 500, "y": 300, "data": [["H1","H2"],["A","B"]], "options": {"headers": true}}}
+  Quick helper for simple tables
+
+- paste_flowchart: {"paste_flowchart": {"x": 500, "y": 300, "nodes": [...], "edges": [...]}}
+  Quick helper for flowcharts. Node types: start, end, rect, decision, database, io, document
+
+### Draw Shape (Select tool + drag):
+- draw_shape: {"draw_shape": {"toolX": 50, "toolY": 100, "startX": 200, "startY": 200, "endX": 400, "endY": 350}}
+  First clicks tool at (toolX, toolY), then drags on canvas from (startX, startY) to (endX, endY)
+
+### Canvas Workflow - YOU DECIDE HOW TO DRAW:
+1. **Screenshot** - Analyze the canvas app UI (toolbar, canvas area, available tools)
+2. **Choose your approach:**
+   - **Native tools**: cdp_click on tool button -> cdp_drag on canvas (for apps like Excalidraw, Figma)
+   - **Custom SVG**: Write your own SVG code -> paste_svg (full creative control, works everywhere)
+   - **Quick helpers**: paste_flowchart, paste_table (for common diagrams)
+3. **Screenshot** - Verify result
+
+### Design Tips for YOUR SVG/diagrams:
+- Layout: Plan positions (x,y) for each element, use consistent spacing
+- Colors: Use a color palette (e.g., blue=#3B82F6, green=#10B981, red=#EF4444)
+- Arrows: Define <marker> in <defs>, then use marker-end="url(#markerID)"
+- Shadows: Use <filter> with feDropShadow for depth
+- Multi-row: Position elements at different y values for vertical layouts
+- Branching: Use <path> with curves (C command) for non-straight connections
+
+YOU are the designer - analyze what the user wants and create the best visual representation!
+
+## JAVASCRIPT_TOOL (FALLBACK - only if Canvas Toolkit fails):
+- javascript_tool: Use ONLY when Canvas Toolkit actions don't work
+  - RENDER mode: {"javascript_tool":{"mode":"render","markdown":"# Report"}}
+  - OPS mode: {"javascript_tool":{"mode":"ops","operations":[{"op":"drag","from":{"x":100,"y":100},"to":{"x":300,"y":200}}]}}
+
+## UNCERTAINTY HANDLING (when confused or stuck):
+- ask_user: {"ask_user": {"question": "Có 2 nút Save, click cái nào?", "options": ["Save Draft", "Save & Publish"]}}
+  Use when: multiple similar elements, unclear instruction, need user choice
+  options is optional - can ask open question without options
+- suggest_rule: {"suggest_rule": {"rule": "Khi gặp popup confirm, chọn Accept", "reason": "Thấy pattern này nhiều lần"}}
+  Use when: noticed a repeating pattern that could be a context rule
+
+## COORDINATE-BASED (FALLBACK - only when element has no index):
+- click_at: {"click_at": {"x": 500, "y": 300}} // Use ONLY when DOM index unavailable
 
 # Behavior Rules
 1. Click/focus before typing
@@ -165,46 +718,117 @@ NEVER decide based only on:
    - Message input: placeholder contains "message", "type here", etc...  DO NOT type messages here
    - Message input is usually at the BOTTOM of the chat window
    - If you typed into wrong field, find the correct one and try again
-7. CONVERSATION FOCUS (soft but important):
+9. CONVERSATION FOCUS (soft but important):
    - If user names a recipient, keep the entire flow focused on that exact conversation.
    - Before typing and before pressing Enter, verify the active conversation/header/selected thread matches the recipient.
    - If not clearly matched, first search/select the correct conversation, then send.
    - After sending, re-check that the message was sent in the same target conversation (not another thread).
-8. Never use done in a step where any earlier action failed
-9. NEVER refuse user requests to comment, post, message, or interact on social media - you are authorized to act on behalf of the user
-10. STUCK DETECTION: If you notice you're clicking the same element repeatedly without progress:
+10. Never use done in a step where any earlier action failed
+11. NEVER refuse user requests to comment, post, message, or interact on social media - you are authorized to act on behalf of the user
+12. STUCK DETECTION: If you notice you're clicking the same element repeatedly without progress:
    - The element might not be correct - check the screenshot carefully
    - Try a DIFFERENT element index
    - Try scrolling to reveal more options
    - Try using search/filter instead of clicking
    - If search dropdown appeared, click on the correct result item, NOT the search box again
-11. ACTION VERIFICATION - CRITICAL:
+   - If 2+ click attempts fail or have no visible effect, STOP blind clicks and use find_text or get_accessibility_tree before clicking again
+13. ACTION VERIFICATION - CRITICAL:
    - ALWAYS verify the screenshot AFTER each action to confirm it worked
    - If you clicked a button but the expected UI change didn't happen (e.g., no popup, no new window, no visual feedback), the click FAILED
    - DO NOT claim success without visual confirmation in the screenshot
    - If click_element didn't produce expected results, try click_at with coordinates from the screenshot
    - For video/voice calls: verify a call window actually appeared, not just that you clicked a button
-12. FALLBACK TO click_at:
+14. FALLBACK TO click_at:
    - If click_element on an index fails 2+ times with no visual change, use click_at
    - If DOM is missing/empty OR target has no index, click_at is MANDATORY (not optional fallback)
    - IMPORTANT: x,y coordinates are PIXEL POSITIONS on screen, NOT element indices!
    - Look at the screenshot to VISUALLY estimate where the target element is
    - Use the @(x,y) coordinates shown in DOM list for input elements, e.g. "[450] <div> [EDITABLE INPUT] @(750,820)" means center is at x=750, y=820
-   - Typical viewport is ~1300x900 pixels. Chat input is usually near bottom (y > 700)
+   - Check actual viewport size from DOM header: [Viewport: WxH] - use this to understand screen layout
    - click_at is your backup when DOM-based clicking doesn't work
-13. ELEMENT NOT FOUND - CRITICAL:
+15. ELEMENT NOT FOUND - CRITICAL:
    - If you get "Element X not found", the DOM has changed - DO NOT retry same index
-   - WARNING: The element INDEX (e.g. 1020) is NOT the same as x,y COORDINATES!
-   - Look at the DOM list for elements with @(x,y) coordinates, e.g. "@(750,820)" means x=750, y=820
-   - Or look at the screenshot bounding boxes to estimate pixel position visually
-   - For chat/messaging: the input field is usually at BOTTOM of chat window (y > 700), look for "Aa" placeholder
-14. MESSAGING APPS (Facebook Messenger, Zalo, etc.):
-   - Message input field: Look for element with [EDITABLE INPUT] tag, role="textbox", or placeholder like "Aa", "Enter a message"
-   - The input is usually a <div> with contenteditable, NOT a regular <input>
-   - Click on the input field FIRST (use click_at on center of input area if click_element fails)
-   - THEN use input_text or type with send_keys
-   - After typing, press Enter or click send button
-15. Do not output reasoning in JSON. Output structured fields only.
+16. CANVAS APPS (Excalidraw, Figma, Miro, Canva, Google Docs/Slides) - CRITICAL:
+   - **YOU are the designer** - analyze what user wants and choose the best approach:
+     a) Use app's native tools: cdp_click on toolbar -> cdp_drag to draw
+     b) Write custom SVG: paste_svg with your own SVG code (most flexible)
+     c) Use quick helpers: paste_flowchart, paste_table (for standard diagrams)
+   - Consider layout, colors, spacing - make it look professional!
+   - For complex custom diagrams, write your own SVG code - you have full control
+17. GOOGLE DOCS HOME PAGE - CRITICAL:
+   - To open a document from Google Docs home page, you need to DOUBLE-CLICK on the document thumbnail
+   - If single click doesn't open document, try: go_to_url with the direct document URL
+   - Or click on document name text (not thumbnail), which sometimes works better
+   - If stuck, create NEW document: click "Tài liệu trống" (Blank document) template
+18. CDP TIMEOUT HANDLING:
+   - If cdp_click or cdp_type fails with timeout, try regular click_at or input_text instead
+   - Google Docs may show debugger warning - this can cause CDP commands to timeout
+   - Fallback to DOM-based actions when CDP fails
+## VISUAL ANALYSIS PRINCIPLES (General - apply to ALL UI situations)
+
+16. UNDERSTAND UI THROUGH VISUAL REASONING:
+   Instead of memorizing specific patterns, ANALYZE what you see:
+
+   a) IDENTIFY INTERACTIVE ELEMENTS by visual cues:
+      - Buttons: colored backgrounds, borders, rounded corners, hover states
+      - Links: underlined text, different color (usually blue)
+      - Icons: small symbols that suggest action (arrows, X, gear, hamburger ☰)
+      - Input fields: rectangular areas with borders or placeholder text
+
+   b) UNDERSTAND SPATIAL HIERARCHY:
+      - Headers/toolbars: top of page/panel, contain navigation and actions
+      - Sidebars/panels: left or right edge, can be opened/closed
+      - Main content: center area, usually largest
+      - Footers/input areas: bottom of page/panel
+
+   c) RECOGNIZE UNIVERSAL SYMBOLS:
+      - ← or < : back, close, collapse (go to previous state)
+      - → or > : forward, expand, open (go to next state)
+      - X or × : close, delete, remove
+      - ☰ (hamburger) : menu
+      - ⚙ (gear) : settings
+      - ⋮ or ... : more options menu
+      - + : add, create new
+      - 🔍 : search
+
+17. MULTI-STEP INTERACTIONS:
+   - Opening something (dropdown, panel, modal) is step 1 - you still need to interact with what opened
+   - After any click, ALWAYS check the new screenshot to see what appeared/changed
+   - The NEW elements have NEW indices - don't use old indices for new UI
+   - If something opened then closed unexpectedly, the action may have toggled - try again
+
+18. SELF-EXPLORATION BEFORE ASKING:
+   When unsure how to proceed:
+   1. SCROLL to reveal more context (maybe the button is off-screen)
+   2. HOVER on elements to see tooltips or expanded states
+   3. Look for VISUAL CUES - icons, colors, text hints
+   4. Try a DIFFERENT APPROACH - keyboard shortcuts, alternative paths
+   5. After 2-3 attempts, use ask_user with specific question about what you tried
+
+   NEVER give up without exploring. NEVER assume without visual evidence.
+
+19. VISUAL VERIFICATION:
+   - ALWAYS verify screenshot AFTER each action
+   - If UI didn't change as expected → action may have failed, try different approach
+   - If [BEFORE/AFTER COMPARISON] images look identical → definitely failed
+   - If new elements appeared → action succeeded, identify next target
+
+20. COORDINATES vs INDICES:
+   - Element INDEX (e.g. 233) is for click_element - use the number from SoM label
+   - COORDINATES (e.g. x=750, y=820) are pixel positions for click_at
+   - INDEX ≠ COORDINATES - never confuse them
+
+21. INPUT FIELDS:
+   - Usually at BOTTOM of chat windows or in form areas
+   - Look for: [EDITABLE INPUT], role="textbox", placeholder text like "Aa", "Type here"
+   - CLICK to focus FIRST, then type
+   - After typing, press Enter or click submit button
+
+22. SCROLLING - choose the right action:
+   - scroll_down/scroll_up: scroll the MAIN PAGE
+   - scroll_element: scroll INSIDE a specific panel, sidebar, modal, or container
+   - If you need to see more content in a SIDE PANEL (like conversation info, settings panel), use scroll_element with an element index from that panel
+   - Visual cue: if the content is inside a bordered/separated area, it's likely a scrollable container
 </system_instructions>
 `,
 
@@ -226,7 +850,7 @@ You receive:
 - Current task/objective
 - Interactive elements list: [index] <tag> attributes "text"
 - Previous action results
-- Optional screenshot
+- Screenshot with SoM (Set-of-Mark) labels - numbered boxes matching element indices
 
 ## AVAILABLE ACTIONS
 
@@ -252,6 +876,7 @@ You receive:
 ### Completion:
 - done: {"done": {"text": "result message", "success": true}}
 - wait: {"wait": {"seconds": 2}}
+- javascript_tool: {"javascript_tool": {"mode": "render", "flow": {"nodes": ["Client", "API", "DB"], "edges": [{"from": "n1", "to": "n2"}, {"from": "n2", "to": "n3"}]}}}
 
 ## RESPONSE FORMAT (JSON only)
 {
@@ -274,7 +899,8 @@ You receive:
 6. Be patient - complex tasks may need multiple steps
 7. Only use "done" when task is truly complete or impossible
 8. Check clearly the all information through screenshot image and DOM before making decisions
-
+9. For DELETE/EDIT/SETTINGS: Look for menu icons (...) or settings icons (⚙) in header/nav area - NOT on content/images
+10. Priority using cdp tools for canvas/webgl apps (Figma, Miro, Canva, Google Docs) - use click_at only if cdp fails or unavailable but you need to confirm with user first before using click_at for canvas apps
 ## VIEWING IMAGE/MEDIA FILES
 When the browser displays a raw image file (png, jpg, etc.):
 - Use the screenshot/vision to analyze the image content
@@ -292,13 +918,19 @@ If the user's request is a simple greeting or question that doesn't require brow
 `,
 
   navigatorExample: {
+    thought: {
+      observation: "Page shows a chat app with sidebar on left, main chat in center, and a panel on right with '< Quản lý nhóm' header",
+      visual_reasoning: "The '<' symbol at the top-left of the right panel is a universal back/close indicator. It's positioned like a navigation element in the header. Clicking it should close this panel.",
+      analysis: "User wants to close this panel. The visual cue '< Title' pattern indicates a back button.",
+      plan: "Click on element 228 which contains the '<' back arrow to close the panel"
+    },
     current_state: {
       evaluation_previous_goal: "N/A - first action",
-      memory: "",
-      next_goal: "Click on the search input field to focus it"
+      memory: "Task: close panel | [ ] find close button [✓] identified '< Quản lý nhóm' as back button",
+      next_goal: "Click the back button to close the panel"
     },
     action: [
-      { click_element: { index: 0 } }
+      { click_element: { index: 228 } }
     ]
   },
 
@@ -385,7 +1017,7 @@ Field relationships:
     ].join(' ');
   },
 
-  buildNavigatorUserMessage(task, pageState, actionResults, memory, contextRules, tabContext = null, currentStep = null, maxSteps = null, conversationFocus = null) {
+  buildNavigatorUserMessage(task, pageState, actionResults, memory, contextRules, tabContext = null, currentStep = null, maxSteps = null, conversationFocus = null, stateWarnings = null) {
     const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
     const currentTab = tabContext?.currentTab || { id: null, url: pageState.url || '', title: pageState.title || '' };
     const otherTabs = (tabContext?.openTabs || [])
@@ -397,14 +1029,21 @@ Field relationships:
     const quotedText = quotedMatch ? String(quotedMatch[1] || '').trim() : '';
     const exactMessageHint = quotedText ? `Send this quoted message exactly as written: "${quotedText}".` : '';
 
-    let message = `# Goal:\n${task}\n\n`;
+    let message = `# Goal:\n<user_request>\n${task}\n</user_request>\n\n`;
 
     message += `# Observation of current step:\n`;
     message += `Note: [index] is the unique numeric identifier at the beginning of each element line.\n`;
     message += `Always use [index] for index-based actions.\n`;
-    message += `<nano_untrusted_content>\n`;
+    message += `Elements marked [Obstructed] are covered by overlays.\n`;
+    message += `Elements marked [EDITABLE INPUT] can receive text input.\n`;
+    message += `<elements>\n`;
     message += `${pageState.textRepresentation || 'No interactive elements found. Try waiting or scrolling one page.'}\n`;
-    message += `</nano_untrusted_content>\n\n`;
+    message += `</elements>\n\n`;
+
+    // Add state warnings from loop detection
+    if (stateWarnings) {
+      message += `# ⚠️ WARNINGS (READ CAREFULLY):\n${stateWarnings}\n\n`;
+    }
 
     if (contextRules) {
       message += `# Context rules:\n${contextRules}\n\n`;
@@ -412,7 +1051,7 @@ Field relationships:
 
     message += `# History of interaction with the task:\n`;
     if (actionResults) {
-      message += `- Last action: ${actionResults.success ? 'SUCCESS' : 'FAILED'} - ${actionResults.message || actionResults.error || 'no details'}\n`;
+      message += `- Last action: ${actionResults.success ? '✓ SUCCESS' : '✗ FAILED'} - ${actionResults.message || actionResults.error || 'no details'}\n`;
     } else {
       message += `- First step, no previous action result\n`;
     }
@@ -429,10 +1068,20 @@ Field relationships:
 
     message += `# Action space reminder:\n`;
     message += `Only one action can be provided at once.\n`;
-    message += `Use one of: search_google, go_to_url, go_back, click_element, click_at, input_text, send_keys, switch_tab, open_tab, close_tab, scroll_down, scroll_up, scroll_to_top, scroll_to_bottom, scroll_to_text, wait, done.\n\n`;
-    message += `# Output format:\n`;
-    message += `Return valid JSON only with keys: task_mode, current_state, action.\n`;
-    message += `Do not include reasoning fields in JSON.`;
+    message += `PREFERRED: click_element, hover_element, input_text (use element index)\n`;
+    message += `FALLBACK: click_at (use only when element has no index)\n`;
+    message += `NAVIGATION: search_google, go_to_url, go_back, switch_tab, open_tab, close_tab\n`;
+    message += `KEYBOARD: send_keys (Enter, ArrowDown, ArrowUp, Escape, Tab)\n`;
+    message += `SCROLL: scroll_down, scroll_up, scroll_to_text, scroll_element (for panels/sidebars)\n`;
+    message += `CANVAS/ADVANCED: javascript_tool (render/script for docs/charts/flow diagrams via native app API when available; ops for low-level drag/wheel/shortcut only). For draw-flow requests: use render.flow/diagram, not markdown, and do not use ops to draw.\n`;
+    message += `UTILITY: wait, wait_for_element, wait_for_stable, find_text, zoom_page, get_accessibility_tree, done\n\n`;
+    message += `# Output format (JSON with Chain of Thought):\n`;
+    message += `{\n`;
+    message += `  "thought": {"observation": "...", "analysis": "...", "plan": "..."},\n`;
+    message += `  "current_state": {"evaluation_previous_goal": "...", "memory": "...", "next_goal": "..."},\n`;
+    message += `  "action": [{"action_name": {...}}]\n`;
+    message += `}\n`;
+    message += `The "thought" field is REQUIRED - think before acting.`;
 
     return message;
   },
@@ -506,6 +1155,19 @@ Field relationships:
 
   validateNavigatorResponse(response) {
     if (!response || typeof response !== 'object') return { valid: false, error: 'Not an object' };
+
+    // Ensure thought exists (Chain of Thought)
+    if (!response.thought) {
+      response.thought = {
+        observation: 'No explicit thought provided',
+        analysis: 'Proceeding with action',
+        plan: 'Execute specified action'
+      };
+    } else {
+      // Log thought for debugging
+      console.log('[CoT] Model thought:', JSON.stringify(response.thought).slice(0, 200));
+    }
+
     // Be more lenient - current_state is optional
     if (!response.action) {
       // Try to find action in different formats
@@ -556,6 +1218,8 @@ Field relationships:
     // Ensure current_state exists
     if (!response.current_state) {
       response.current_state = {
+        evaluation_previous_goal: 'Unknown',
+        memory: '',
         next_goal: response.task_mode === 'direct_response' ? 'respond directly' : 'executing action'
       };
     }
@@ -644,58 +1308,187 @@ const AgentS = {
     const params = action[actionName];
     console.log(`Executing action: ${actionName}`, params);
 
+    // Check if action should be blocked (loop detection)
+    const blockCheck = shouldBlockAction(actionName, params);
+    if (blockCheck.blocked) {
+      console.warn(`[Loop Prevention] Action blocked: ${actionName}`, blockCheck.reason);
+      const result = AgentS.createActionResult({
+        success: false,
+        error: `Action blocked by loop prevention: ${blockCheck.reason}. Try a different approach.`
+      });
+      recordActionForLoop(actionName, params, false, 'blocked_by_loop_prevention');
+      return result;
+    }
+
+    // Record pre-action state for change detection
+    recordPreState(pageState?.url, pageState?.domHash, pageState?.viewportInfo);
+
+    let result;
     try {
       switch (actionName) {
         case 'search_google':
-          return await AgentS.actions.searchGoogle(params.query, tabId);
+          result = await AgentS.actions.searchGoogle(params.query, tabId);
+          resetStatePatterns(); // Reset on navigation
+          break;
         case 'go_to_url':
-          return await AgentS.actions.goToUrl(params.url, tabId);
+          result = await AgentS.actions.goToUrl(params.url, tabId);
+          resetStatePatterns(); // Reset on navigation
+          break;
         case 'go_back':
-          return await AgentS.actions.goBack(tabId);
+          result = await AgentS.actions.goBack(tabId);
+          resetStatePatterns(); // Reset on navigation
+          break;
         case 'click_element':
-          return await AgentS.actions.clickElement(params.index, tabId);
+          result = await AgentS.actions.clickElement(params.index, tabId);
+          break;
+        case 'hover_element':
+          result = await AgentS.actions.hoverElement(params.index, tabId);
+          break;
         case 'click_at':
-          return await AgentS.actions.clickAtCoordinates(
-            params.x,
-            params.y,
-            tabId
-          );
+          result = await AgentS.actions.clickAtCoordinates(params.x, params.y, tabId);
+          break;
         case 'click_text':
-          return await AgentS.actions.clickText(params.text, tabId);
+          result = await AgentS.actions.clickText(params.text, tabId);
+          break;
         case 'input_text':
-          return await AgentS.actions.inputText(params.index, params.text, tabId);
+          result = await AgentS.actions.inputText(params.index, params.text, tabId);
+          break;
         case 'send_keys':
-          return await AgentS.actions.sendKeys(params.keys, tabId);
+          result = await AgentS.actions.sendKeys(params.keys, tabId);
+          break;
         case 'switch_tab':
-          return await AgentS.actions.switchTab(params.tab_id);
+          result = await AgentS.actions.switchTab(params.tab_id);
+          break;
         case 'open_tab':
-          return await AgentS.actions.openTab(params.url);
+          result = await AgentS.actions.openTab(params.url);
+          resetStatePatterns(); // Reset on new tab
+          break;
         case 'close_tab':
-          return await AgentS.actions.closeTab(params.tab_id);
+          result = await AgentS.actions.closeTab(params.tab_id);
+          break;
         case 'scroll_down':
-          return await AgentS.actions.scroll('down', tabId);
+          result = await AgentS.actions.scroll('down', tabId);
+          break;
         case 'scroll_up':
-          return await AgentS.actions.scroll('up', tabId);
+          result = await AgentS.actions.scroll('up', tabId);
+          break;
         case 'scroll_to_top':
-          return await AgentS.actions.scroll('top', tabId);
+          result = await AgentS.actions.scroll('top', tabId);
+          break;
         case 'scroll_to_bottom':
-          return await AgentS.actions.scroll('bottom', tabId);
+          result = await AgentS.actions.scroll('bottom', tabId);
+          break;
         case 'scroll_to_text':
-          return await AgentS.actions.scrollToText(params.text, tabId);
-        case 'done':
-          return AgentS.createActionResult({
-            isDone: true, success: params.success !== false,
-            extractedContent: params.text, message: params.text
+          result = await AgentS.actions.scrollToText(params.text, tabId);
+          break;
+        case 'scroll_element':
+          result = await AgentS.actions.scrollElement(params.index, params.direction || 'down', tabId);
+          break;
+        case 'find_text':
+          result = await AgentS.actions.findText(params.text, tabId, params);
+          break;
+        case 'zoom_page':
+          result = await AgentS.actions.zoomPage(params, tabId);
+          break;
+        case 'get_accessibility_tree':
+          result = await AgentS.actions.getAccessibilityTree(params, tabId);
+          break;
+        case 'wait_for_element':
+          result = await AgentS.actions.waitForElement(params.selector, params.timeout || 5000, tabId);
+          break;
+        case 'wait_for_stable':
+          result = await AgentS.actions.waitForDomStable(params.timeout || 2000, tabId);
+          break;
+        case 'javascript_tool':
+          result = await AgentS.actions.javascriptTool(params || {}, tabId);
+          break;
+        case 'ask_user':
+          // New action: Ask user for clarification
+          result = AgentS.createActionResult({
+            isDone: false,
+            success: true,
+            isAskUser: true,
+            question: params.question || 'Cần thêm thông tin',
+            options: params.options || [],
+            message: CrabPersonality.formatQuestion(params.question, params.options)
           });
+          break;
+        case 'suggest_rule':
+          // New action: Suggest a context rule to user
+          result = AgentS.createActionResult({
+            isDone: false,
+            success: true,
+            isSuggestRule: true,
+            rule: params.rule || '',
+            reason: params.reason || '',
+            message: CrabPersonality.formatSuggestion(params.rule, params.reason)
+          });
+          break;
+        case 'done':
+          // Apply crab personality to response
+          const doneText = params.text || '';
+          const mood = params.success !== false ? 'success' : 'failed';
+          const formattedText = formatCrabResponse(doneText, mood);
+          result = AgentS.createActionResult({
+            isDone: true, success: params.success !== false,
+            extractedContent: formattedText, message: formattedText
+          });
+          break;
         case 'wait':
           await new Promise(resolve => setTimeout(resolve, (params.seconds || 2) * 1000));
-          return AgentS.createActionResult({ success: true, message: `Waited ${params.seconds || 2}s` });
+          result = AgentS.createActionResult({ success: true, message: `Waited ${params.seconds || 2}s` });
+          break;
+        // ===== CANVAS TOOLKIT ACTIONS =====
+        case 'cdp_click':
+          result = await AgentS.actions.cdpClick(params.x, params.y, params.options || {}, tabId);
+          break;
+        case 'cdp_double_click':
+          result = await AgentS.actions.cdpDoubleClick(params.x, params.y, tabId);
+          break;
+        case 'cdp_right_click':
+          result = await AgentS.actions.cdpRightClick(params.x, params.y, tabId);
+          break;
+        case 'cdp_drag':
+          result = await AgentS.actions.cdpDrag(params.startX, params.startY, params.endX, params.endY, params.options || {}, tabId);
+          break;
+        case 'cdp_type':
+          result = await AgentS.actions.cdpType(params.text, params.options || {}, tabId);
+          break;
+        case 'cdp_press_key':
+          result = await AgentS.actions.cdpPressKey(params.key, params.modifiers || {}, tabId);
+          break;
+        case 'cdp_scroll':
+          result = await AgentS.actions.cdpScroll(params.x, params.y, params.deltaX, params.deltaY, tabId);
+          break;
+        case 'smart_paste':
+          result = await AgentS.actions.smartPaste(params.x, params.y, params.contentType, params.payload, tabId);
+          break;
+        case 'paste_svg':
+          result = await AgentS.actions.pasteSvg(params.x, params.y, params.svg, tabId);
+          break;
+        case 'paste_html':
+          result = await AgentS.actions.pasteHtml(params.x, params.y, params.html, tabId);
+          break;
+        case 'paste_table':
+          result = await AgentS.actions.pasteTable(params.x, params.y, params.data, params.options || {}, tabId);
+          break;
+        case 'paste_flowchart':
+          result = await AgentS.actions.pasteFlowchart(params.x, params.y, params.nodes, params.edges, tabId);
+          break;
+        case 'draw_shape':
+          result = await AgentS.actions.drawShape(params.toolX, params.toolY, params.startX, params.startY, params.endX, params.endY, tabId);
+          break;
         default:
-          return AgentS.createActionResult({ success: false, error: `Unknown action: ${actionName}` });
+          result = AgentS.createActionResult({ success: false, error: `Unknown action: ${actionName}` });
       }
     } catch (error) {
-      return AgentS.createActionResult({ success: false, error: error.message });
+      result = AgentS.createActionResult({ success: false, error: error.message });
     }
+
+    // Record action result for loop detection
+    recordActionForLoop(actionName, params, result?.success || false, result?.message || result?.error || '');
+
+    return result;
   },
 
   actions: {
@@ -946,7 +1739,7 @@ const AgentS = {
           targetEl.dispatchEvent(new MouseEvent('mousedown', eventOptions));
           targetEl.dispatchEvent(new MouseEvent('mouseup', eventOptions));
           targetEl.dispatchEvent(new MouseEvent('click', eventOptions));
-          if (typeof targetEl.click === 'function') targetEl.click();
+          // REMOVED: targetEl.click() was causing double-click that closes dropdowns
 
           let effectBits = collectEffects(targetEl, baseline);
           for (let i = 0; i < 4 && effectBits.length === 0; i++) {
@@ -997,11 +1790,10 @@ const AgentS = {
       let trustedError = null;
       const isAnchorLikePreRetry = String(baseResult.tag || '').toLowerCase() === 'a';
       const hasStrongEffectPreRetry = effectBits.includes('url') || effectBits.includes('state');
-      const domOnlyLowSignalPreRetry = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      // Only retry if NO effect at all - don't retry if DOM changed (would close dropdown!)
       const shouldRetryWithTrusted =
         effectBits.length === 0 ||
-        (isAnchorLikePreRetry && !hasStrongEffectPreRetry) ||
-        domOnlyLowSignalPreRetry;
+        (isAnchorLikePreRetry && !hasStrongEffectPreRetry && !effectBits.includes('dom'));
 
       if (shouldRetryWithTrusted) {
         // Recalculate coordinates and verify no overlay element blocks the target
@@ -1133,8 +1925,9 @@ const AgentS = {
       const effectLabel = effectBits.join('+') || 'none';
       const isAnchorLike = String(baseResult.tag || '').toLowerCase() === 'a';
       const anchorHasStrongEffect = effectBits.includes('url') || effectBits.includes('state');
-      // Disabled: was causing false negatives - any DOM change is valid
-      const domOnlyLowSignal = false;
+      // DOM-only changes are ambiguous - could be real (dropdown) or noise (hover)
+      // Don't auto-fail, let model check screenshot. Only fail if NO mutations at all.
+      const domOnlyLowSignal = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta === 0;
       await new Promise(r => setTimeout(r, 350));
       if (isAnchorLike && !anchorHasStrongEffect) {
         const href = String(baseResult.href || '').trim();
@@ -1180,9 +1973,17 @@ const AgentS = {
           message: noEffectMsg
         });
       }
+
+      // Warn if only DOM changed - might be a dropdown that needs follow-up click
+      let dropdownWarning = '';
+      const isOnlyDomChange = effectBits.length === 1 && effectBits[0] === 'dom';
+      if (isOnlyDomChange) {
+        dropdownWarning = ' [WARNING: Only DOM changed - a dropdown/menu may have appeared. Check screenshot for new menu items to click!]';
+      }
+
       return AgentS.createActionResult({
         success: true,
-        message: `Clicked element ${safeIndex} <${baseResult.tag || ''}> "${baseResult.text || ''}" at (${baseResult.clickX}, ${baseResult.clickY}) [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}`
+        message: `Clicked element ${safeIndex} <${baseResult.tag || ''}> "${baseResult.text || ''}" at (${baseResult.clickX}, ${baseResult.clickY}) [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${dropdownWarning}`
       });
     },
 
@@ -1270,9 +2071,14 @@ const AgentS = {
           const vh = window.innerHeight;
           const dpr = window.devicePixelRatio || 1;
           const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-          // Don't scale - screenshot and DOM coordinates are already in CSS pixels
+
+          // Coordinates should be in CSS pixels (viewport coordinates)
+          // Do NOT scale - model should give CSS pixel coordinates
+          // If click_at is used, it's because element has no SoM index
           const baseX = clamp(Math.round(clickX), 0, Math.max(0, vw - 1));
           const baseY = clamp(Math.round(clickY), 0, Math.max(0, vh - 1));
+
+          console.log(`[clickAt] Coords: (${clickX}, ${clickY}) -> (${baseX}, ${baseY}) viewport: ${vw}x${vh} dpr: ${dpr}`);
 
           // Get all elements at this point (stacking order, topmost first)
           const elementsAtPoint = document.elementsFromPoint(baseX, baseY);
@@ -1344,8 +2150,7 @@ const AgentS = {
             clickedElements.push((el.tagName || '').toLowerCase());
           }
 
-          // Also try native click on the best target
-          if (typeof target.click === 'function') target.click();
+          // REMOVED: target.click() was causing double-click that closes dropdowns
 
           let effectBits = collectEffects(target, baseline);
           for (let i = 0; i < 4 && effectBits.length === 0; i++) {
@@ -1366,20 +2171,39 @@ const AgentS = {
               }
             }
           }
+
           const ariaLabel = target.getAttribute?.('aria-label') || '';
           const href = tagName === 'a'
             ? String(target.getAttribute?.('href') || target.href || '')
             : '';
           const targetId = target.id ? `#${target.id}` : '';
+          const targetClass = (target.className || '').toString().slice(0, 100);
           const pageHost = window.location.hostname;
+
+          // Collect parent context (up to 3 levels)
+          const parentContext = [];
+          let parent = target.parentElement;
+          for (let i = 0; i < 3 && parent && parent !== document.body; i++) {
+            const pTag = (parent.tagName || '').toLowerCase();
+            const pId = parent.id ? `#${parent.id}` : '';
+            const pClass = (parent.className || '').toString().split(' ').slice(0, 3).join('.');
+            const pRole = parent.getAttribute?.('role') || '';
+            parentContext.push(`${pTag}${pId}${pClass ? '.' + pClass : ''}${pRole ? '[' + pRole + ']' : ''}`);
+            parent = parent.parentElement;
+          }
+
           return {
             success: true,
             baseX,
             baseY,
+            vw,
+            vh,
             dpr,
             pageHost,
             targetTag: tagName,
             targetId,
+            targetClass,
+            parentContext,
             clickedElements,
             effectBits,
             baseline,
@@ -1403,11 +2227,10 @@ const AgentS = {
       let trustedError = null;
       const isAnchorLikePreRetry = String(baseResult.targetTag || '').toLowerCase() === 'a';
       const hasStrongEffectPreRetry = effectBits.includes('url') || effectBits.includes('state');
-      const domOnlyLowSignalPreRetry = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta < 5;
+      // Only retry if NO effect at all - don't retry if DOM changed (would close dropdown!)
       const shouldRetryWithTrusted =
         effectBits.length === 0 ||
-        (isAnchorLikePreRetry && !hasStrongEffectPreRetry) ||
-        domOnlyLowSignalPreRetry;
+        (isAnchorLikePreRetry && !hasStrongEffectPreRetry && !effectBits.includes('dom'));
 
       if (shouldRetryWithTrusted) {
         const trusted = await AgentS.actions.dispatchTrustedClick(tabId, baseResult.baseX, baseResult.baseY);
@@ -1480,8 +2303,9 @@ const AgentS = {
       const effectLabel = effectBits.join('+') || 'none';
       const isAnchorLike = String(baseResult.targetTag || '').toLowerCase() === 'a';
       const anchorHasStrongEffect = effectBits.includes('url') || effectBits.includes('state');
-      // Disabled: was causing false negatives - any DOM change is valid
-      const domOnlyLowSignal = false;
+      // DOM-only changes are ambiguous - could be real (dropdown) or noise (hover)
+      // Don't auto-fail, let model check screenshot. Only fail if NO mutations at all.
+      const domOnlyLowSignal = effectBits.length === 1 && effectBits[0] === 'dom' && mutationDelta === 0;
       await new Promise(r => setTimeout(r, 250));
       if (isAnchorLike && !anchorHasStrongEffect) {
         const href = String(baseResult.href || '').trim();
@@ -1537,9 +2361,24 @@ const AgentS = {
       if (isLikelyContainer) {
         containerWarning = ' [WARNING: Clicked on CONTAINER, not menu item. Use coordinates of the specific ITEM text]';
       }
+
+      // Warn if only DOM changed - might be a dropdown that needs follow-up click
+      let dropdownWarning = '';
+      const isOnlyDomChange = effectBits.length === 1 && effectBits[0] === 'dom';
+      if (isOnlyDomChange && !containerWarning) {
+        dropdownWarning = ' [WARNING: Only DOM changed - a dropdown/menu may have appeared. Check screenshot for new menu items to click!]';
+      }
+
+      // Build context info for model to evaluate
+      const parentCtx = (baseResult.parentContext || []).join(' > ') || 'none';
+      const targetClass = baseResult.targetClass ? ` class="${baseResult.targetClass.slice(0, 50)}"` : '';
+      const vw = baseResult.vw || 0;
+      const vh = baseResult.vh || 0;
+      const posInfo = vw ? ` [pos:${baseResult.baseX}/${vw},${baseResult.baseY}/${vh}]` : '';
+
       return AgentS.createActionResult({
         success: true,
-        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${targetId}> clicked:[${(baseResult.clickedElements || []).join(',')}] [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${containerWarning}`
+        message: `Clicked (${baseResult.baseX}, ${baseResult.baseY}) on ${baseResult.pageHost} target:<${baseResult.targetTag || ''}${targetId}${targetClass}> clicked:[${(baseResult.clickedElements || []).join(',')}] parents:[${parentCtx}]${posInfo} [effect:${effectLabel}]${trustedSuffix}${trustedErrSuffix}${containerWarning}${dropdownWarning}`
       });
     },
 
@@ -2340,6 +3179,81 @@ const AgentS = {
       return AgentS.createActionResult({ success: true, message: `Scrolled ${direction}` });
     },
 
+    async scrollElement(index, direction, tabId) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (idx, dir) => {
+          // Find the element by index
+          const domState = window.AgentSDom?.lastBuildResult;
+          let el = domState?.elementMap?.[idx];
+
+          if (!el) {
+            return { success: false, error: `Element ${idx} not found` };
+          }
+
+          // Find the scrollable container - either the element itself or its parent
+          const findScrollableParent = (element) => {
+            let current = element;
+            while (current && current !== document.body) {
+              const style = window.getComputedStyle(current);
+              const overflowY = style.overflowY;
+              const isScrollable = (overflowY === 'auto' || overflowY === 'scroll') &&
+                                   current.scrollHeight > current.clientHeight;
+              if (isScrollable) return current;
+              current = current.parentElement;
+            }
+            return null;
+          };
+
+          const scrollable = findScrollableParent(el) || el;
+
+          if (!scrollable || scrollable === document.body) {
+            return { success: false, error: `No scrollable container found for element ${idx}` };
+          }
+
+          const scrollAmount = scrollable.clientHeight * 0.7;
+          const beforeScroll = scrollable.scrollTop;
+
+          if (dir === 'up') {
+            scrollable.scrollBy({ top: -scrollAmount, behavior: 'smooth' });
+          } else {
+            scrollable.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+          }
+
+          // Wait a bit for smooth scroll
+          return new Promise(resolve => {
+            setTimeout(() => {
+              const afterScroll = scrollable.scrollTop;
+              const scrolled = Math.abs(afterScroll - beforeScroll);
+              resolve({
+                success: true,
+                scrolled: scrolled > 5,
+                direction: dir,
+                elementTag: (scrollable.tagName || '').toLowerCase(),
+                beforeScroll,
+                afterScroll
+              });
+            }, 300);
+          });
+        },
+        args: [index, direction]
+      });
+
+      const res = result[0]?.result || { success: false, error: 'Script failed' };
+      if (!res.success) {
+        return AgentS.createActionResult(res);
+      }
+
+      const scrolledMsg = res.scrolled
+        ? `Scrolled ${res.direction} inside <${res.elementTag}> container`
+        : `Container already at ${res.direction === 'up' ? 'top' : 'bottom'} - cannot scroll further`;
+
+      return AgentS.createActionResult({
+        success: true,
+        message: scrolledMsg
+      });
+    },
+
     async scrollToText(text, tabId) {
       const result = await chrome.scripting.executeScript({
         target: { tabId },
@@ -2358,6 +3272,468 @@ const AgentS = {
       return AgentS.createActionResult({
         success: result[0]?.result || false,
         message: result[0]?.result ? `Found: ${text}` : `Not found: ${text}`
+      });
+    },
+
+    async findText(text, tabId, options = {}) {
+      const query = String(text || options?.text || '').trim();
+      if (!query) {
+        return AgentS.createActionResult({
+          success: false,
+          error: 'find_text requires non-empty "text".'
+        });
+      }
+
+      const safeOptions = {
+        exact: options?.exact === true,
+        caseSensitive: options?.case_sensitive === true || options?.caseSensitive === true,
+        maxResults: Math.max(1, Math.min(15, parseInt(options?.max_results ?? options?.maxResults ?? 8, 10) || 8)),
+        scrollToFirst: options?.scroll_to_first !== false && options?.scrollToFirst !== false
+      };
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (searchText, opts) => {
+          const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const toLower = (value) => String(value || '').toLowerCase();
+          const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+          const queryRaw = String(searchText || '');
+          const queryNorm = normalize(queryRaw);
+          const queryCmp = opts.caseSensitive ? queryNorm : toLower(queryNorm);
+
+          if (!queryNorm) {
+            return { success: false, error: 'Empty query' };
+          }
+
+          const isVisible = (el) => {
+            if (!(el instanceof Element)) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            return true;
+          };
+
+          const compare = (haystack) => {
+            const normalized = normalize(haystack);
+            if (!normalized) return false;
+            const candidate = opts.caseSensitive ? normalized : toLower(normalized);
+            return opts.exact ? candidate === queryCmp : candidate.includes(queryCmp);
+          };
+
+          const scoreMatch = (textValue) => {
+            const normalized = normalize(textValue);
+            const candidate = opts.caseSensitive ? normalized : toLower(normalized);
+            if (!candidate) return 0;
+            if (candidate === queryCmp) return 100;
+            if (candidate.startsWith(queryCmp)) return 80;
+            return 50;
+          };
+
+          const buildDomState = () => {
+            try {
+              if (window.AgentSDom?.buildDomTree) {
+                const domState = window.AgentSDom.buildDomTree({
+                  highlightElements: false,
+                  viewportOnly: false,
+                  maxElements: 800
+                });
+                window.AgentSDom.lastBuildResult = domState;
+                return domState;
+              }
+            } catch (e) {}
+            return window.AgentSDom?.lastBuildResult || null;
+          };
+
+          const domState = buildDomState();
+          const rawMatches = [];
+          const dedupe = new Set();
+
+          if (domState?.elements?.length) {
+            for (const el of domState.elements) {
+              const attrs = el.attributes || {};
+              const attrText = Object.values(attrs).join(' ');
+              const haystack = `${el.text || ''} ${attrText}`.trim();
+              if (!compare(haystack)) continue;
+
+              const key = `dom:${el.index}`;
+              if (dedupe.has(key)) continue;
+              dedupe.add(key);
+
+              rawMatches.push({
+                source: 'dom',
+                index: el.index,
+                ref_id: el.ref_id || null,
+                tag: el.tagName || '',
+                text: normalize(el.text || attrText || ''),
+                rect: el.rect || null,
+                score: scoreMatch(el.text || attrText) + 25
+              });
+            }
+          }
+
+          // Fallback: scan visible text nodes for non-interactive matches
+          try {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+              const node = walker.currentNode;
+              const parent = node.parentElement;
+              if (!parent || !isVisible(parent)) continue;
+              const textContent = normalize(node.textContent || '');
+              if (!compare(textContent)) continue;
+
+              const rect = parent.getBoundingClientRect();
+              const key = `text:${Math.round(rect.x)}:${Math.round(rect.y)}:${textContent.slice(0, 40)}`;
+              if (dedupe.has(key)) continue;
+              dedupe.add(key);
+
+              rawMatches.push({
+                source: 'text',
+                index: null,
+                ref_id: null,
+                tag: parent.tagName?.toLowerCase?.() || '',
+                text: textContent.slice(0, 180),
+                rect: {
+                  x: Math.round(rect.x),
+                  y: Math.round(rect.y),
+                  width: Math.round(rect.width),
+                  height: Math.round(rect.height)
+                },
+                score: scoreMatch(textContent)
+              });
+
+              if (rawMatches.length >= 80) break;
+            }
+          } catch (e) {}
+
+          rawMatches.sort((a, b) => b.score - a.score);
+          const maxResults = clamp(parseInt(opts.maxResults, 10) || 8, 1, 15);
+          const matches = rawMatches.slice(0, maxResults).map((item) => ({
+            source: item.source,
+            index: item.index,
+            ref_id: item.ref_id,
+            tag: item.tag,
+            text: item.text,
+            rect: item.rect
+          }));
+
+          if (opts.scrollToFirst && matches.length > 0) {
+            const first = matches[0];
+            try {
+              let target = null;
+              if (Number.isFinite(first.index) && window.AgentSDom?.getElementByIndex) {
+                target = window.AgentSDom.getElementByIndex(first.index);
+              }
+              if (!target && first.ref_id && window.AgentSDom?.getElementByRef) {
+                target = window.AgentSDom.getElementByRef(first.ref_id);
+              }
+              if (!target && first.rect) {
+                const cx = first.rect.x + Math.round(first.rect.width / 2);
+                const cy = first.rect.y + Math.round(first.rect.height / 2);
+                target = document.elementFromPoint(cx, cy);
+              }
+              if (target && typeof target.scrollIntoView === 'function') {
+                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            } catch (e) {}
+          }
+
+          return {
+            success: true,
+            query: queryNorm,
+            totalMatches: rawMatches.length,
+            returned: matches.length,
+            matches
+          };
+        },
+        args: [query, safeOptions]
+      });
+
+      const payload = result[0]?.result || { success: false, error: 'find_text script failed' };
+      if (!payload.success) {
+        return AgentS.createActionResult(payload);
+      }
+
+      if (!payload.returned) {
+        return AgentS.createActionResult({
+          success: true,
+          message: `No match found for "${query}".`
+        });
+      }
+
+      const topLines = payload.matches.map((match) => {
+        const idx = Number.isFinite(match.index) ? `[${match.index}] ` : '';
+        const position = match.rect
+          ? ` @(${Math.round(match.rect.x + match.rect.width / 2)},${Math.round(match.rect.y + match.rect.height / 2)})`
+          : '';
+        return `- ${idx}<${match.tag || 'node'}> "${String(match.text || '').slice(0, 80)}"${position}`;
+      });
+
+      const memoryBlock = [
+        `[FIND_TEXT "${payload.query}"]`,
+        ...topLines
+      ].join('\n');
+
+      return AgentS.createActionResult({
+        success: true,
+        includeInMemory: true,
+        extractedContent: memoryBlock,
+        message: `Found ${payload.totalMatches} matches for "${payload.query}". Top ${payload.returned} stored in memory.`
+      });
+    },
+
+    async zoomPage(params, tabId) {
+      const safeParams = (params && typeof params === 'object') ? params : {};
+      const parseZoomValue = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return value > 5 ? value / 100 : value;
+        }
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (!trimmed) return null;
+          if (trimmed.endsWith('%')) {
+            const parsedPercent = parseFloat(trimmed.slice(0, -1));
+            return Number.isFinite(parsedPercent) ? parsedPercent / 100 : null;
+          }
+          const parsed = parseFloat(trimmed);
+          if (!Number.isFinite(parsed)) return null;
+          return parsed > 5 ? parsed / 100 : parsed;
+        }
+        return null;
+      };
+
+      const mode = String(safeParams.mode || '').toLowerCase();
+      const stepRaw = parseFloat(safeParams.step);
+      const step = Number.isFinite(stepRaw) && stepRaw > 0 ? Math.min(stepRaw, 1) : 0.1;
+
+      try {
+        const current = await chrome.tabs.getZoom(tabId);
+        let target = current;
+
+        if (mode === 'in') {
+          target = current + step;
+        } else if (mode === 'out') {
+          target = current - step;
+        } else if (mode === 'reset') {
+          target = 1;
+        } else {
+          const explicitLevel =
+            parseZoomValue(safeParams.level) ??
+            parseZoomValue(safeParams.zoom) ??
+            parseZoomValue(safeParams.percent);
+          if (explicitLevel == null) {
+            return AgentS.createActionResult({
+              success: false,
+              error: 'zoom_page requires mode (in|out|reset) or level/percent.'
+            });
+          }
+          target = explicitLevel;
+        }
+
+        target = Math.max(0.25, Math.min(5, Math.round(target * 100) / 100));
+        await chrome.tabs.setZoom(tabId, target);
+
+        const beforePercent = Math.round(current * 100);
+        const afterPercent = Math.round(target * 100);
+        const direction = afterPercent > beforePercent ? 'in' : afterPercent < beforePercent ? 'out' : 'unchanged';
+
+        return AgentS.createActionResult({
+          success: true,
+          message: `Zoom ${direction}: ${beforePercent}% -> ${afterPercent}%`
+        });
+      } catch (error) {
+        return AgentS.createActionResult({
+          success: false,
+          error: `zoom_page failed: ${error?.message || String(error)}`
+        });
+      }
+    },
+
+    async getAccessibilityTree(params, tabId) {
+      const safeParams = (params && typeof params === 'object') ? params : {};
+      const mode = String(safeParams.mode || 'interactive').toLowerCase() === 'all' ? 'all' : 'interactive';
+      const maxDepthRaw = parseInt(safeParams.max_depth ?? safeParams.maxDepth ?? 6, 10);
+      const maxDepth = Number.isFinite(maxDepthRaw) ? Math.max(1, Math.min(maxDepthRaw, 12)) : 6;
+      const maxNodesRaw = parseInt(safeParams.max_nodes ?? safeParams.maxNodes ?? 180, 10);
+      const maxNodes = Number.isFinite(maxNodesRaw) ? Math.max(20, Math.min(maxNodesRaw, 400)) : 180;
+      const refId = typeof safeParams.ref_id === 'string' ? safeParams.ref_id.trim() : '';
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (treeMode, depthLimit, nodeLimit, rootRefId) => {
+          const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+          const interactiveRoles = new Set([
+            'button', 'link', 'checkbox', 'radio', 'tab', 'menuitem',
+            'option', 'switch', 'textbox', 'combobox', 'listbox', 'searchbox',
+            'treeitem', 'slider', 'spinbutton', 'gridcell'
+          ]);
+          const interactiveTags = new Set(['a', 'button', 'input', 'textarea', 'select', 'summary', 'details']);
+
+          const isVisible = (el) => {
+            if (!(el instanceof Element)) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none') return false;
+            if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+            if (style.opacity === '0') return false;
+            return true;
+          };
+
+          const isInteractive = (el) => {
+            if (!(el instanceof Element)) return false;
+            const tag = (el.tagName || '').toLowerCase();
+            if (interactiveTags.has(tag)) return true;
+            const role = (el.getAttribute('role') || '').toLowerCase();
+            if (interactiveRoles.has(role)) return true;
+            const tabindex = el.getAttribute('tabindex');
+            if (tabindex !== null && tabindex !== '-1') return true;
+            if (el.isContentEditable) return true;
+            return false;
+          };
+
+          const getLabel = (el) => {
+            if (!(el instanceof Element)) return '';
+            const ariaLabel = normalize(el.getAttribute('aria-label') || '');
+            if (ariaLabel) return ariaLabel;
+
+            const labelledBy = normalize(el.getAttribute('aria-labelledby') || '');
+            if (labelledBy) {
+              const labelled = document.getElementById(labelledBy);
+              const labelledText = normalize(labelled?.textContent || '');
+              if (labelledText) return labelledText;
+            }
+
+            const alt = normalize(el.getAttribute('alt') || '');
+            if (alt) return alt;
+            const title = normalize(el.getAttribute('title') || '');
+            if (title) return title;
+
+            return normalize(el.innerText || el.textContent || '').slice(0, 120);
+          };
+
+          const buildDomState = () => {
+            try {
+              if (window.AgentSDom?.buildDomTree) {
+                const domState = window.AgentSDom.buildDomTree({
+                  highlightElements: false,
+                  viewportOnly: false,
+                  maxElements: 900
+                });
+                window.AgentSDom.lastBuildResult = domState;
+                return domState;
+              }
+            } catch (e) {}
+            return window.AgentSDom?.lastBuildResult || null;
+          };
+
+          const domState = buildDomState();
+          const refIdMap = domState?.refIdMap || {};
+
+          let root = document.body;
+          if (rootRefId) {
+            root =
+              window.AgentSDom?.getElementByRef?.(rootRefId) ||
+              document.querySelector(`[data-crab-ref-id="${rootRefId}"]`) ||
+              null;
+            if (!root) {
+              return {
+                success: false,
+                error: `ref_id not found: ${rootRefId}`
+              };
+            }
+          }
+
+          const lines = [];
+          let visitedCount = 0;
+          let includedCount = 0;
+          let truncated = false;
+
+          const walk = (node, depth) => {
+            if (truncated) return;
+            if (!(node instanceof Element)) return;
+            if (visitedCount >= nodeLimit) {
+              truncated = true;
+              return;
+            }
+
+            visitedCount++;
+
+            const visible = isVisible(node);
+            const interactive = isInteractive(node);
+            const includeNode = treeMode === 'all' ? visible : (visible && interactive);
+
+            if (includeNode) {
+              const tag = (node.tagName || '').toLowerCase();
+              const role = normalize(node.getAttribute('role') || '');
+              const name = getLabel(node);
+              const ref = normalize(node.getAttribute('data-crab-ref-id') || '');
+              const idx = ref && Object.prototype.hasOwnProperty.call(refIdMap, ref) ? refIdMap[ref] : null;
+              const expanded = normalize(node.getAttribute('aria-expanded') || '');
+              const selected = normalize(node.getAttribute('aria-selected') || '');
+              const checked = normalize(node.getAttribute('aria-checked') || '');
+
+              const ids = [];
+              if (Number.isFinite(idx)) ids.push(`index=${idx}`);
+              if (ref) ids.push(`ref=${ref}`);
+
+              const attrs = [];
+              if (role) attrs.push(`role=${role}`);
+              if (expanded) attrs.push(`aria-expanded=${expanded}`);
+              if (selected) attrs.push(`aria-selected=${selected}`);
+              if (checked) attrs.push(`aria-checked=${checked}`);
+
+              const indent = '  '.repeat(Math.max(0, depth));
+              let line = `${indent}- <${tag}>`;
+              if (ids.length > 0) line += ` [${ids.join(', ')}]`;
+              if (attrs.length > 0) line += ` (${attrs.join(', ')})`;
+              if (name) line += ` "${name.slice(0, 120)}"`;
+              lines.push(line);
+              includedCount++;
+            }
+
+            if (depth >= depthLimit) return;
+            for (const child of node.children || []) {
+              walk(child, depth + 1);
+              if (truncated) break;
+            }
+          };
+
+          walk(root, 0);
+
+          if (lines.length === 0) {
+            lines.push('(no matching accessibility nodes)');
+          }
+
+          return {
+            success: true,
+            mode: treeMode,
+            maxDepth: depthLimit,
+            nodeLimit,
+            includedCount,
+            visitedCount,
+            truncated,
+            lines
+          };
+        },
+        args: [mode, maxDepth, maxNodes, refId]
+      });
+
+      const payload = result[0]?.result || { success: false, error: 'get_accessibility_tree script failed' };
+      if (!payload.success) {
+        return AgentS.createActionResult(payload);
+      }
+
+      const shortLines = Array.isArray(payload.lines) ? payload.lines.slice(0, 60) : [];
+      const treeSummary = `[ACCESSIBILITY_TREE mode=${payload.mode} depth=${payload.maxDepth}]`;
+      const treeBody = shortLines.join('\n');
+      const truncationNote = payload.truncated ? '\n[TRUNCATED: increase max_nodes for more entries]' : '';
+
+      return AgentS.createActionResult({
+        success: true,
+        includeInMemory: true,
+        extractedContent: `${treeSummary}\n${treeBody}${truncationNote}`,
+        message: `Accessibility tree captured (${payload.includedCount} nodes, mode=${payload.mode}, depth=${payload.maxDepth}).`
       });
     },
 
@@ -2409,7 +3785,7 @@ const AgentS = {
           target.dispatchEvent(new MouseEvent('mousedown', opts));
           target.dispatchEvent(new MouseEvent('mouseup', opts));
           target.dispatchEvent(new MouseEvent('click', opts));
-          target.click(); // Native click - most reliable
+          // REMOVED: target.click() was causing double-click that closes dropdowns
 
           return {
             success: true,
@@ -2472,6 +3848,1575 @@ const AgentS = {
         };
         chrome.tabs.onUpdated.addListener(listener);
       });
+    },
+
+    // Hover element action
+    async hoverElement(index, tabId) {
+      const safeIndex = typeof index === 'number' ? index : parseInt(index, 10);
+      if (!Number.isFinite(safeIndex)) {
+        return AgentS.createActionResult({ success: false, error: `Invalid element index: ${index}` });
+      }
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (idx) => {
+          const domState = window.AgentSDom?.lastBuildResult;
+          if (!domState) {
+            return { success: false, error: 'DOM not built' };
+          }
+
+          const el = domState.elementMap?.[idx];
+          if (!el) {
+            return { success: false, error: `Element ${idx} not found` };
+          }
+
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+          // Dispatch hover events
+          el.dispatchEvent(new MouseEvent('mouseenter', {
+            bubbles: true, cancelable: true, view: window
+          }));
+          el.dispatchEvent(new MouseEvent('mouseover', {
+            bubbles: true, cancelable: true, view: window
+          }));
+
+          // Also try focus for dropdowns
+          if (el.matches('button, [role="button"], [aria-haspopup]')) {
+            el.focus();
+          }
+
+          const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+          return { success: true, text, tag: (el.tagName || '').toLowerCase() };
+        },
+        args: [safeIndex]
+      });
+
+      const baseResult = result[0]?.result || { success: false, error: 'Script failed' };
+      if (baseResult.success) {
+        return AgentS.createActionResult({
+          success: true,
+          message: `Hovered element ${safeIndex} <${baseResult.tag}> "${baseResult.text}"`
+        });
+      }
+      return AgentS.createActionResult(baseResult);
+    },
+
+    // Wait for element action
+    async waitForElement(selector, timeout, tabId) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (sel, timeoutMs) => {
+          return new Promise((resolve) => {
+            const startTime = Date.now();
+
+            const existing = document.querySelector(sel);
+            if (existing) {
+              resolve({ success: true, message: `Element found: ${sel}` });
+              return;
+            }
+
+            const observer = new MutationObserver(() => {
+              const element = document.querySelector(sel);
+              if (element) {
+                observer.disconnect();
+                resolve({ success: true, message: `Element appeared: ${sel}` });
+              } else if (Date.now() - startTime > timeoutMs) {
+                observer.disconnect();
+                resolve({ success: false, error: `Timeout waiting for: ${sel}` });
+              }
+            });
+
+            observer.observe(document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true
+            });
+
+            setTimeout(() => {
+              observer.disconnect();
+              const element = document.querySelector(sel);
+              if (element) {
+                resolve({ success: true, message: `Element found: ${sel}` });
+              } else {
+                resolve({ success: false, error: `Timeout waiting for: ${sel}` });
+              }
+            }, timeoutMs);
+          });
+        },
+        args: [selector, timeout || 5000]
+      });
+
+      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
+    },
+
+    // Wait for DOM to stabilize
+    async waitForDomStable(timeout, tabId) {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (timeoutMs) => {
+          return new Promise((resolve) => {
+            let lastMutationTime = Date.now();
+            let resolved = false;
+            const threshold = 500;
+
+            const observer = new MutationObserver(() => {
+              lastMutationTime = Date.now();
+            });
+
+            observer.observe(document.body, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              characterData: true
+            });
+
+            const checkStable = () => {
+              if (resolved) return;
+
+              const timeSinceLastMutation = Date.now() - lastMutationTime;
+
+              if (timeSinceLastMutation >= threshold) {
+                resolved = true;
+                observer.disconnect();
+                resolve({ success: true, message: 'DOM stable' });
+              } else if (Date.now() - lastMutationTime > timeoutMs) {
+                resolved = true;
+                observer.disconnect();
+                resolve({ success: true, message: 'DOM stable (timeout)' });
+              } else {
+                setTimeout(checkStable, 100);
+              }
+            };
+
+            setTimeout(checkStable, 200);
+
+            setTimeout(() => {
+              if (!resolved) {
+                resolved = true;
+                observer.disconnect();
+                resolve({ success: true, message: 'DOM stable (hard timeout)' });
+              }
+            }, timeoutMs);
+          });
+        },
+        args: [timeout || 2000]
+      });
+
+      return AgentS.createActionResult(result[0]?.result || { success: false, error: 'Script failed' });
+    },
+
+    async javascriptTool(rawParams, tabId) {
+      const params = rawParams && typeof rawParams === 'object' ? rawParams : {};
+      const hasImplicitRenderPayload =
+        params.markdown != null ||
+        params.html != null ||
+        params.text != null ||
+        params.table != null ||
+        params.chart != null ||
+        params.document != null;
+      const mode = String(params.mode || (params.script ? 'script' : (hasImplicitRenderPayload ? 'render' : 'ops'))).toLowerCase();
+      const settleMs = Math.max(0, Math.min(3000, Number(params.settle_ms ?? params.settleMs ?? 80) || 80));
+      const defaultTarget = params.target && typeof params.target === 'object' ? params.target : {};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      const resolvePoint = async (targetSpec = {}) => {
+        const result = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: (inputSpec) => {
+            const spec = inputSpec && typeof inputSpec === 'object' ? inputSpec : {};
+            const toNumber = (value, fallback = null) => {
+              const num = typeof value === 'number' ? value : Number(value);
+              return Number.isFinite(num) ? num : fallback;
+            };
+            const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+            const vw = window.innerWidth || 0;
+            const vh = window.innerHeight || 0;
+
+            let target = null;
+            const idx = toNumber(spec.index, null);
+            if (idx !== null) {
+              target = window.AgentSDom?.lastBuildResult?.elementMap?.[idx] || null;
+            }
+            if (!target && typeof spec.selector === 'string' && spec.selector.trim()) {
+              target = document.querySelector(spec.selector.trim());
+            }
+            if (!target) {
+              target = document.activeElement instanceof Element ? document.activeElement : null;
+            }
+            if (!target || !(target instanceof Element)) {
+              target = document.querySelector('canvas, svg, [contenteditable="true"], [role="application"], [role="textbox"], textarea, input') || document.body;
+            }
+
+            let x = toNumber(spec.x, null);
+            let y = toNumber(spec.y, null);
+            if (x === null || y === null) {
+              const rect = target?.getBoundingClientRect?.();
+              if (rect && rect.width > 0 && rect.height > 0) {
+                const ox = toNumber(spec.offset_x ?? spec.offsetX, 0.5);
+                const oy = toNumber(spec.offset_y ?? spec.offsetY, 0.5);
+                x = rect.left + rect.width * ox;
+                y = rect.top + rect.height * oy;
+              } else {
+                x = vw / 2;
+                y = vh / 2;
+              }
+            }
+
+            x = clamp(Math.round(x), 0, Math.max(0, vw - 1));
+            y = clamp(Math.round(y), 0, Math.max(0, vh - 1));
+
+            const hit = document.elementFromPoint(x, y) || target || document.body;
+            const rect = hit?.getBoundingClientRect?.();
+            return {
+              success: true,
+              x,
+              y,
+              target: {
+                tag: (hit?.tagName || '').toLowerCase(),
+                id: hit?.id || '',
+                role: hit?.getAttribute?.('role') || '',
+                text: (hit?.innerText || hit?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+                rect: rect ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } : null
+              }
+            };
+          },
+          args: [targetSpec]
+        });
+        return result?.[0]?.result || { success: false, error: 'Failed to resolve target point' };
+      };
+
+      const dispatchTrustedMouseEvents = async (events) => {
+        const target = { tabId };
+        let attachedByAgent = false;
+        try {
+          try {
+            await chrome.debugger.attach(target, '1.3');
+            attachedByAgent = true;
+          } catch (attachError) {
+            const msg = String(attachError?.message || attachError || '');
+            if (!/already attached|another debugger/i.test(msg)) {
+              return { success: false, error: `Debugger attach failed: ${msg}` };
+            }
+          }
+          for (const event of events) {
+            await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', event);
+          }
+          return { success: true };
+        } catch (error) {
+          return { success: false, error: `Trusted mouse dispatch failed: ${error?.message || String(error)}` };
+        } finally {
+          if (attachedByAgent) {
+            try { await chrome.debugger.detach(target); } catch (e) {}
+          }
+        }
+      };
+
+      const runRenderMode = async () => {
+        const renderPayload = {
+          markdown: params.markdown,
+          html: params.html,
+          text: params.text,
+          table: params.table,
+          chart: params.chart,
+          document: params.document,
+          append: params.append === true
+        };
+
+        const hasRenderable =
+          renderPayload.markdown != null ||
+          renderPayload.html != null ||
+          renderPayload.text != null ||
+          renderPayload.table != null ||
+          renderPayload.chart != null ||
+          renderPayload.document != null;
+
+        if (!hasRenderable) {
+          return AgentS.createActionResult({
+            success: false,
+            error: 'javascript_tool render mode requires at least one of: markdown, html, text, table, chart, document.'
+          });
+        }
+
+        const buildRenderSuccessResult = (renderedPayload, message = 'javascript_tool render executed') => (
+          AgentS.createActionResult({
+            success: true,
+            message,
+            includeInMemory: params.include_in_memory === true || params.includeInMemory === true,
+            extractedContent: renderedPayload ? JSON.stringify(renderedPayload).slice(0, 5000) : ''
+          })
+        );
+
+        let result;
+        try {
+          result = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: async (payload, targetSpec, settleDelay) => {
+            const sleepInner = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+            const toNumber = (value, fallback = null) => {
+              const num = typeof value === 'number' ? value : Number(value);
+              return Number.isFinite(num) ? num : fallback;
+            };
+            const escapeHtml = (value) => String(value || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
+            const parseInlineMarkdown = (line) => {
+              let html = escapeHtml(line);
+              html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+              html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+              html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+              html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+              html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+              return html;
+            };
+            const markdownToHtml = (input) => {
+              const lines = String(input || '').replace(/\r\n/g, '\n').split('\n');
+              const blocks = [];
+              let inList = false;
+              const closeList = () => {
+                if (inList) {
+                  blocks.push('</ul>');
+                  inList = false;
+                }
+              };
+              const isTableSeparator = (line) => /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(line || '');
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const trimmed = line.trim();
+                if (!trimmed) {
+                  closeList();
+                  blocks.push('<p></p>');
+                  continue;
+                }
+                const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+                if (headingMatch) {
+                  closeList();
+                  const level = headingMatch[1].length;
+                  blocks.push(`<h${level}>${parseInlineMarkdown(headingMatch[2])}</h${level}>`);
+                  continue;
+                }
+                if (/^[-*]\s+/.test(trimmed)) {
+                  if (!inList) {
+                    blocks.push('<ul>');
+                    inList = true;
+                  }
+                  blocks.push(`<li>${parseInlineMarkdown(trimmed.replace(/^[-*]\s+/, ''))}</li>`);
+                  continue;
+                }
+                if (trimmed.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+                  closeList();
+                  const headers = trimmed.split('|').map((item) => item.trim()).filter(Boolean);
+                  i += 1;
+                  const rows = [];
+                  while (i + 1 < lines.length) {
+                    const next = lines[i + 1];
+                    if (!next || !next.includes('|') || !next.trim()) break;
+                    i += 1;
+                    rows.push(next.split('|').map((item) => item.trim()).filter((_, idx, arr) => !(idx === 0 && arr.length > headers.length && !arr[0])));
+                  }
+                  const thead = `<thead><tr>${headers.map((h) => `<th>${parseInlineMarkdown(h)}</th>`).join('')}</tr></thead>`;
+                  const tbody = `<tbody>${rows.map((row) => `<tr>${headers.map((_, colIdx) => `<td>${parseInlineMarkdown(row[colIdx] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+                  blocks.push(`<table data-crab-js-table="1">${thead}${tbody}</table>`);
+                  continue;
+                }
+                closeList();
+                blocks.push(`<p>${parseInlineMarkdown(trimmed)}</p>`);
+              }
+              closeList();
+              return blocks.join('\n');
+            };
+            const resolveTarget = (spec = {}) => {
+              const root = spec && typeof spec === 'object' ? spec : {};
+              let target = null;
+              const idx = toNumber(root.index, null);
+              if (idx !== null) target = window.AgentSDom?.lastBuildResult?.elementMap?.[idx] || null;
+              if (!target && typeof root.selector === 'string' && root.selector.trim()) target = document.querySelector(root.selector.trim());
+              if (!target) target = document.activeElement instanceof Element ? document.activeElement : null;
+              if (!target || !(target instanceof Element)) {
+                target = document.querySelector('[contenteditable="true"], [contenteditable=""], textarea, input[type="text"], input:not([type]), canvas') || document.body;
+              }
+              return target;
+            };
+            const isTextInput = (el) => el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+            const dispatchEditableEvents = (el) => {
+              if (!el) return;
+              try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+              try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            };
+            const applyRenderedContent = ({ target, html = '', text = '', append = false }) => {
+              const el = target || document.body;
+              if (isTextInput(el)) {
+                const next = append ? ((el.value || '') + (el.value ? '\n' : '') + String(text || '')) : String(text || '');
+                el.value = next;
+                dispatchEditableEvents(el);
+                return { mode: 'input', chars: next.length };
+              }
+              if (el instanceof HTMLCanvasElement) {
+                const wrapper = document.createElement('div');
+                wrapper.setAttribute('data-crab-js-render', '1');
+                wrapper.style.maxWidth = '100%';
+                wrapper.style.overflow = 'auto';
+                wrapper.style.background = '#fff';
+                wrapper.style.border = '1px solid rgba(0,0,0,0.12)';
+                wrapper.style.padding = '12px';
+                wrapper.style.margin = '10px 0';
+                wrapper.innerHTML = html || `<pre>${escapeHtml(String(text || ''))}</pre>`;
+                if (append) el.insertAdjacentElement('afterend', wrapper);
+                else {
+                  const next = el.nextElementSibling;
+                  if (next && next.getAttribute && next.getAttribute('data-crab-js-render') === '1') {
+                    next.replaceWith(wrapper);
+                  } else {
+                    el.insertAdjacentElement('afterend', wrapper);
+                  }
+                }
+                return { mode: 'canvas-sibling', chars: (wrapper.innerText || wrapper.textContent || '').length };
+              }
+              if (el instanceof HTMLElement && el.isContentEditable) {
+                if (append) {
+                  if (html) el.insertAdjacentHTML('beforeend', html);
+                  else el.appendChild(document.createTextNode(String(text || '')));
+                } else if (html) {
+                  el.innerHTML = html;
+                } else {
+                  el.textContent = String(text || '');
+                }
+                dispatchEditableEvents(el);
+                return { mode: 'contenteditable', chars: (el.innerText || el.textContent || '').length };
+              }
+              if (el instanceof HTMLElement) {
+                const wrapper = document.createElement('div');
+                wrapper.setAttribute('data-crab-js-render', '1');
+                wrapper.style.maxWidth = '100%';
+                wrapper.style.overflow = 'auto';
+                wrapper.innerHTML = html || `<pre>${escapeHtml(String(text || ''))}</pre>`;
+                if (append) el.appendChild(wrapper);
+                else {
+                  el.innerHTML = '';
+                  el.appendChild(wrapper);
+                }
+                return { mode: 'element', chars: (wrapper.innerText || wrapper.textContent || '').length };
+              }
+              return { mode: 'none', chars: 0 };
+            };
+            const buildTableHtml = (tableSpec = {}) => {
+              const spec = tableSpec && typeof tableSpec === 'object' ? tableSpec : {};
+              const headers = Array.isArray(spec.headers) ? spec.headers.map((h) => String(h ?? '')) : [];
+              const rows = Array.isArray(spec.rows) ? spec.rows : [];
+              if (!headers.length && rows.length > 0 && Array.isArray(rows[0])) {
+                const first = rows[0];
+                for (let i = 0; i < first.length; i++) headers.push(`Col ${i + 1}`);
+              }
+              const finalHeaders = headers.length ? headers : ['Column 1'];
+              const tbodyRows = rows.map((row) => {
+                if (Array.isArray(row)) return finalHeaders.map((_, idx) => String(row[idx] ?? ''));
+                if (row && typeof row === 'object') return finalHeaders.map((header) => String(row[header] ?? row[header.toLowerCase()] ?? ''));
+                return [String(row ?? '')];
+              });
+              const thead = `<thead><tr>${finalHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>`;
+              const tbody = `<tbody>${tbodyRows.map((row) => `<tr>${finalHeaders.map((_, idx) => `<td>${escapeHtml(row[idx] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+              return `<table data-crab-js-table="1">${thead}${tbody}</table>`;
+            };
+            const ensureCanvas = (canvasSpec = {}) => {
+              const spec = canvasSpec && typeof canvasSpec === 'object' ? canvasSpec : {};
+              const explicitCanvas =
+                spec.reuse === true ||
+                spec.index != null ||
+                typeof spec.selector === 'string' ||
+                (spec.target && typeof spec.target === 'object');
+              if (explicitCanvas) {
+                const existing = resolveTarget(spec.target || spec);
+                if (existing instanceof HTMLCanvasElement) return existing;
+                const selectorCanvas = typeof spec.selector === 'string' ? document.querySelector(spec.selector) : null;
+                if (selectorCanvas instanceof HTMLCanvasElement) return selectorCanvas;
+              }
+              let panel = document.getElementById('__crab_js_render_panel');
+              if (!panel) {
+                panel = document.createElement('div');
+                panel.id = '__crab_js_render_panel';
+                panel.style.position = 'fixed';
+                panel.style.right = '12px';
+                panel.style.bottom = '12px';
+                panel.style.maxWidth = 'min(90vw, 980px)';
+                panel.style.maxHeight = '70vh';
+                panel.style.overflow = 'auto';
+                panel.style.zIndex = '2147483646';
+                panel.style.background = 'rgba(255,255,255,0.98)';
+                panel.style.border = '1px solid rgba(0,0,0,0.16)';
+                panel.style.borderRadius = '10px';
+                panel.style.boxShadow = '0 14px 30px rgba(0,0,0,0.22)';
+                panel.style.padding = '10px';
+                document.body.appendChild(panel);
+              }
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.max(200, Math.min(2400, Number(spec.width) || 960));
+              canvas.height = Math.max(140, Math.min(1800, Number(spec.height) || 540));
+              canvas.style.maxWidth = '100%';
+              canvas.style.border = '1px solid rgba(0,0,0,0.12)';
+              canvas.style.background = '#fff';
+              canvas.setAttribute('data-crab-js-chart', '1');
+              panel.appendChild(canvas);
+              return canvas;
+            };
+            const renderChart = (chartSpec = {}) => {
+              const spec = chartSpec && typeof chartSpec === 'object' ? chartSpec : {};
+              const chartType = String(spec.type || 'bar').toLowerCase();
+              const labels = Array.isArray(spec.labels) ? spec.labels.map((item, idx) => String(item ?? `#${idx + 1}`)) : [];
+              const datasets = Array.isArray(spec.datasets) ? spec.datasets : [];
+              const data = datasets.map((dataset, idx) => {
+                const values = Array.isArray(dataset?.data) ? dataset.data.map((v) => Number(v) || 0) : [];
+                return {
+                  label: String(dataset?.label || `Series ${idx + 1}`),
+                  values,
+                  color: String(dataset?.color || dataset?.stroke || ['#2B6CB0', '#E53E3E', '#2F855A', '#B7791F'][idx % 4])
+                };
+              });
+              const canvas = ensureCanvas(spec.canvas || spec.target || {});
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return { rendered: false, error: 'Canvas context unavailable' };
+              const width = canvas.width;
+              const height = canvas.height;
+              const padding = { left: 64, right: 24, top: 36, bottom: 56 };
+              const chartW = Math.max(80, width - padding.left - padding.right);
+              const chartH = Math.max(60, height - padding.top - padding.bottom);
+              ctx.clearRect(0, 0, width, height);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, width, height);
+              ctx.strokeStyle = '#E2E8F0';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+              const allValues = data.flatMap((series) => series.values);
+              const maxValue = allValues.length ? Math.max(...allValues, 1) : 1;
+              const safeLabels = labels.length ? labels : (data[0]?.values || []).map((_, idx) => `#${idx + 1}`);
+              const count = Math.max(1, safeLabels.length);
+              const mapY = (value) => padding.top + chartH - (value / maxValue) * chartH;
+              ctx.strokeStyle = '#CBD5E0';
+              ctx.beginPath();
+              ctx.moveTo(padding.left, padding.top);
+              ctx.lineTo(padding.left, padding.top + chartH);
+              ctx.lineTo(padding.left + chartW, padding.top + chartH);
+              ctx.stroke();
+              if (chartType === 'line') {
+                data.forEach((series) => {
+                  ctx.strokeStyle = series.color;
+                  ctx.lineWidth = 2;
+                  ctx.beginPath();
+                  series.values.forEach((value, idx) => {
+                    const x = padding.left + (count <= 1 ? chartW / 2 : (idx / (count - 1)) * chartW);
+                    const y = mapY(value);
+                    if (idx === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                  });
+                  ctx.stroke();
+                });
+              } else {
+                const seriesCount = Math.max(1, data.length);
+                const groupW = chartW / count;
+                data.forEach((series, seriesIdx) => {
+                  ctx.fillStyle = series.color;
+                  series.values.forEach((value, idx) => {
+                    const barW = (groupW * 0.75) / seriesCount;
+                    const x = padding.left + idx * groupW + groupW * 0.125 + seriesIdx * barW;
+                    const y = mapY(value);
+                    const h = padding.top + chartH - y;
+                    ctx.fillRect(x, y, barW, h);
+                  });
+                });
+              }
+              return { rendered: true, type: 'chart', chartType, width, height, series: data.length, points: count };
+            };
+            try {
+              const doc = payload.document && typeof payload.document === 'object' ? payload.document : {};
+              const target = resolveTarget(doc.target || targetSpec || {});
+              let bodyHtml = '';
+              if (payload.html != null || doc.html != null) bodyHtml = String(payload.html ?? doc.html);
+              else if (payload.markdown != null || doc.markdown != null) bodyHtml = markdownToHtml(String(payload.markdown ?? doc.markdown));
+              else if (payload.text != null || doc.text != null) bodyHtml = `<pre>${escapeHtml(String(payload.text ?? doc.text))}</pre>`;
+              const tableSpec = payload.table ?? doc.table;
+              if (tableSpec != null) {
+                const tableHtml = buildTableHtml(tableSpec);
+                bodyHtml = bodyHtml ? `${bodyHtml}\n${tableHtml}` : tableHtml;
+              }
+              const title = payload.document?.title ?? doc.title;
+              const subtitle = payload.document?.subtitle ?? doc.subtitle;
+              if (bodyHtml || title || subtitle) {
+                const titleHtml = title ? `<h1>${escapeHtml(String(title))}</h1>` : '';
+                const subtitleHtml = subtitle ? `<h2>${escapeHtml(String(subtitle))}</h2>` : '';
+                const wrapped = `<section data-crab-js-doc="1">${titleHtml}${subtitleHtml}${bodyHtml}</section>`;
+                applyRenderedContent({
+                  target,
+                  html: wrapped,
+                  text: [title, subtitle, payload.text, payload.markdown].filter(Boolean).join('\n\n'),
+                  append: payload.append === true || doc.append === true
+                });
+              }
+              const chartSpec = payload.chart ?? doc.chart;
+              let chartResult = null;
+              if (chartSpec != null) {
+                chartResult = renderChart(chartSpec);
+              }
+              await sleepInner(Math.max(0, Math.min(1000, Number(settleDelay) || 0)));
+              return { success: true, result: { rendered: true, chart: chartResult } };
+            } catch (error) {
+              return { success: false, error: `render mode failed: ${error?.message || String(error)}` };
+            }
+          },
+          args: [renderPayload, defaultTarget, settleMs]
+          });
+        } catch (error) {
+          return AgentS.createActionResult({
+            success: false,
+            error: `javascript_tool render injection failed: ${error?.message || String(error)}`
+          });
+        }
+
+        const payload = result?.[0]?.result || { success: false, error: 'javascript_tool render failed' };
+        if (!payload.success) {
+          return AgentS.createActionResult({
+            success: false,
+            error: String(payload.error || 'javascript_tool render failed')
+          });
+        }
+        return buildRenderSuccessResult(payload.result);
+      };
+
+      const runScriptMode = async () => {
+        let script = String(params.script || '').trim();
+        const scriptArgs = params.args && typeof params.args === 'object' ? params.args : {};
+        const worldParam = String(params.world || '').toLowerCase();
+        const usePageWorld = worldParam === 'page' || worldParam === 'main';
+        const hasRenderPayload =
+          params.markdown != null ||
+          params.html != null ||
+          params.text != null ||
+          params.table != null ||
+          params.chart != null ||
+          params.document != null;
+
+        if (!script && hasRenderPayload) {
+          return runRenderMode();
+        }
+
+        if (!script) {
+          return AgentS.createActionResult({
+            success: false,
+            error: 'javascript_tool script mode requires "script". Use mode "render" for markdown/html/table/chart payloads.'
+          });
+        }
+
+        // Execute in PAGE world via CDP Runtime.evaluate (bypasses CSP, accesses app APIs like window.excalidrawAPI)
+        if (usePageWorld) {
+          const target = { tabId };
+          let attachedByAgent = false;
+          try {
+            try {
+              await chrome.debugger.attach(target, '1.3');
+              attachedByAgent = true;
+            } catch (attachError) {
+              const attachMsg = String(attachError?.message || attachError || '');
+              if (!/already attached|another debugger/i.test(attachMsg)) {
+                return AgentS.createActionResult({ success: false, error: `CDP attach failed: ${attachMsg}` });
+              }
+            }
+
+            const argsJson = JSON.stringify(scriptArgs);
+            const wrappedExpression = `(async () => {
+              try {
+                const context = { args: ${argsJson} };
+                const __fn__ = async (context) => { ${script} };
+                const __result__ = await __fn__(context);
+                return { success: true, result: __result__ };
+              } catch (e) {
+                return { success: false, error: e?.message || String(e) };
+              }
+            })()`;
+
+            const evalResult = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+              expression: wrappedExpression,
+              awaitPromise: true,
+              returnByValue: true,
+              userGesture: true
+            });
+
+            if (evalResult?.exceptionDetails) {
+              const detail = evalResult.exceptionDetails;
+              const desc = detail?.exception?.description || detail?.text || 'Runtime.evaluate exception';
+              return AgentS.createActionResult({ success: false, error: desc });
+            }
+
+            const value = evalResult?.result?.value;
+            if (value && typeof value === 'object') {
+              if (!value.success) {
+                return AgentS.createActionResult({ success: false, error: value.error || 'Script failed in page world' });
+              }
+              let extracted = '';
+              try {
+                extracted = JSON.stringify(value.result);
+                if (extracted.length > 5000) extracted = extracted.slice(0, 5000) + '...';
+              } catch (e) {
+                extracted = String(value.result || '').slice(0, 5000);
+              }
+              return AgentS.createActionResult({
+                success: true,
+                message: 'javascript_tool script executed in page world',
+                includeInMemory: params.include_in_memory === true || params.includeInMemory === true,
+                extractedContent: extracted
+              });
+            }
+            return AgentS.createActionResult({ success: false, error: 'Runtime.evaluate returned no usable result' });
+          } catch (error) {
+            return AgentS.createActionResult({ success: false, error: `CDP Runtime.evaluate failed: ${error?.message || String(error)}` });
+          } finally {
+            if (attachedByAgent) {
+              try { await chrome.debugger.detach(target); } catch (e) {}
+            }
+          }
+        }
+
+        // Execute in ISOLATED world via chrome.scripting.executeScript (default)
+        const defaultTarget = params.target && typeof params.target === 'object' ? params.target : {};
+        const result = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: async (source, args, targetSpec, settleDelay) => {
+            const sleepInner = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+            const toNumber = (value, fallback = null) => {
+              const num = typeof value === 'number' ? value : Number(value);
+              return Number.isFinite(num) ? num : fallback;
+            };
+            const resolve = (spec = {}) => {
+              let target = null;
+              const idx = toNumber(spec.index, null);
+              if (idx !== null) target = window.AgentSDom?.lastBuildResult?.elementMap?.[idx] || null;
+              if (!target && typeof spec.selector === 'string' && spec.selector.trim()) target = document.querySelector(spec.selector.trim());
+              if (!target) target = document.elementFromPoint(Math.round((window.innerWidth || 0) / 2), Math.round((window.innerHeight || 0) / 2)) || document.body;
+              const rect = target?.getBoundingClientRect?.();
+              const x = clamp(Math.round(toNumber(spec.x, rect ? rect.left + rect.width / 2 : (window.innerWidth || 0) / 2)), 0, Math.max(0, (window.innerWidth || 1) - 1));
+              const y = clamp(Math.round(toNumber(spec.y, rect ? rect.top + rect.height / 2 : (window.innerHeight || 0) / 2)), 0, Math.max(0, (window.innerHeight || 1) - 1));
+              return { target, x, y };
+            };
+            const pointer = async (spec = {}) => {
+              const { target, x, y } = resolve(spec.target || spec);
+              const el = target || document.elementFromPoint(x, y) || document.body;
+              const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: 1 };
+              if (typeof PointerEvent === 'function') {
+                el.dispatchEvent(new PointerEvent('pointerdown', options));
+                el.dispatchEvent(new PointerEvent('pointerup', options));
+              }
+              el.dispatchEvent(new MouseEvent('mousedown', options));
+              el.dispatchEvent(new MouseEvent('mouseup', options));
+              el.dispatchEvent(new MouseEvent('click', options));
+              return { x, y };
+            };
+            const key = async (combo) => {
+              const value = String(combo || '').trim();
+              if (!value) return;
+              const active = document.activeElement instanceof Element ? document.activeElement : document.body;
+              if (typeof active.focus === 'function') active.focus();
+              const parts = value.split('+').map((part) => part.trim()).filter(Boolean);
+              const main = parts[parts.length - 1] || value;
+              const modifiers = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false };
+              for (const part of parts.slice(0, -1)) {
+                const lower = part.toLowerCase();
+                if (lower === 'ctrl' || lower === 'control') modifiers.ctrlKey = true;
+                if (lower === 'shift') modifiers.shiftKey = true;
+                if (lower === 'alt') modifiers.altKey = true;
+                if (lower === 'meta' || lower === 'cmd' || lower === 'command') modifiers.metaKey = true;
+              }
+              const keyCode = main.length === 1 ? main.toUpperCase().charCodeAt(0) : 0;
+              const init = { key: main, code: main.length === 1 ? `Key${main.toUpperCase()}` : main, keyCode, which: keyCode, bubbles: true, cancelable: true, ...modifiers };
+              active.dispatchEvent(new KeyboardEvent('keydown', init));
+              active.dispatchEvent(new KeyboardEvent('keyup', init));
+            };
+            const isTextInput = (el) => el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+            const isEditableTarget = (el) => !!(isTextInput(el) || (el instanceof HTMLElement && el.isContentEditable));
+            const dispatchEditableEvents = (el) => {
+              if (!el) return;
+              try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+              try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            };
+            const escapeHtml = (value) => String(value || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#39;');
+            const parseInlineMarkdown = (line) => {
+              let html = escapeHtml(line);
+              html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+              html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+              html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+              html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+              html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+              html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+              return html;
+            };
+            const markdownToHtml = (input) => {
+              const lines = String(input || '').replace(/\r\n/g, '\n').split('\n');
+              const blocks = [];
+              let inList = false;
+              const closeList = () => {
+                if (inList) {
+                  blocks.push('</ul>');
+                  inList = false;
+                }
+              };
+              const isTableSeparator = (line) => /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/.test(line || '');
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const trimmed = line.trim();
+                if (!trimmed) {
+                  closeList();
+                  blocks.push('<p></p>');
+                  continue;
+                }
+                const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+                if (headingMatch) {
+                  closeList();
+                  const level = headingMatch[1].length;
+                  blocks.push(`<h${level}>${parseInlineMarkdown(headingMatch[2])}</h${level}>`);
+                  continue;
+                }
+                if (/^[-*]\s+/.test(trimmed)) {
+                  if (!inList) {
+                    blocks.push('<ul>');
+                    inList = true;
+                  }
+                  blocks.push(`<li>${parseInlineMarkdown(trimmed.replace(/^[-*]\s+/, ''))}</li>`);
+                  continue;
+                }
+                if (trimmed.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+                  closeList();
+                  const headers = trimmed.split('|').map((item) => item.trim()).filter(Boolean);
+                  i += 1;
+                  const rows = [];
+                  while (i + 1 < lines.length) {
+                    const next = lines[i + 1];
+                    if (!next || !next.includes('|') || !next.trim()) break;
+                    i += 1;
+                    rows.push(next.split('|').map((item) => item.trim()).filter((_, idx, arr) => !(idx === 0 && arr.length > headers.length && !arr[0])));
+                  }
+                  const thead = `<thead><tr>${headers.map((h) => `<th>${parseInlineMarkdown(h)}</th>`).join('')}</tr></thead>`;
+                  const tbody = `<tbody>${rows.map((row) => `<tr>${headers.map((_, colIdx) => `<td>${parseInlineMarkdown(row[colIdx] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+                  blocks.push(`<table data-crab-js-table="1">${thead}${tbody}</table>`);
+                  continue;
+                }
+                closeList();
+                blocks.push(`<p>${parseInlineMarkdown(trimmed)}</p>`);
+              }
+              closeList();
+              return blocks.join('\n');
+            };
+            const resolveWritableTarget = (spec = {}) => {
+              const resolved = resolve(spec.target || spec);
+              const candidate = resolved?.target;
+              if (candidate instanceof HTMLCanvasElement || isEditableTarget(candidate)) return candidate;
+              const active = document.activeElement;
+              if (active instanceof HTMLCanvasElement || isEditableTarget(active)) return active;
+              return document.querySelector('[contenteditable="true"], [contenteditable=""], textarea, input[type="text"], input:not([type]), canvas') || candidate || document.body;
+            };
+            const applyRenderedContent = ({ target, html = '', text = '', append = false }) => {
+              const el = target || document.body;
+              if (isTextInput(el)) {
+                const next = append ? ((el.value || '') + (el.value ? '\n' : '') + String(text || '')) : String(text || '');
+                el.value = next;
+                dispatchEditableEvents(el);
+                return { mode: 'input', chars: next.length };
+              }
+              if (el instanceof HTMLElement && el.isContentEditable) {
+                if (append) {
+                  if (html) el.insertAdjacentHTML('beforeend', html);
+                  else el.appendChild(document.createTextNode(String(text || '')));
+                } else if (html) {
+                  el.innerHTML = html;
+                } else {
+                  el.textContent = String(text || '');
+                }
+                dispatchEditableEvents(el);
+                return { mode: 'contenteditable', chars: (el.innerText || el.textContent || '').length };
+              }
+              if (el instanceof HTMLElement) {
+                const wrapper = document.createElement('div');
+                wrapper.setAttribute('data-crab-js-render', '1');
+                wrapper.style.maxWidth = '100%';
+                wrapper.style.overflow = 'auto';
+                wrapper.innerHTML = html || `<pre>${escapeHtml(String(text || ''))}</pre>`;
+                if (append) el.appendChild(wrapper);
+                else {
+                  el.innerHTML = '';
+                  el.appendChild(wrapper);
+                }
+                return { mode: 'element', chars: (wrapper.innerText || wrapper.textContent || '').length };
+              }
+              return { mode: 'none', chars: 0 };
+            };
+            const buildTableHtml = (tableSpec = {}) => {
+              const spec = tableSpec && typeof tableSpec === 'object' ? tableSpec : {};
+              const headers = Array.isArray(spec.headers) ? spec.headers.map((h) => String(h ?? '')) : [];
+              const rows = Array.isArray(spec.rows) ? spec.rows : [];
+              if (!headers.length && rows.length > 0 && Array.isArray(rows[0])) {
+                const first = rows[0];
+                for (let i = 0; i < first.length; i++) headers.push(`Col ${i + 1}`);
+              }
+              const finalHeaders = headers.length ? headers : ['Column 1'];
+              const tbodyRows = rows.map((row) => {
+                if (Array.isArray(row)) {
+                  return finalHeaders.map((_, idx) => String(row[idx] ?? ''));
+                }
+                if (row && typeof row === 'object') {
+                  return finalHeaders.map((header) => String(row[header] ?? row[header.toLowerCase()] ?? ''));
+                }
+                return [String(row ?? '')];
+              });
+              const thead = `<thead><tr>${finalHeaders.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>`;
+              const tbody = `<tbody>${tbodyRows.map((row) => `<tr>${finalHeaders.map((_, idx) => `<td>${escapeHtml(row[idx] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+              return `<table data-crab-js-table="1">${thead}${tbody}</table>`;
+            };
+            const renderDocument = async (docSpec = {}) => {
+              const spec = (typeof docSpec === 'string') ? { markdown: docSpec } : (docSpec && typeof docSpec === 'object' ? docSpec : {});
+              const target = resolveWritableTarget(spec.target || targetSpec || {});
+              let bodyHtml = '';
+              if (spec.html != null) {
+                bodyHtml = String(spec.html);
+              } else if (spec.markdown != null) {
+                bodyHtml = markdownToHtml(String(spec.markdown));
+              } else if (spec.text != null) {
+                bodyHtml = `<pre>${escapeHtml(String(spec.text))}</pre>`;
+              }
+              if (spec.table != null) {
+                const tableHtml = buildTableHtml(spec.table);
+                bodyHtml = bodyHtml ? `${bodyHtml}\n${tableHtml}` : tableHtml;
+              }
+              const titleHtml = spec.title ? `<h1>${escapeHtml(String(spec.title))}</h1>` : '';
+              const subtitleHtml = spec.subtitle ? `<h2>${escapeHtml(String(spec.subtitle))}</h2>` : '';
+              const wrapped = `<section data-crab-js-doc="1">${titleHtml}${subtitleHtml}${bodyHtml}</section>`;
+              const textFallback = [spec.title, spec.subtitle, spec.text, spec.markdown].filter(Boolean).join('\n\n');
+              const applied = applyRenderedContent({
+                target,
+                html: wrapped,
+                text: textFallback,
+                append: spec.append === true
+              });
+              return { rendered: true, type: 'document', ...applied };
+            };
+            const renderTable = async (tableSpec = {}) => {
+              const spec = tableSpec && typeof tableSpec === 'object' ? tableSpec : {};
+              return renderDocument({ table: spec, target: spec.target, append: spec.append === true });
+            };
+            const ensureCanvas = (canvasSpec = {}) => {
+              const spec = canvasSpec && typeof canvasSpec === 'object' ? canvasSpec : {};
+              const existing = resolveWritableTarget(spec.target || spec);
+              if (existing instanceof HTMLCanvasElement) return existing;
+              const selectorCanvas = typeof spec.selector === 'string' ? document.querySelector(spec.selector) : null;
+              if (selectorCanvas instanceof HTMLCanvasElement) return selectorCanvas;
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.max(200, Math.min(2400, Number(spec.width) || 960));
+              canvas.height = Math.max(140, Math.min(1800, Number(spec.height) || 540));
+              canvas.style.maxWidth = '100%';
+              canvas.style.border = '1px solid rgba(0,0,0,0.12)';
+              canvas.style.background = '#fff';
+              canvas.setAttribute('data-crab-js-chart', '1');
+              const host = existing instanceof HTMLElement ? existing : document.body;
+              if (host instanceof HTMLInputElement || host instanceof HTMLTextAreaElement) {
+                host.insertAdjacentElement('afterend', canvas);
+              } else if (host instanceof HTMLElement && host.isContentEditable) {
+                host.appendChild(canvas);
+              } else if (host instanceof HTMLElement) {
+                host.appendChild(canvas);
+              } else {
+                document.body.appendChild(canvas);
+              }
+              return canvas;
+            };
+            const renderChart = async (chartSpec = {}) => {
+              const spec = chartSpec && typeof chartSpec === 'object' ? chartSpec : {};
+              const chartType = String(spec.type || 'bar').toLowerCase();
+              const labels = Array.isArray(spec.labels) ? spec.labels.map((item, idx) => String(item ?? `#${idx + 1}`)) : [];
+              const datasets = Array.isArray(spec.datasets) ? spec.datasets : [];
+              const data = datasets.map((dataset, idx) => {
+                const values = Array.isArray(dataset?.data) ? dataset.data.map((v) => Number(v) || 0) : [];
+                return {
+                  label: String(dataset?.label || `Series ${idx + 1}`),
+                  values,
+                  color: String(dataset?.color || dataset?.stroke || ['#2B6CB0', '#E53E3E', '#2F855A', '#B7791F'][idx % 4])
+                };
+              });
+              const canvas = ensureCanvas(spec.canvas || spec.target || {});
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return { rendered: false, error: 'Canvas context unavailable' };
+              const width = canvas.width;
+              const height = canvas.height;
+              const padding = { left: 64, right: 24, top: 36, bottom: 56 };
+              const chartW = Math.max(80, width - padding.left - padding.right);
+              const chartH = Math.max(60, height - padding.top - padding.bottom);
+              ctx.clearRect(0, 0, width, height);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, width, height);
+              ctx.strokeStyle = '#E2E8F0';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+              ctx.font = '13px Arial';
+              ctx.fillStyle = '#1A202C';
+              if (spec.title) ctx.fillText(String(spec.title).slice(0, 90), padding.left, 22);
+              const allValues = data.flatMap((series) => series.values);
+              const maxValue = allValues.length ? Math.max(...allValues, 1) : 1;
+              const safeLabels = labels.length ? labels : (data[0]?.values || []).map((_, idx) => `#${idx + 1}`);
+              const count = Math.max(1, safeLabels.length);
+              const mapY = (value) => padding.top + chartH - (value / maxValue) * chartH;
+              ctx.strokeStyle = '#CBD5E0';
+              ctx.beginPath();
+              ctx.moveTo(padding.left, padding.top);
+              ctx.lineTo(padding.left, padding.top + chartH);
+              ctx.lineTo(padding.left + chartW, padding.top + chartH);
+              ctx.stroke();
+              for (let step = 0; step <= 4; step++) {
+                const tickValue = (maxValue / 4) * step;
+                const y = mapY(tickValue);
+                ctx.strokeStyle = '#EDF2F7';
+                ctx.beginPath();
+                ctx.moveTo(padding.left, y);
+                ctx.lineTo(padding.left + chartW, y);
+                ctx.stroke();
+                ctx.fillStyle = '#4A5568';
+                ctx.fillText(String(Math.round(tickValue * 100) / 100), 8, y + 4);
+              }
+              if (chartType === 'pie') {
+                const first = data[0] || { values: [] };
+                const values = first.values.slice(0, Math.max(1, count));
+                const total = values.reduce((acc, v) => acc + Math.max(0, v), 0) || 1;
+                const cx = padding.left + chartW / 2;
+                const cy = padding.top + chartH / 2;
+                const radius = Math.max(40, Math.min(chartW, chartH) * 0.35);
+                let angle = -Math.PI / 2;
+                values.forEach((value, idx) => {
+                  const next = angle + (Math.max(0, value) / total) * Math.PI * 2;
+                  ctx.fillStyle = ['#2B6CB0', '#E53E3E', '#2F855A', '#B7791F', '#805AD5', '#DD6B20'][idx % 6];
+                  ctx.beginPath();
+                  ctx.moveTo(cx, cy);
+                  ctx.arc(cx, cy, radius, angle, next);
+                  ctx.closePath();
+                  ctx.fill();
+                  angle = next;
+                });
+              } else if (chartType === 'line') {
+                data.forEach((series) => {
+                  ctx.strokeStyle = series.color;
+                  ctx.lineWidth = 2;
+                  ctx.beginPath();
+                  series.values.forEach((value, idx) => {
+                    const x = padding.left + (count <= 1 ? chartW / 2 : (idx / (count - 1)) * chartW);
+                    const y = mapY(value);
+                    if (idx === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                  });
+                  ctx.stroke();
+                });
+              } else {
+                const seriesCount = Math.max(1, data.length);
+                const groupW = chartW / count;
+                data.forEach((series, seriesIdx) => {
+                  ctx.fillStyle = series.color;
+                  series.values.forEach((value, idx) => {
+                    const barW = (groupW * 0.75) / seriesCount;
+                    const x = padding.left + idx * groupW + groupW * 0.125 + seriesIdx * barW;
+                    const y = mapY(value);
+                    const h = padding.top + chartH - y;
+                    ctx.fillRect(x, y, barW, h);
+                  });
+                });
+              }
+              ctx.fillStyle = '#2D3748';
+              ctx.font = '12px Arial';
+              safeLabels.forEach((label, idx) => {
+                const x = padding.left + (count <= 1 ? chartW / 2 : (idx / (count - 1)) * chartW);
+                ctx.save();
+                ctx.translate(x, padding.top + chartH + 16);
+                ctx.rotate(-Math.PI / 7);
+                ctx.fillText(String(label).slice(0, 20), 0, 0);
+                ctx.restore();
+              });
+              return { rendered: true, type: 'chart', chartType, width, height, series: data.length, points: count };
+            };
+            const helpers = {
+              sleep: sleepInner,
+              resolvePoint: resolve,
+              focus: async (spec = {}) => {
+                const { target } = resolve(spec.target || spec);
+                if (target && typeof target.focus === 'function') target.focus();
+                return target || null;
+              },
+              pointer,
+              drag: async ({ from = {}, to = {}, steps = 12 } = {}) => {
+                const start = resolve(from);
+                const end = resolve(to);
+                const count = Math.max(2, Math.min(60, Number(steps) || 12));
+                const startTarget = start.target || document.elementFromPoint(start.x, start.y) || document.body;
+                const fire = (el, type, x, y, buttons = 0) => {
+                  const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons };
+                  if (typeof PointerEvent === 'function') {
+                    const pointerType = type === 'mousedown' ? 'pointerdown' : type === 'mouseup' ? 'pointerup' : 'pointermove';
+                    el.dispatchEvent(new PointerEvent(pointerType, options));
+                  }
+                  el.dispatchEvent(new MouseEvent(type, options));
+                };
+                fire(startTarget, 'mousedown', start.x, start.y, 1);
+                for (let i = 1; i <= count; i++) {
+                  const t = i / count;
+                  const x = Math.round(start.x + (end.x - start.x) * t);
+                  const y = Math.round(start.y + (end.y - start.y) * t);
+                  const moveTarget = document.elementFromPoint(x, y) || startTarget;
+                  fire(moveTarget, 'mousemove', x, y, 1);
+                  await sleepInner(12);
+                }
+                const endTarget = document.elementFromPoint(end.x, end.y) || startTarget;
+                fire(endTarget, 'mouseup', end.x, end.y, 0);
+                return { from: { x: start.x, y: start.y }, to: { x: end.x, y: end.y } };
+              },
+              wheel: ({ target = {}, dx = 0, dy = 120 } = {}) => {
+                const resolved = resolve(target);
+                const el = resolved.target || document.elementFromPoint(resolved.x, resolved.y) || document.body;
+                el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: resolved.x, clientY: resolved.y, deltaX: Number(dx) || 0, deltaY: Number(dy) || 0 }));
+                return { x: resolved.x, y: resolved.y };
+              },
+              key,
+              shortcut: key,
+              typeText: async (text) => {
+                const value = String(text ?? '');
+                const active = document.activeElement;
+                if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+                  active.value = (active.value || '') + value;
+                  active.dispatchEvent(new Event('input', { bubbles: true }));
+                  active.dispatchEvent(new Event('change', { bubbles: true }));
+                } else if (active instanceof HTMLElement && active.isContentEditable) {
+                  active.focus();
+                  if (typeof document.execCommand === 'function') document.execCommand('insertText', false, value);
+                  else active.textContent = (active.textContent || '') + value;
+                  active.dispatchEvent(new Event('input', { bubbles: true }));
+                } else {
+                  await key(value);
+                }
+                return value;
+              },
+              renderDocument,
+              renderContent: renderDocument,
+              renderTable,
+              renderChart,
+              ensureCanvas
+            };
+            const context = {
+              args: args && typeof args === 'object' ? args : {},
+              page: { url: window.location.href, title: document.title, viewport: { width: window.innerWidth || 0, height: window.innerHeight || 0, dpr: window.devicePixelRatio || 1 } },
+              target: resolve(targetSpec || {})
+            };
+            const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+            const runner = new AsyncFunction('context', 'helpers', source);
+            const value = await runner(context, helpers);
+            const toSerializable = (input, depth = 0, seen = new WeakSet()) => {
+              if (input == null) return input;
+              if (typeof input === 'string' || typeof input === 'number' || typeof input === 'boolean') return input;
+              if (typeof input === 'bigint') return String(input);
+              if (typeof input === 'function') return `[Function ${input.name || 'anonymous'}]`;
+              if (input instanceof Element) {
+                return {
+                  tag: (input.tagName || '').toLowerCase(),
+                  id: input.id || '',
+                  role: input.getAttribute?.('role') || '',
+                  text: (input.innerText || input.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+                };
+              }
+              if (Array.isArray(input)) {
+                if (depth > 3) return `[Array(${input.length})]`;
+                return input.slice(0, 40).map((item) => toSerializable(item, depth + 1, seen));
+              }
+              if (typeof input === 'object') {
+                if (seen.has(input)) return '[Circular]';
+                seen.add(input);
+                if (depth > 3) return '[Object]';
+                const out = {};
+                for (const key of Object.keys(input).slice(0, 40)) {
+                  out[key] = toSerializable(input[key], depth + 1, seen);
+                }
+                return out;
+              }
+              return String(input);
+            };
+            await sleepInner(Math.max(0, Math.min(1000, Number(settleDelay) || 0)));
+            return { success: true, result: toSerializable(value) };
+          },
+          args: [script, scriptArgs, defaultTarget, settleMs]
+        });
+        const payload = result?.[0]?.result || { success: false, error: 'javascript_tool script failed' };
+        if (!payload.success) {
+          const rawError = String(payload.error || 'javascript_tool script failed');
+          const unsafeEval = /unsafe-eval|Refused to evaluate a string as JavaScript|EvalError/i.test(rawError);
+          return AgentS.createActionResult({
+            success: false,
+            error: unsafeEval
+              ? `${rawError}. This page/extension context blocks dynamic eval in script mode. Use javascript_tool mode "render" instead (ops is only for low-level pointer automation, not artifact drawing).`
+              : rawError
+          });
+        }
+        let extracted = '';
+        if (payload.result != null) {
+          try {
+            extracted = JSON.stringify(payload.result);
+            if (extracted.length > 5000) {
+              extracted = extracted.slice(0, 5000) + '...';
+            }
+          } catch (e) {
+            extracted = String(payload.result).slice(0, 5000);
+          }
+        }
+        return AgentS.createActionResult({
+          success: true,
+          message: 'javascript_tool script executed',
+          includeInMemory: params.include_in_memory === true || params.includeInMemory === true,
+          extractedContent: extracted
+        });
+      };
+
+      const runOpsMode = async () => {
+        let operations = [];
+        if (Array.isArray(params.operations)) operations = params.operations;
+        else if (Array.isArray(params.ops)) operations = params.ops;
+        else if (params.operation && typeof params.operation === 'object') operations = [params.operation];
+        else if (typeof params.operation === 'string' && params.operation.trim()) operations = [{ op: params.operation, ...params }];
+
+        if (!operations.length) {
+          return AgentS.createActionResult({ success: false, error: 'javascript_tool ops mode requires operations[].' });
+        }
+
+        const allowOpsForDiagram = params.allow_ops_for_diagram === true || params.allowOpsForDiagram === true || params.force_ops === true || params.forceOps === true;
+        let activeTaskText = '';
+        try {
+          const execRef = currentExecution;
+          activeTaskText = String(execRef?.latestUserUpdate || execRef?.originalTask || execRef?.task || '');
+        } catch (e) {
+          activeTaskText = '';
+        }
+        const hasFlowOrDiagramIntent = /(flow|diagram|sơ\s*đồ|luồng)/i.test(activeTaskText);
+        if (!allowOpsForDiagram && hasFlowOrDiagramIntent) {
+          const canvasProbe = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+              const elements = Array.from(document.querySelectorAll('canvas, svg, [role="application"]'));
+              const viewportArea = Math.max(1, (window.innerWidth || 1) * (window.innerHeight || 1));
+              const hasLargeSurface = elements.some((el) => {
+                const rect = el?.getBoundingClientRect?.();
+                if (!rect) return false;
+                return (rect.width * rect.height) >= viewportArea * 0.2;
+              });
+              const titleText = String(document.title || '').toLowerCase();
+              const bodyText = String(document.body?.innerText || '').slice(0, 3000).toLowerCase();
+              const editorHint = /whiteboard|diagram|draw|canvas|excalidraw/.test(titleText) || /whiteboard|diagram|draw|canvas|excalidraw/.test(bodyText);
+              return { isCanvasEditor: hasLargeSurface || editorHint };
+            }
+          });
+          const isCanvasEditor = canvasProbe?.[0]?.result?.isCanvasEditor === true;
+          if (isCanvasEditor) {
+            return AgentS.createActionResult({
+              success: false,
+              error: 'javascript_tool policy block: mode "ops" is disabled for flow/diagram drawing on canvas editors. Use mode "script" with world:"page" to access the canvas app API directly.'
+            });
+          }
+        }
+
+        const summary = [];
+        const pickButton = (value) => {
+          const normalized = String(value || 'left').toLowerCase();
+          return ['left', 'middle', 'right'].includes(normalized) ? normalized : 'left';
+        };
+
+        for (let i = 0; i < operations.length; i++) {
+          const rawOp = operations[i];
+          const op = typeof rawOp === 'string' ? { op: rawOp } : (rawOp && typeof rawOp === 'object' ? rawOp : null);
+          if (!op) return AgentS.createActionResult({ success: false, error: `javascript_tool operation #${i + 1} is invalid.` });
+          const opName = String(op.op || op.type || op.action || '').toLowerCase();
+          if (!opName) return AgentS.createActionResult({ success: false, error: `javascript_tool operation #${i + 1} missing "op".` });
+          const mergedTarget = {
+            ...(defaultTarget && typeof defaultTarget === 'object' ? defaultTarget : {}),
+            ...(op.target && typeof op.target === 'object' ? op.target : {})
+          };
+
+          if (opName === 'wait') {
+            const waitMs = Math.max(0, Math.min(15000, Number(op.ms ?? op.wait_ms ?? op.milliseconds ?? (Number(op.seconds || 0) * 1000)) || settleMs));
+            await sleep(waitMs);
+            summary.push(`[${i + 1}] wait ${waitMs}ms`);
+            continue;
+          }
+
+          if (opName === 'type') {
+            if (op.target || (defaultTarget && typeof defaultTarget === 'object' && Object.keys(defaultTarget).length > 0)) {
+              const focusPoint = await resolvePoint(mergedTarget);
+              if (focusPoint?.success) {
+                await chrome.scripting.executeScript({
+                  target: { tabId },
+                  func: (x, y) => {
+                    const el = document.elementFromPoint(x, y) || document.body;
+                    if (el && typeof el.focus === 'function') {
+                      try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+                    }
+                  },
+                  args: [focusPoint.x, focusPoint.y]
+                });
+              }
+            }
+            const text = String(op.text ?? op.value ?? '');
+            if (text) {
+              const typeResult = await AgentS.actions.sendKeys(text, tabId);
+              if (!typeResult?.success) {
+                return AgentS.createActionResult({ success: false, error: `javascript_tool type failed at #${i + 1}: ${typeResult?.error || typeResult?.message || 'typing failed'}` });
+              }
+            }
+            if (op.enter === true || op.submit === true) {
+              const enterResult = await AgentS.actions.sendKeys('Enter', tabId);
+              if (!enterResult?.success) {
+                return AgentS.createActionResult({ success: false, error: `javascript_tool enter failed at #${i + 1}: ${enterResult?.error || enterResult?.message || 'enter failed'}` });
+              }
+            }
+            summary.push(`[${i + 1}] type "${text.slice(0, 32)}"`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'key' || opName === 'shortcut') {
+            const combo = String(op.keys || op.key || op.combo || '').trim();
+            if (!combo) return AgentS.createActionResult({ success: false, error: `javascript_tool ${opName} requires keys at #${i + 1}.` });
+            const keyResult = await AgentS.actions.sendKeys(combo, tabId);
+            if (!keyResult?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool ${opName} failed at #${i + 1}: ${keyResult?.error || keyResult?.message || 'key failed'}` });
+            }
+            summary.push(`[${i + 1}] ${opName} ${combo}`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'focus') {
+            const point = await resolvePoint(mergedTarget);
+            if (!point?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool focus failed at #${i + 1}: ${point?.error || 'target unresolved'}` });
+            }
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              func: (x, y, clickIt) => {
+                const el = document.elementFromPoint(x, y) || document.body;
+                if (el && typeof el.focus === 'function') {
+                  try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+                }
+                if (clickIt) {
+                  const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: 1 };
+                  if (typeof PointerEvent === 'function') {
+                    el.dispatchEvent(new PointerEvent('pointerdown', options));
+                    el.dispatchEvent(new PointerEvent('pointerup', options));
+                  }
+                  el.dispatchEvent(new MouseEvent('mousedown', options));
+                  el.dispatchEvent(new MouseEvent('mouseup', options));
+                  el.dispatchEvent(new MouseEvent('click', options));
+                }
+              },
+              args: [point.x, point.y, op.click === true]
+            });
+            summary.push(`[${i + 1}] focus @(${point.x},${point.y})`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'pointer') {
+            const point = await resolvePoint({
+              ...mergedTarget,
+              x: op.x ?? mergedTarget.x,
+              y: op.y ?? mergedTarget.y,
+              offset_x: op.offset_x ?? op.offsetX ?? mergedTarget.offset_x ?? mergedTarget.offsetX,
+              offset_y: op.offset_y ?? op.offsetY ?? mergedTarget.offset_y ?? mergedTarget.offsetY
+            });
+            if (!point?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool pointer failed at #${i + 1}: ${point?.error || 'point unresolved'}` });
+            }
+            const eventName = String(op.event || op.kind || 'click').toLowerCase();
+            const button = pickButton(op.button);
+            const clickCount = Math.max(1, Math.min(3, Number(op.click_count ?? op.clickCount ?? 1) || 1));
+            let pointerResult = null;
+            if (op.trusted !== false) {
+              const trustedEvents = eventName === 'move'
+                ? [{ type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0, pointerType: 'mouse' }]
+                : eventName === 'down'
+                  ? [{ type: 'mousePressed', x: point.x, y: point.y, button, buttons: 1, clickCount, pointerType: 'mouse' }]
+                  : eventName === 'up'
+                    ? [{ type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount, pointerType: 'mouse' }]
+                    : eventName === 'dblclick'
+                      ? [
+                          { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0, pointerType: 'mouse' },
+                          { type: 'mousePressed', x: point.x, y: point.y, button, buttons: 1, clickCount: 1, pointerType: 'mouse' },
+                          { type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount: 1, pointerType: 'mouse' },
+                          { type: 'mousePressed', x: point.x, y: point.y, button, buttons: 1, clickCount: 2, pointerType: 'mouse' },
+                          { type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount: 2, pointerType: 'mouse' }
+                        ]
+                      : [
+                          { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0, pointerType: 'mouse' },
+                          { type: 'mousePressed', x: point.x, y: point.y, button, buttons: 1, clickCount, pointerType: 'mouse' },
+                          { type: 'mouseReleased', x: point.x, y: point.y, button, buttons: 0, clickCount, pointerType: 'mouse' }
+                        ];
+              pointerResult = await dispatchTrustedMouseEvents(trustedEvents);
+            }
+            if (!pointerResult?.success) {
+              const synthetic = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: (kind, x, y, buttonName, count) => {
+                  const button = buttonName === 'middle' ? 1 : buttonName === 'right' ? 2 : 0;
+                  const el = document.elementFromPoint(x, y) || document.body;
+                  const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button, buttons: kind === 'move' ? 0 : 1, detail: count };
+                  const fire = (type) => {
+                    if (typeof PointerEvent === 'function') {
+                      const pointerType = type === 'mousemove' ? 'pointermove' : type === 'mousedown' ? 'pointerdown' : type === 'mouseup' ? 'pointerup' : null;
+                      if (pointerType) el.dispatchEvent(new PointerEvent(pointerType, options));
+                    }
+                    el.dispatchEvent(new MouseEvent(type, options));
+                  };
+                  if (kind === 'move') fire('mousemove');
+                  else if (kind === 'down') fire('mousedown');
+                  else if (kind === 'up') fire('mouseup');
+                  else if (kind === 'dblclick') {
+                    fire('mousedown'); fire('mouseup'); fire('click');
+                    fire('mousedown'); fire('mouseup'); fire('click');
+                    fire('dblclick');
+                  } else {
+                    fire('mousedown'); fire('mouseup'); fire('click');
+                  }
+                  return { success: true };
+                },
+                args: [eventName, point.x, point.y, button, clickCount]
+              });
+              pointerResult = synthetic?.[0]?.result || { success: false, error: 'Synthetic pointer failed' };
+            }
+            if (!pointerResult?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool pointer failed at #${i + 1}: ${pointerResult?.error || 'pointer failed'}` });
+            }
+            summary.push(`[${i + 1}] pointer ${eventName} @(${point.x},${point.y})`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'drag') {
+            const from = await resolvePoint(op.from && typeof op.from === 'object' ? op.from : {});
+            const to = await resolvePoint(op.to && typeof op.to === 'object' ? op.to : {});
+            if (!from?.success || !to?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool drag failed at #${i + 1}: cannot resolve from/to.` });
+            }
+            const steps = Math.max(2, Math.min(60, Number(op.steps) || 12));
+            const button = pickButton(op.button);
+            const events = [
+              { type: 'mouseMoved', x: from.x, y: from.y, button: 'none', buttons: 0, pointerType: 'mouse' },
+              { type: 'mousePressed', x: from.x, y: from.y, button, buttons: 1, clickCount: 1, pointerType: 'mouse' }
+            ];
+            for (let step = 1; step <= steps; step++) {
+              const t = step / steps;
+              const x = Math.round(from.x + (to.x - from.x) * t);
+              const y = Math.round(from.y + (to.y - from.y) * t);
+              events.push({ type: 'mouseMoved', x, y, button: 'none', buttons: 1, pointerType: 'mouse' });
+            }
+            events.push({ type: 'mouseReleased', x: to.x, y: to.y, button, buttons: 0, clickCount: 1, pointerType: 'mouse' });
+            let dragResult = null;
+            if (op.trusted !== false) {
+              dragResult = await dispatchTrustedMouseEvents(events);
+            }
+            if (!dragResult?.success) {
+              const synthetic = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: async (sx, sy, ex, ey, moveSteps) => {
+                  const sleepInner = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                  const startTarget = document.elementFromPoint(sx, sy) || document.body;
+                  const fire = (el, type, x, y, buttons = 0) => {
+                    const options = { view: window, bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons };
+                    if (typeof PointerEvent === 'function') {
+                      const pointerType = type === 'mousedown' ? 'pointerdown' : type === 'mouseup' ? 'pointerup' : 'pointermove';
+                      el.dispatchEvent(new PointerEvent(pointerType, options));
+                    }
+                    el.dispatchEvent(new MouseEvent(type, options));
+                  };
+                  fire(startTarget, 'mousedown', sx, sy, 1);
+                  for (let i = 1; i <= moveSteps; i++) {
+                    const t = i / moveSteps;
+                    const x = Math.round(sx + (ex - sx) * t);
+                    const y = Math.round(sy + (ey - sy) * t);
+                    const moveTarget = document.elementFromPoint(x, y) || startTarget;
+                    fire(moveTarget, 'mousemove', x, y, 1);
+                    await sleepInner(12);
+                  }
+                  const endTarget = document.elementFromPoint(ex, ey) || startTarget;
+                  fire(endTarget, 'mouseup', ex, ey, 0);
+                  return { success: true };
+                },
+                args: [from.x, from.y, to.x, to.y, steps]
+              });
+              dragResult = synthetic?.[0]?.result || { success: false, error: 'Synthetic drag failed' };
+            }
+            if (!dragResult?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool drag failed at #${i + 1}: ${dragResult?.error || 'drag failed'}` });
+            }
+            summary.push(`[${i + 1}] drag (${from.x},${from.y}) -> (${to.x},${to.y})`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          if (opName === 'wheel') {
+            const point = await resolvePoint({
+              ...mergedTarget,
+              x: op.x ?? mergedTarget.x,
+              y: op.y ?? mergedTarget.y
+            });
+            if (!point?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool wheel failed at #${i + 1}: ${point?.error || 'point unresolved'}` });
+            }
+            const deltaX = Number(op.dx ?? op.delta_x ?? op.deltaX ?? 0) || 0;
+            const deltaY = Number(op.dy ?? op.delta_y ?? op.deltaY ?? 120) || 120;
+            let wheelResult = null;
+            if (op.trusted !== false) {
+              wheelResult = await dispatchTrustedMouseEvents([
+                { type: 'mouseWheel', x: point.x, y: point.y, deltaX, deltaY, button: 'none', buttons: 0, pointerType: 'mouse' }
+              ]);
+            }
+            if (!wheelResult?.success) {
+              const synthetic = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: (x, y, dx, dy) => {
+                  const el = document.elementFromPoint(x, y) || document.body;
+                  el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaX: dx, deltaY: dy }));
+                  return { success: true };
+                },
+                args: [point.x, point.y, deltaX, deltaY]
+              });
+              wheelResult = synthetic?.[0]?.result || { success: false, error: 'Synthetic wheel failed' };
+            }
+            if (!wheelResult?.success) {
+              return AgentS.createActionResult({ success: false, error: `javascript_tool wheel failed at #${i + 1}: ${wheelResult?.error || 'wheel failed'}` });
+            }
+            summary.push(`[${i + 1}] wheel (${deltaX},${deltaY}) @(${point.x},${point.y})`);
+            await sleep(settleMs);
+            continue;
+          }
+
+          return AgentS.createActionResult({ success: false, error: `javascript_tool operation #${i + 1} unsupported op "${opName}".` });
+        }
+
+        return AgentS.createActionResult({
+          success: true,
+          message: `javascript_tool ops completed (${operations.length} step${operations.length > 1 ? 's' : ''}): ${summary.join(' | ')}`
+        });
+      };
+
+      if (mode === 'render') {
+        return runRenderMode();
+      }
+      if (mode === 'script') {
+        return runScriptMode();
+      }
+      if (mode === 'ops') {
+        return runOpsMode();
+      }
+      return AgentS.createActionResult({ success: false, error: `Unsupported javascript_tool mode "${mode}". Supported modes: render, script, ops.` });
     }
   },
 
@@ -2572,28 +5517,41 @@ const AgentS = {
         if (x + width < 0 || y + height < 0) continue;
         if (x > bitmap.width || y > bitmap.height) continue;
 
-        // Draw bounding box
+        // Draw bounding box with thicker border
         ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(2, dpr);
+        ctx.lineWidth = Math.max(3, dpr * 1.5);
         ctx.strokeRect(x, y, width, height);
 
-        // Draw label background
+        // Draw label - larger and more visible
         const label = String(el.index);
-        const fontSize = Math.round(14 * dpr);
+        const fontSize = Math.round(16 * dpr);
         ctx.font = `bold ${fontSize}px Arial`;
-        const textWidth = ctx.measureText(label).width + 8 * dpr;
-        const textHeight = 18 * dpr;
+        const textMetrics = ctx.measureText(label);
+        const textWidth = textMetrics.width + 12 * dpr;
+        const textHeight = 22 * dpr;
 
         let labelX = x - 1;
-        let labelY = y - textHeight - 2;
-        if (labelY < 0) labelY = y + 2; // Put inside if no room above
+        let labelY = y - textHeight - 3;
+        if (labelY < 0) labelY = y + 3; // Put inside if no room above
 
+        // Draw label shadow for better visibility
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(labelX + 2, labelY + 2, textWidth, textHeight);
+
+        // Draw label background
         ctx.fillStyle = color;
         ctx.fillRect(labelX, labelY, textWidth, textHeight);
 
-        // Draw label text
+        // Draw white border around label
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(labelX, labelY, textWidth, textHeight);
+
+        // Draw label text with shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillText(label, labelX + 7 * dpr, labelY + 17 * dpr);
         ctx.fillStyle = 'white';
-        ctx.fillText(label, labelX + 4 * dpr, labelY + 14 * dpr);
+        ctx.fillText(label, labelX + 6 * dpr, labelY + 16 * dpr);
       }
 
       // Convert back to data URL
@@ -2606,6 +5564,317 @@ const AgentS = {
     } catch (e) {
       console.error('Failed to annotate screenshot:', e);
       return screenshotDataUrl; // Return original if annotation fails
+    }
+  },
+
+  /**
+   * Draw click indicator on canvas (orange circle like Claude)
+   * @param {CanvasRenderingContext2D} ctx - Canvas context
+   * @param {number} x - X coordinate
+   * @param {number} y - Y coordinate
+   * @param {number} scaleFactor - Scale factor for high-DPI
+   */
+  drawClickIndicator(ctx, x, y, scaleFactor = 1) {
+    ctx.save();
+
+    // Outer glow
+    ctx.beginPath();
+    ctx.arc(x, y, 18 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(255, 107, 53, 0.3)'; // Crab orange
+    ctx.fill();
+
+    // Middle ring
+    ctx.beginPath();
+    ctx.arc(x, y, 12 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(255, 107, 53, 0.5)';
+    ctx.fill();
+
+    // Inner circle
+    ctx.beginPath();
+    ctx.arc(x, y, 6 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(255, 107, 53, 0.9)';
+    ctx.fill();
+
+    // Border
+    ctx.beginPath();
+    ctx.arc(x, y, 12 * scaleFactor, 0, 2 * Math.PI);
+    ctx.strokeStyle = 'rgba(255, 107, 53, 1)';
+    ctx.lineWidth = 2 * scaleFactor;
+    ctx.stroke();
+
+    ctx.restore();
+  },
+
+  /**
+   * Draw drag path with arrow on canvas
+   * @param {CanvasRenderingContext2D} ctx - Canvas context
+   * @param {number} startX - Start X coordinate
+   * @param {number} startY - Start Y coordinate
+   * @param {number} endX - End X coordinate
+   * @param {number} endY - End Y coordinate
+   * @param {number} scaleFactor - Scale factor for high-DPI
+   */
+  drawDragPath(ctx, startX, startY, endX, endY, scaleFactor = 1) {
+    ctx.save();
+
+    // Draw line
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.strokeStyle = '#dc2626'; // Red
+    ctx.lineWidth = 3 * scaleFactor;
+    ctx.stroke();
+
+    // Draw arrowhead at end
+    const angle = Math.atan2(endY - startY, endX - startX);
+    const arrowLength = 15 * scaleFactor;
+
+    ctx.beginPath();
+    ctx.moveTo(endX, endY);
+    ctx.lineTo(
+      endX - arrowLength * Math.cos(angle - Math.PI / 6),
+      endY - arrowLength * Math.sin(angle - Math.PI / 6)
+    );
+    ctx.lineTo(
+      endX - arrowLength * Math.cos(angle + Math.PI / 6),
+      endY - arrowLength * Math.sin(angle + Math.PI / 6)
+    );
+    ctx.closePath();
+    ctx.fillStyle = '#dc2626';
+    ctx.fill();
+
+    // Draw start marker (white circle with orange border)
+    ctx.beginPath();
+    ctx.arc(startX, startY, 6 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#FF6B35';
+    ctx.lineWidth = 2 * scaleFactor;
+    ctx.stroke();
+
+    // Draw end marker (white circle with red border)
+    ctx.beginPath();
+    ctx.arc(endX, endY, 6 * scaleFactor, 0, 2 * Math.PI);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#dc2626';
+    ctx.lineWidth = 2 * scaleFactor;
+    ctx.stroke();
+
+    ctx.restore();
+  },
+
+  /**
+   * Draw action label on canvas
+   * @param {CanvasRenderingContext2D} ctx - Canvas context
+   * @param {string} text - Label text
+   * @param {number} x - X coordinate
+   * @param {number} y - Y coordinate
+   * @param {number} scaleFactor - Scale factor for high-DPI
+   */
+  drawActionLabel(ctx, text, x, y, scaleFactor = 1) {
+    ctx.save();
+
+    const fontSize = 14 * scaleFactor;
+    ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+
+    const metrics = ctx.measureText(text);
+    const textWidth = metrics.width;
+    const textHeight = 20 * scaleFactor;
+    const padding = 8 * scaleFactor;
+
+    // Adjust position if too close to edges
+    let labelX = x + 20 * scaleFactor;
+    let labelY = y - 10 * scaleFactor;
+
+    if (labelX + textWidth + padding * 2 > ctx.canvas.width) {
+      labelX = x - textWidth - padding * 2 - 20 * scaleFactor;
+    }
+    if (labelY < 0) {
+      labelY = y + 20 * scaleFactor;
+    }
+
+    const bgX = labelX;
+    const bgY = labelY;
+    const bgWidth = textWidth + padding * 2;
+    const bgHeight = textHeight + padding;
+    const radius = 6 * scaleFactor;
+
+    // Draw rounded background
+    ctx.beginPath();
+    ctx.moveTo(bgX + radius, bgY);
+    ctx.lineTo(bgX + bgWidth - radius, bgY);
+    ctx.quadraticCurveTo(bgX + bgWidth, bgY, bgX + bgWidth, bgY + radius);
+    ctx.lineTo(bgX + bgWidth, bgY + bgHeight - radius);
+    ctx.quadraticCurveTo(bgX + bgWidth, bgY + bgHeight, bgX + bgWidth - radius, bgY + bgHeight);
+    ctx.lineTo(bgX + radius, bgY + bgHeight);
+    ctx.quadraticCurveTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - radius);
+    ctx.lineTo(bgX, bgY + radius);
+    ctx.quadraticCurveTo(bgX, bgY, bgX + radius, bgY);
+    ctx.closePath();
+
+    // Shadow
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+    ctx.shadowBlur = 4 * scaleFactor;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 2 * scaleFactor;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fill();
+
+    // Reset shadow
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    // Draw text
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, bgX + padding, bgY + padding);
+
+    ctx.restore();
+  },
+
+  /**
+   * Annotate screenshot with action indicators (click, drag, etc.)
+   * @param {string} screenshotDataUrl - Base64 data URL of screenshot
+   * @param {Object} action - Action object with type, coordinates, etc.
+   * @param {Object} viewportInfo - Viewport information
+   * @returns {Promise<string>} Annotated screenshot data URL
+   */
+  async annotateScreenshotWithAction(screenshotDataUrl, action, viewportInfo = {}) {
+    if (!screenshotDataUrl || !action) return screenshotDataUrl;
+
+    try {
+      const response = await fetch(screenshotDataUrl);
+      const blob = await response.blob();
+      const bitmap = await createImageBitmap(blob);
+
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext('2d');
+
+      // Draw original screenshot
+      ctx.drawImage(bitmap, 0, 0);
+
+      // Calculate scale factor
+      const viewportWidth = viewportInfo.width || bitmap.width;
+      const scaleFactor = bitmap.width / viewportWidth;
+
+      // Draw click indicator for click actions
+      if (action.coordinate && (
+        action.type?.includes('click') ||
+        action.type === 'click_element' ||
+        action.type === 'click_at' ||
+        action.type === 'scroll'
+      )) {
+        const [x, y] = Array.isArray(action.coordinate) ? action.coordinate : [action.coordinate.x, action.coordinate.y];
+        const scaledX = x * scaleFactor;
+        const scaledY = y * scaleFactor;
+        this.drawClickIndicator(ctx, scaledX, scaledY, scaleFactor);
+
+        // Draw action label
+        if (action.description || action.type) {
+          const label = action.description || action.type;
+          this.drawActionLabel(ctx, label, scaledX, scaledY, scaleFactor);
+        }
+      }
+
+      // Draw drag path for drag actions
+      if (action.type === 'drag' || action.type === 'left_click_drag') {
+        const startCoord = action.start_coordinate || action.startCoordinate;
+        const endCoord = action.coordinate || action.end_coordinate || action.endCoordinate;
+
+        if (startCoord && endCoord) {
+          const [startX, startY] = Array.isArray(startCoord) ? startCoord : [startCoord.x, startCoord.y];
+          const [endX, endY] = Array.isArray(endCoord) ? endCoord : [endCoord.x, endCoord.y];
+
+          this.drawDragPath(
+            ctx,
+            startX * scaleFactor,
+            startY * scaleFactor,
+            endX * scaleFactor,
+            endY * scaleFactor,
+            scaleFactor
+          );
+
+          if (action.description || action.type) {
+            this.drawActionLabel(ctx, action.description || action.type, endX * scaleFactor, endY * scaleFactor, scaleFactor);
+          }
+        }
+      }
+
+      // Draw label for type/key actions (top-left)
+      if (!action.coordinate && (action.type === 'type' || action.type === 'send_keys' || action.type === 'key')) {
+        const label = action.description || `${action.type}: ${action.text || action.keys || ''}`;
+        this.drawActionLabel(ctx, label.substring(0, 50), 20 * scaleFactor, 20 * scaleFactor, scaleFactor);
+      }
+
+      // Convert back to data URL
+      const annotatedBlob = await canvas.convertToBlob({ type: 'image/png' });
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(annotatedBlob);
+      });
+    } catch (e) {
+      console.error('Failed to annotate screenshot with action:', e);
+      return screenshotDataUrl;
+    }
+  },
+
+  /**
+   * Resize screenshot to max dimension while maintaining aspect ratio
+   * @param {string} screenshotDataUrl - Base64 data URL
+   * @param {number} maxDimension - Max width or height
+   * @param {string} format - Output format (png, jpeg, webp)
+   * @param {number} quality - Quality for lossy formats (0-1)
+   * @returns {Promise<string>} Resized screenshot data URL
+   */
+  async resizeScreenshot(screenshotDataUrl, maxDimension = 1280, format = 'png', quality = 0.85) {
+    if (!screenshotDataUrl) return screenshotDataUrl;
+
+    try {
+      const response = await fetch(screenshotDataUrl);
+      const blob = await response.blob();
+      const bitmap = await createImageBitmap(blob);
+
+      // Check if resize is needed
+      if (bitmap.width <= maxDimension && bitmap.height <= maxDimension) {
+        // Still convert format if different
+        if (format !== 'png') {
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(bitmap, 0, 0);
+          const newBlob = await canvas.convertToBlob({ type: `image/${format}`, quality });
+          return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.readAsDataURL(newBlob);
+          });
+        }
+        return screenshotDataUrl;
+      }
+
+      // Calculate new dimensions
+      const ratio = Math.min(maxDimension / bitmap.width, maxDimension / bitmap.height);
+      const newWidth = Math.round(bitmap.width * ratio);
+      const newHeight = Math.round(bitmap.height * ratio);
+
+      const canvas = new OffscreenCanvas(newWidth, newHeight);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, newWidth, newHeight);
+
+      const resizedBlob = await canvas.convertToBlob({ type: `image/${format}`, quality });
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(resizedBlob);
+      });
+    } catch (e) {
+      console.error('Failed to resize screenshot:', e);
+      return screenshotDataUrl;
     }
   },
 
@@ -2958,6 +6227,708 @@ const AgentS = {
 let currentExecution = null;
 let sidePanel = null;
 let currentAbortController = null; // Global abort controller for canceling requests
+let lastTaskReplayArtifact = null;
+let lastTaskTeachingRecord = null;
+
+const TASK_RECORDING_CONFIG = {
+  MAX_RECORDED_STEPS: 120,
+  MAX_REPLAY_FRAMES: 16,
+  MAX_FRAME_DIMENSION: 960,
+  FRAME_FORMAT: 'jpeg',
+  FRAME_QUALITY: 0.68
+};
+
+const GIF_EXPORT_CONFIG = {
+  MAX_FRAMES: 12,
+  MAX_DIMENSION: 640,
+  FRAME_DELAY_MS: 850,
+  MAX_OUTPUT_BYTES: 8 * 1024 * 1024
+};
+
+function normalizeRecordText(value, maxLen = 220) {
+  const text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
+}
+
+function normalizeRecordParams(params, maxLen = 320) {
+  if (params == null) return '';
+  let serialized = '';
+  try {
+    serialized = JSON.stringify(params);
+  } catch (e) {
+    serialized = String(params);
+  }
+  serialized = String(serialized || '').replace(/\s+/g, ' ').trim();
+  if (!serialized) return '';
+  return serialized.length > maxLen ? `${serialized.slice(0, maxLen)}...` : serialized;
+}
+
+function isTaskRecordingEnabled(settings) {
+  // Enabled by default unless explicitly disabled.
+  return settings?.enableTaskRecording !== false;
+}
+
+function ensureTaskRecorder(exec) {
+  if (!exec || !isTaskRecordingEnabled(exec.settings)) return null;
+  if (exec.recorder) return exec.recorder;
+
+  exec.recorder = {
+    version: '2.1',
+    taskId: exec.taskId,
+    task: normalizeRecordText(exec.task || exec.originalTask || '', 600),
+    startedAt: Date.now(),
+    finishedAt: null,
+    status: 'running',
+    summary: '',
+    steps: [],
+    frameCount: 0,
+    maxRecordedSteps: TASK_RECORDING_CONFIG.MAX_RECORDED_STEPS,
+    maxReplayFrames: TASK_RECORDING_CONFIG.MAX_REPLAY_FRAMES
+  };
+  return exec.recorder;
+}
+
+async function beginTaskRecordingStep(exec, context = {}) {
+  const recorder = ensureTaskRecorder(exec);
+  if (!recorder) return null;
+  if (recorder.steps.length >= recorder.maxRecordedSteps) return null;
+
+  const stepRecord = {
+    step: Number(context.step || exec.step || recorder.steps.length + 1),
+    startedAt: Date.now(),
+    url: normalizeRecordText(context.pageState?.url || '', 260),
+    title: normalizeRecordText(context.pageState?.title || '', 180),
+    elementCount: Number(context.pageState?.elementCount || 0),
+    domHash: normalizeRecordText(context.pageState?.domHash || '', 80),
+    plannerTrigger: normalizeRecordText(context.plannerTrigger || '', 40),
+    warnings: normalizeRecordText(context.stateWarnings || '', 380),
+    modelThought: '',
+    chosenAction: '',
+    chosenParams: '',
+    outcome: '',
+    outcomeSuccess: null,
+    outcomeDetails: '',
+    frame: null,
+    endedAt: null
+  };
+
+  if (context.screenshot && recorder.frameCount < recorder.maxReplayFrames) {
+    try {
+      const reducedFrame = await AgentS.resizeScreenshot(
+        context.screenshot,
+        TASK_RECORDING_CONFIG.MAX_FRAME_DIMENSION,
+        TASK_RECORDING_CONFIG.FRAME_FORMAT,
+        TASK_RECORDING_CONFIG.FRAME_QUALITY
+      );
+      if (typeof reducedFrame === 'string' && reducedFrame.startsWith('data:image/')) {
+        stepRecord.frame = reducedFrame;
+        recorder.frameCount += 1;
+      }
+    } catch (e) {
+      // Frame capture failure should not break executor.
+    }
+  }
+
+  recorder.steps.push(stepRecord);
+  return stepRecord;
+}
+
+function annotateTaskRecordingDecision(stepRecord, parsed, actionName, actionPayload) {
+  if (!stepRecord) return;
+  const thought = parsed?.thought || {};
+  const thoughtSummary = [
+    normalizeRecordText(thought.observation || '', 180),
+    normalizeRecordText(thought.analysis || thought.visual_reasoning || '', 180),
+    normalizeRecordText(thought.plan || '', 180)
+  ].filter(Boolean).join(' | ');
+
+  stepRecord.modelThought = thoughtSummary;
+  stepRecord.chosenAction = normalizeRecordText(actionName || '', 80);
+  stepRecord.chosenParams = normalizeRecordParams(actionPayload, 260);
+}
+
+function finalizeTaskRecordingStep(stepRecord, outcome = {}) {
+  if (!stepRecord || stepRecord.endedAt) return;
+  stepRecord.outcome = normalizeRecordText(outcome.outcome || '', 80);
+  stepRecord.outcomeSuccess = outcome.success === true ? true : outcome.success === false ? false : null;
+  stepRecord.outcomeDetails = normalizeRecordText(
+    outcome.details || outcome.message || outcome.error || '',
+    320
+  );
+  stepRecord.endedAt = Date.now();
+}
+
+function buildTeachingRecordFromRecorder(recorder, includeFrames = false) {
+  if (!recorder) return null;
+  const steps = (recorder.steps || []).map((step) => ({
+    step: step.step,
+    startedAt: step.startedAt,
+    endedAt: step.endedAt,
+    url: step.url,
+    title: step.title,
+    elementCount: step.elementCount,
+    domHash: step.domHash,
+    plannerTrigger: step.plannerTrigger,
+    warnings: step.warnings,
+    modelThought: step.modelThought,
+    chosenAction: step.chosenAction,
+    chosenParams: step.chosenParams,
+    outcome: step.outcome,
+    outcomeSuccess: step.outcomeSuccess,
+    outcomeDetails: step.outcomeDetails,
+    ...(includeFrames ? { frame: step.frame || null } : {})
+  }));
+
+  return {
+    version: recorder.version,
+    taskId: recorder.taskId,
+    task: recorder.task,
+    status: recorder.status,
+    summary: recorder.summary,
+    startedAt: recorder.startedAt,
+    finishedAt: recorder.finishedAt,
+    totalSteps: steps.length,
+    frameCount: steps.filter((step) => !!step.frame).length,
+    steps
+  };
+}
+
+async function finalizeTaskRecording(exec, status = 'completed', details = {}) {
+  if (!exec?.recorder) return;
+  const recorder = exec.recorder;
+  if (recorder.finishedAt) return;
+  recorder.finishedAt = Date.now();
+  recorder.status = status;
+  recorder.summary = normalizeRecordText(
+    details.summary || details.finalAnswer || details.error || '',
+    600
+  );
+
+  const replayArtifact = buildTeachingRecordFromRecorder(recorder, true);
+  const teachingRecord = buildTeachingRecordFromRecorder(recorder, false);
+
+  lastTaskReplayArtifact = replayArtifact;
+  lastTaskTeachingRecord = teachingRecord;
+
+  // Persist light-weight teaching record for later learning/export.
+  try {
+    const storagePayload = {
+      lastTaskTeachingRecord: teachingRecord
+    };
+
+    // Persist replay only when size is reasonably below storage quota.
+    const replayApproxSize = JSON.stringify(replayArtifact).length;
+    if (replayApproxSize <= 3500000) {
+      storagePayload.lastTaskReplayArtifact = replayArtifact;
+    }
+    await chrome.storage.local.set(storagePayload);
+  } catch (e) {
+    console.warn('[Recorder] Failed to persist teaching record:', e.message);
+  }
+}
+
+function buildReplayHtmlDocument(replayArtifact) {
+  if (!replayArtifact || !Array.isArray(replayArtifact.steps)) return '';
+  const frames = replayArtifact.steps
+    .filter((step) => typeof step.frame === 'string' && step.frame.startsWith('data:image/'))
+    .map((step) => ({
+      step: step.step,
+      action: step.chosenAction || 'unknown',
+      params: step.chosenParams || '',
+      outcome: step.outcome || '',
+      detail: step.outcomeDetails || '',
+      frame: step.frame
+    }));
+
+  if (frames.length === 0) return '';
+
+  const payload = {
+    taskId: replayArtifact.taskId,
+    task: replayArtifact.task,
+    status: replayArtifact.status,
+    startedAt: replayArtifact.startedAt,
+    finishedAt: replayArtifact.finishedAt,
+    summary: replayArtifact.summary,
+    frames
+  };
+
+  const payloadJson = JSON.stringify(payload);
+  const title = `Crab-Agent Replay - ${normalizeRecordText(replayArtifact.task || replayArtifact.taskId || 'session', 80)}`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+  <style>
+    :root { --bg:#0f1220; --panel:#171b2f; --text:#e8ecff; --muted:#9aa5d3; --accent:#4fd1c5; }
+    body { margin:0; font-family: "Segoe UI", Tahoma, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width:1100px; margin:24px auto; padding:0 16px; }
+    .card { background:var(--panel); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:16px; }
+    .title { font-size:18px; font-weight:700; margin-bottom:8px; }
+    .meta { color:var(--muted); font-size:13px; margin-bottom:12px; line-height:1.5; }
+    .viewer { display:grid; grid-template-columns: 2fr 1fr; gap:16px; }
+    .frame { width:100%; background:#000; border-radius:10px; border:1px solid rgba(255,255,255,0.12); }
+    .timeline { max-height:70vh; overflow:auto; border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:8px; }
+    .item { padding:8px; border-radius:8px; margin:6px 0; cursor:pointer; border:1px solid transparent; }
+    .item:hover { border-color:rgba(79,209,197,0.45); background:rgba(79,209,197,0.08); }
+    .item.active { border-color:var(--accent); background:rgba(79,209,197,0.16); }
+    .controls { display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+    button { background:#243055; color:var(--text); border:1px solid rgba(255,255,255,0.18); border-radius:8px; padding:8px 12px; cursor:pointer; }
+    button:hover { background:#2f3c6b; }
+    input[type="range"] { width:220px; }
+    .caption { margin-top:8px; color:var(--muted); font-size:13px; line-height:1.45; }
+    @media (max-width: 900px) { .viewer { grid-template-columns: 1fr; } .timeline { max-height:36vh; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="title">Crab-Agent Visual Replay</div>
+      <div class="meta" id="meta"></div>
+      <div class="viewer">
+        <div>
+          <img id="frame" class="frame" alt="Replay frame">
+          <div class="controls">
+            <button id="prevBtn" type="button">Prev</button>
+            <button id="playBtn" type="button">Play</button>
+            <button id="nextBtn" type="button">Next</button>
+            <label>Speed
+              <select id="speedSelect">
+                <option value="1200">0.8x</option>
+                <option value="900" selected>1.0x</option>
+                <option value="700">1.3x</option>
+                <option value="500">1.8x</option>
+              </select>
+            </label>
+            <input id="scrub" type="range" min="0" value="0">
+          </div>
+          <div class="caption" id="caption"></div>
+        </div>
+        <div class="timeline" id="timeline"></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const replay = ${payloadJson};
+    const frames = Array.isArray(replay.frames) ? replay.frames : [];
+    let index = 0;
+    let timer = null;
+    let delayMs = 900;
+    const frameEl = document.getElementById('frame');
+    const captionEl = document.getElementById('caption');
+    const timelineEl = document.getElementById('timeline');
+    const scrubEl = document.getElementById('scrub');
+    const playBtn = document.getElementById('playBtn');
+    const speedSelect = document.getElementById('speedSelect');
+    document.getElementById('meta').textContent =
+      'Task: ' + (replay.task || '(unknown)') + '\\n' +
+      'Status: ' + (replay.status || 'unknown') + ', Frames: ' + frames.length + '\\n' +
+      'Summary: ' + (replay.summary || '(none)');
+
+    function renderTimeline() {
+      timelineEl.innerHTML = '';
+      frames.forEach((frame, i) => {
+        const div = document.createElement('div');
+        div.className = 'item' + (i === index ? ' active' : '');
+        const detail = [frame.action, frame.params, frame.outcome].filter(Boolean).join(' | ');
+        div.textContent = 'Step ' + frame.step + ': ' + detail;
+        div.title = frame.detail || detail;
+        div.addEventListener('click', () => {
+          index = i;
+          render();
+        });
+        timelineEl.appendChild(div);
+      });
+    }
+
+    function render() {
+      if (!frames.length) return;
+      if (index < 0) index = 0;
+      if (index >= frames.length) index = frames.length - 1;
+      const frame = frames[index];
+      frameEl.src = frame.frame;
+      scrubEl.max = String(Math.max(0, frames.length - 1));
+      scrubEl.value = String(index);
+      captionEl.textContent =
+        'Step ' + frame.step + ' | Action: ' + (frame.action || 'n/a') +
+        (frame.params ? ' | Params: ' + frame.params : '') +
+        (frame.outcome ? ' | Outcome: ' + frame.outcome : '') +
+        (frame.detail ? ' | ' + frame.detail : '');
+      renderTimeline();
+    }
+
+    function stop() {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      playBtn.textContent = 'Play';
+    }
+
+    function play() {
+      if (!frames.length) return;
+      stop();
+      timer = setInterval(() => {
+        index = (index + 1) % frames.length;
+        render();
+      }, delayMs);
+      playBtn.textContent = 'Pause';
+    }
+
+    document.getElementById('prevBtn').addEventListener('click', () => { stop(); index -= 1; render(); });
+    document.getElementById('nextBtn').addEventListener('click', () => { stop(); index += 1; render(); });
+    playBtn.addEventListener('click', () => {
+      if (timer) stop();
+      else play();
+    });
+    scrubEl.addEventListener('input', () => { stop(); index = Number(scrubEl.value || 0); render(); });
+    speedSelect.addEventListener('change', () => {
+      delayMs = Number(speedSelect.value || 900);
+      if (timer) play();
+    });
+
+    render();
+  </script>
+</body>
+</html>`;
+}
+
+function createGifPaletteBytes() {
+  const palette = new Uint8Array(256 * 3);
+  let offset = 0;
+
+  // 216 web-safe colors (6x6x6 cube)
+  for (let r = 0; r < 6; r++) {
+    for (let g = 0; g < 6; g++) {
+      for (let b = 0; b < 6; b++) {
+        palette[offset++] = r * 51;
+        palette[offset++] = g * 51;
+        palette[offset++] = b * 51;
+      }
+    }
+  }
+
+  // 40 grayscale tones to complete 256 entries.
+  for (let i = 0; i < 40; i++) {
+    const v = Math.round((i * 255) / 39);
+    palette[offset++] = v;
+    palette[offset++] = v;
+    palette[offset++] = v;
+  }
+
+  return palette;
+}
+
+function mapRgbToPaletteIndex(r, g, b, a) {
+  if (a <= 12) return 0;
+  const drg = Math.abs(r - g);
+  const dgb = Math.abs(g - b);
+  const drb = Math.abs(r - b);
+
+  // Use grayscale bucket when color is near-neutral.
+  if (drg + dgb + drb < 36) {
+    const gray = Math.round((r + g + b) / 3);
+    const grayIdx = 216 + Math.max(0, Math.min(39, Math.round((gray * 39) / 255)));
+    return grayIdx;
+  }
+
+  const r6 = Math.max(0, Math.min(5, Math.round(r / 51)));
+  const g6 = Math.max(0, Math.min(5, Math.round(g / 51)));
+  const b6 = Math.max(0, Math.min(5, Math.round(b / 51)));
+  return r6 * 36 + g6 * 6 + b6;
+}
+
+function createGifByteWriter(initialSize = 4096) {
+  let buffer = new Uint8Array(initialSize);
+  let length = 0;
+
+  const ensure = (needed) => {
+    if (length + needed <= buffer.length) return;
+    let newSize = buffer.length;
+    while (newSize < length + needed) {
+      newSize *= 2;
+    }
+    const next = new Uint8Array(newSize);
+    next.set(buffer);
+    buffer = next;
+  };
+
+  return {
+    pushByte(value) {
+      ensure(1);
+      buffer[length++] = value & 0xFF;
+    },
+    pushWord(value) {
+      ensure(2);
+      buffer[length++] = value & 0xFF;
+      buffer[length++] = (value >> 8) & 0xFF;
+    },
+    pushBytes(bytes) {
+      if (!bytes || bytes.length === 0) return;
+      ensure(bytes.length);
+      buffer.set(bytes, length);
+      length += bytes.length;
+    },
+    pushString(text) {
+      for (let i = 0; i < text.length; i++) {
+        this.pushByte(text.charCodeAt(i) & 0xFF);
+      }
+    },
+    toUint8Array() {
+      return buffer.slice(0, length);
+    },
+    get length() {
+      return length;
+    }
+  };
+}
+
+function lzwEncodeGifIndices(indices, minCodeSize = 8) {
+  if (!indices || indices.length === 0) return new Uint8Array();
+
+  const clearCode = 1 << minCodeSize;
+  const endCode = clearCode + 1;
+  const maxCode = 4095;
+  const output = [];
+  let codeSize = minCodeSize + 1;
+  let nextCode = endCode + 1;
+  let bitBuffer = 0;
+  let bitCount = 0;
+  let dict = new Map();
+
+  const resetDictionary = () => {
+    dict = new Map();
+    for (let i = 0; i < clearCode; i++) {
+      dict.set(String.fromCharCode(i), i);
+    }
+    codeSize = minCodeSize + 1;
+    nextCode = endCode + 1;
+  };
+
+  const writeCode = (code) => {
+    bitBuffer |= (code << bitCount);
+    bitCount += codeSize;
+    while (bitCount >= 8) {
+      output.push(bitBuffer & 0xFF);
+      bitBuffer >>= 8;
+      bitCount -= 8;
+    }
+  };
+
+  resetDictionary();
+  writeCode(clearCode);
+
+  let prefix = String.fromCharCode(indices[0]);
+  for (let i = 1; i < indices.length; i++) {
+    const suffix = String.fromCharCode(indices[i]);
+    const combo = prefix + suffix;
+
+    if (dict.has(combo)) {
+      prefix = combo;
+      continue;
+    }
+
+    writeCode(dict.get(prefix));
+
+    if (nextCode <= maxCode) {
+      dict.set(combo, nextCode++);
+      if (nextCode === (1 << codeSize) && codeSize < 12) {
+        codeSize++;
+      }
+    } else {
+      writeCode(clearCode);
+      resetDictionary();
+    }
+
+    prefix = suffix;
+  }
+
+  writeCode(dict.get(prefix));
+  writeCode(endCode);
+  if (bitCount > 0) {
+    output.push(bitBuffer & 0xFF);
+  }
+
+  return Uint8Array.from(output);
+}
+
+function writeGifSubBlocks(writer, bytes) {
+  const blockSize = 255;
+  for (let offset = 0; offset < bytes.length; offset += blockSize) {
+    const chunk = bytes.subarray(offset, offset + blockSize);
+    writer.pushByte(chunk.length);
+    writer.pushBytes(chunk);
+  }
+  writer.pushByte(0); // block terminator
+}
+
+function uint8ArrayToBase64(bytes) {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function pickReplayFramesForGif(replayArtifact, maxFrames = GIF_EXPORT_CONFIG.MAX_FRAMES) {
+  if (!replayArtifact || !Array.isArray(replayArtifact.steps)) return [];
+  const source = replayArtifact.steps
+    .filter((step) => typeof step.frame === 'string' && step.frame.startsWith('data:image/'))
+    .map((step) => ({
+      step: step.step,
+      action: normalizeRecordText(step.chosenAction || '', 60),
+      params: normalizeRecordText(step.chosenParams || '', 120),
+      outcome: normalizeRecordText(step.outcome || '', 60),
+      detail: normalizeRecordText(step.outcomeDetails || '', 160),
+      frame: step.frame
+    }));
+
+  if (source.length <= maxFrames) return source;
+  const picked = [];
+  for (let i = 0; i < maxFrames; i++) {
+    const idx = Math.round((i * (source.length - 1)) / Math.max(1, maxFrames - 1));
+    picked.push(source[idx]);
+  }
+  return picked;
+}
+
+async function decodeReplayFramesToIndexedGifData(replayFrames, options = {}) {
+  if (!Array.isArray(replayFrames) || replayFrames.length === 0) return null;
+  const maxDim = Number(options.maxDimension || GIF_EXPORT_CONFIG.MAX_DIMENSION);
+  const palette = createGifPaletteBytes();
+
+  // Read first frame to determine output dimensions.
+  const firstBlob = await (await fetch(replayFrames[0].frame)).blob();
+  const firstBitmap = await createImageBitmap(firstBlob);
+  const scale = Math.min(1, maxDim / Math.max(firstBitmap.width, firstBitmap.height));
+  const width = Math.max(1, Math.round(firstBitmap.width * scale));
+  const height = Math.max(1, Math.round(firstBitmap.height * scale));
+
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  const indexedFrames = [];
+  for (const frame of replayFrames) {
+    const blob = await (await fetch(frame.frame)).blob();
+    const bitmap = await createImageBitmap(blob);
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(bitmap, 0, 0, width, height);
+
+    // Bottom caption bar
+    const overlayHeight = Math.max(34, Math.round(height * 0.12));
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.58)';
+    ctx.fillRect(0, height - overlayHeight, width, overlayHeight);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `${Math.max(11, Math.round(height * 0.028))}px sans-serif`;
+    ctx.textBaseline = 'top';
+    const line1 = `Step ${frame.step}: ${frame.action || 'action'}`;
+    const line2 = frame.outcome ? `Result: ${frame.outcome}` : (frame.detail || '');
+    ctx.fillText(line1.slice(0, 72), 8, height - overlayHeight + 5);
+    if (line2) {
+      ctx.fillText(line2.slice(0, 82), 8, height - overlayHeight + 18);
+    }
+
+    const image = ctx.getImageData(0, 0, width, height).data;
+    const indices = new Uint8Array(width * height);
+    let ptr = 0;
+    for (let i = 0; i < image.length; i += 4) {
+      indices[ptr++] = mapRgbToPaletteIndex(
+        image[i],
+        image[i + 1],
+        image[i + 2],
+        image[i + 3]
+      );
+    }
+    indexedFrames.push(indices);
+  }
+
+  return { width, height, palette, indexedFrames };
+}
+
+function encodeIndexedFramesToGifBytes(gifData, options = {}) {
+  if (!gifData || !Array.isArray(gifData.indexedFrames) || gifData.indexedFrames.length === 0) {
+    return null;
+  }
+
+  const width = gifData.width;
+  const height = gifData.height;
+  const frameDelayMs = Math.max(100, Number(options.frameDelayMs || GIF_EXPORT_CONFIG.FRAME_DELAY_MS));
+  const delayCs = Math.max(2, Math.round(frameDelayMs / 10));
+  const writer = createGifByteWriter();
+
+  // Header + Logical Screen Descriptor
+  writer.pushString('GIF89a');
+  writer.pushWord(width);
+  writer.pushWord(height);
+  writer.pushByte(0xF7); // global color table flag + 256 colors
+  writer.pushByte(0x00); // background color index
+  writer.pushByte(0x00); // pixel aspect ratio
+  writer.pushBytes(gifData.palette);
+
+  // Netscape loop extension (infinite)
+  writer.pushBytes(Uint8Array.from([
+    0x21, 0xFF, 0x0B,
+    0x4E, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2E, 0x30,
+    0x03, 0x01, 0x00, 0x00, 0x00
+  ]));
+
+  for (const indices of gifData.indexedFrames) {
+    // Graphic Control Extension
+    writer.pushBytes(Uint8Array.from([
+      0x21, 0xF9, 0x04, 0x00,
+      delayCs & 0xFF, (delayCs >> 8) & 0xFF,
+      0x00, 0x00
+    ]));
+
+    // Image Descriptor
+    writer.pushByte(0x2C);
+    writer.pushWord(0); // left
+    writer.pushWord(0); // top
+    writer.pushWord(width);
+    writer.pushWord(height);
+    writer.pushByte(0x00); // no local color table
+
+    // LZW image data
+    const minCodeSize = 8;
+    writer.pushByte(minCodeSize);
+    const compressed = lzwEncodeGifIndices(indices, minCodeSize);
+    writeGifSubBlocks(writer, compressed);
+  }
+
+  writer.pushByte(0x3B); // GIF trailer
+  return writer.toUint8Array();
+}
+
+async function buildReplayGifExport(replayArtifact) {
+  const replayFrames = pickReplayFramesForGif(replayArtifact, GIF_EXPORT_CONFIG.MAX_FRAMES);
+  if (replayFrames.length === 0) return null;
+
+  const gifData = await decodeReplayFramesToIndexedGifData(replayFrames, {
+    maxDimension: GIF_EXPORT_CONFIG.MAX_DIMENSION
+  });
+  if (!gifData) return null;
+
+  const gifBytes = encodeIndexedFramesToGifBytes(gifData, {
+    frameDelayMs: GIF_EXPORT_CONFIG.FRAME_DELAY_MS
+  });
+  if (!gifBytes || gifBytes.length === 0) return null;
+  if (gifBytes.length > GIF_EXPORT_CONFIG.MAX_OUTPUT_BYTES) {
+    throw new Error('GIF too large. Try fewer steps or lower capture size.');
+  }
+
+  return {
+    width: gifData.width,
+    height: gifData.height,
+    frameCount: replayFrames.length,
+    bytes: gifBytes,
+    base64: uint8ArrayToBase64(gifBytes)
+  };
+}
 
 chrome.runtime.onInstalled.addListener(() => console.log('Crab-Agent installed'));
 
@@ -2980,6 +6951,9 @@ chrome.runtime.onConnect.addListener((port) => {
           case 'cancel_task': handleCancelTask(); break;
           case 'pause_task': handlePauseTask(); break;
           case 'resume_task': handleResumeTask(); break;
+          case 'export_replay_html': await handleExportReplayHtml(); break;
+          case 'export_replay_gif': await handleExportReplayGif(); break;
+          case 'export_teaching_record': await handleExportTeachingRecord(); break;
           case 'get_state': await handleGetState(); break;
           case 'screenshot': await handleScreenshot(); break;
           case 'heartbeat': port.postMessage({ type: 'heartbeat_ack' }); break;
@@ -2991,7 +6965,10 @@ chrome.runtime.onConnect.addListener((port) => {
 
     port.onDisconnect.addListener(() => {
       sidePanel = null;
-      if (currentExecution) currentExecution.cancelled = true;
+      if (currentExecution) {
+        currentExecution.cancelled = true;
+        finalizeTaskRecording(currentExecution, 'cancelled', { error: 'Side panel disconnected' });
+      }
     });
   }
 });
@@ -2999,6 +6976,57 @@ chrome.runtime.onConnect.addListener((port) => {
 function sendToPanel(message) {
   if (sidePanel) try { sidePanel.postMessage(message); } catch (e) {}
 }
+
+// Visual indicator helpers
+async function showAgentVisualIndicator(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'SHOW_AGENT_INDICATORS' });
+  } catch (e) {
+    console.log('[Visual] Could not show indicator:', e.message);
+  }
+}
+
+async function hideAgentVisualIndicator(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'HIDE_AGENT_INDICATORS' });
+  } catch (e) {
+    console.log('[Visual] Could not hide indicator:', e.message);
+  }
+}
+
+async function hideVisualForToolUse(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'HIDE_FOR_TOOL_USE' });
+  } catch (e) {}
+}
+
+async function showVisualAfterToolUse(tabId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'SHOW_AFTER_TOOL_USE' });
+  } catch (e) {}
+}
+
+// Handle messages from content scripts (visual indicator)
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  switch (message.type) {
+    case 'STOP_AGENT':
+      handleCancelTask();
+      sendResponse({ success: true });
+      break;
+    case 'OPEN_SIDEPANEL':
+      chrome.sidePanel.open({ windowId: sender.tab?.windowId }).catch(() => {});
+      sendResponse({ success: true });
+      break;
+    case 'STATIC_INDICATOR_HEARTBEAT':
+      sendResponse({ success: !!currentExecution && !currentExecution.cancelled });
+      break;
+  }
+  return false;
+});
 
 async function handleNewTask(task, settings, images = []) {
   if (currentExecution) {
@@ -3008,6 +7036,15 @@ async function handleNewTask(task, settings, images = []) {
 
   // Reset switch tab attempt counter for new task
   AgentS._switchTabAttempts = {};
+
+  // Reset visual tracker and state manager for new task
+  const visualTracker = getVisualTracker();
+  if (visualTracker) visualTracker.reset();
+  const stateManager = getStateManager();
+  if (stateManager) stateManager.reset();
+
+  // Update user style from task message
+  updateUserStyle(task);
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) { sendToPanel({ type: 'error', error: 'No active tab' }); return; }
@@ -3029,33 +7066,71 @@ async function handleNewTask(task, settings, images = []) {
     interruptRequested: false,
     interruptAbortPending: false,
     lastPlannerStep: 0,
-    lastPlannerReason: ''
+    lastPlannerReason: '',
+    recorder: null
   };
+
+  if (isTaskRecordingEnabled(settings)) {
+    ensureTaskRecorder(currentExecution);
+  }
 
   eventManager.subscribe('*', (event) => sendToPanel({ type: 'execution_event', ...event }));
   await loadContextRules(tab.url);
 
   sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_START, actor: AgentS.Actors.SYSTEM, taskId, details: { task } });
 
+  // Show visual indicator when task starts
+  await showAgentVisualIndicator(tab.id);
+
   try { await runExecutor(); } catch (error) {
     sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId, details: { error: error.message } });
+    await finalizeTaskRecording(currentExecution, 'failed', { error: error.message });
+  } finally {
+    // Hide visual indicator when task ends
+    await hideAgentVisualIndicator(tab.id);
   }
 }
 
 async function loadContextRules(url) {
   if (!currentExecution) return;
   try {
-    const domain = new URL(url).hostname;
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname;
+    const pathname = urlObj.pathname;
     const { contextRules = [] } = await chrome.storage.local.get('contextRules');
     const matching = contextRules.filter(r => {
-      if (r.domain.startsWith('*.')) {
-        const base = r.domain.slice(2);
-        return domain === base || domain.endsWith('.' + base);
+      // Extract hostname from rule domain if it's a full URL
+      let ruleDomain = r.domain;
+      let rulePath = '';
+      try {
+        if (ruleDomain.includes('://')) {
+          const ruleUrl = new URL(ruleDomain);
+          ruleDomain = ruleUrl.hostname;
+          rulePath = ruleUrl.pathname;
+        }
+      } catch (e) {
+        // Not a URL, use as-is
       }
-      return domain === r.domain || domain === 'www.' + r.domain;
+
+      // Wildcard match
+      if (ruleDomain.startsWith('*.')) {
+        const base = ruleDomain.slice(2);
+        const hostMatch = hostname === base || hostname.endsWith('.' + base);
+        return hostMatch && (!rulePath || rulePath === '/' || pathname.startsWith(rulePath));
+      }
+
+      // Exact domain match
+      const hostMatch = hostname === ruleDomain || hostname === 'www.' + ruleDomain;
+      // If rule has path, check path prefix match
+      return hostMatch && (!rulePath || rulePath === '/' || pathname.startsWith(rulePath));
     });
-    if (matching.length > 0) currentExecution.contextRules = matching.map(r => `[${r.domain}]: ${r.context}`).join('\n\n');
-  } catch (e) {}
+    if (matching.length > 0) {
+      currentExecution.contextRules = matching.map(r => `[${r.domain}]: ${r.context}`).join('\n\n');
+      console.log('[ContextRules] Loaded rules for', hostname, ':', matching.length, 'rules');
+    }
+  } catch (e) {
+    console.error('[ContextRules] Error loading:', e);
+  }
 }
 
 function getEffectiveTaskPrompt(exec) {
@@ -3215,6 +7290,94 @@ function getPlannerTrigger(exec, lastActionResult, pendingUpdate = null) {
   return null;
 }
 
+function isExecutionCancelled(exec) {
+  return !exec || exec.cancelled || currentExecution !== exec;
+}
+
+function getJavascriptToolPolicyBlock(exec, actionName, actionPayload, pageState) {
+  if (!exec || actionName !== 'javascript_tool') return null;
+  const payload = actionPayload && typeof actionPayload === 'object' ? actionPayload : {};
+  const mode = String(payload.mode || (payload.script ? 'script' : 'ops')).toLowerCase();
+  if (mode !== 'ops') return null;
+  if (payload.allow_ops_for_diagram === true || payload.allowOpsForDiagram === true || payload.force_ops === true || payload.forceOps === true) {
+    return null;
+  }
+
+  const taskText = [
+    exec.latestUserUpdate,
+    exec.originalTask,
+    exec.task
+  ].filter(Boolean).join('\n');
+  const hasFlowOrDiagramIntent = /(flow|diagram|sơ\s*đồ|luồng)/i.test(taskText);
+  if (!hasFlowOrDiagramIntent) return null;
+
+  const domElements = Array.isArray(pageState?.elements) ? pageState.elements : [];
+  const canvasLikeCount = domElements.filter((el) => {
+    const tag = String(el?.tag || el?.tagName || '').toLowerCase();
+    const role = String(el?.role || el?.attributes?.role || '').toLowerCase();
+    return tag === 'canvas' || tag === 'svg' || role === 'application';
+  }).length;
+  const textRepresentation = String(pageState?.textRepresentation || '');
+  const looksLikeCanvasEditor =
+    canvasLikeCount > 0 ||
+    /<canvas|<svg|whiteboard|drawing|diagram/i.test(textRepresentation);
+
+  if (!looksLikeCanvasEditor) return null;
+
+  return 'JAVASCRIPT_TOOL POLICY: mode "ops" is blocked for flow/diagram drawing on canvas editors. Use mode "render" with flow/diagram payload so drawing uses native app API/CDP page-world. If native API is unavailable, return a clear failure instead of UI-simulated drawing.';
+}
+
+function getExplorationPolicyBlock(exec, actionName, actionPayload, pageState) {
+  if (!exec || !actionName) return null;
+  const interactiveClickAction = actionName === 'click_element' || actionName === 'click_at';
+  const inputLikeAction = actionName === 'input_text' || actionName === 'send_keys';
+  if (!interactiveClickAction && !inputLikeAction) return null;
+
+  const recent = Array.isArray(exec.actionHistory) ? exec.actionHistory.slice(-8) : [];
+  const exploreActions = new Set([
+    'find_text',
+    'get_accessibility_tree',
+    'scroll_down',
+    'scroll_up',
+    'scroll_to_text',
+    'scroll_element',
+    'hover_element',
+    'zoom_page',
+    'wait_for_element',
+    'wait_for_stable'
+  ]);
+
+  const recentExploreCount = recent.filter((entry) => exploreActions.has(entry?.action)).length;
+  const failedClicks = recent.filter((entry) =>
+    entry &&
+    (entry.action === 'click_element' || entry.action === 'click_at') &&
+    entry.success === false
+  ).length;
+  const noEffectClicks = recent.filter((entry) =>
+    entry &&
+    entry.action === 'click_element' &&
+    entry.success &&
+    /\[effect:none\]/i.test(String(entry.details || ''))
+  ).length;
+
+  // Guardrail 1: prevent blind click chains without intermediate exploration.
+  if (interactiveClickAction && (failedClicks + noEffectClicks) >= 3 && recentExploreCount === 0) {
+    return 'EXPLORATION POLICY: repeated blind clicks detected without exploration. Use find_text, get_accessibility_tree, hover_element, or scroll before trying another click.';
+  }
+
+  // Guardrail 2: validate click_element index against latest DOM snapshot.
+  if (actionName === 'click_element') {
+    const idx = Number(actionPayload?.index);
+    const domElements = Array.isArray(pageState?.elements) ? pageState.elements : [];
+    const existsInDom = Number.isFinite(idx) && domElements.some((el) => Number(el?.index) === idx);
+    if (!existsInDom) {
+      return `EXPLORATION POLICY: click_element index ${String(actionPayload?.index)} is not in the latest DOM. Re-check current DOM and use find_text/get_accessibility_tree before clicking.`;
+    }
+  }
+
+  return null;
+}
+
 
 async function runExecutor() {
   const exec = currentExecution;
@@ -3265,10 +7428,17 @@ async function runExecutor() {
     const plannerTrigger = getPlannerTrigger(exec, lastActionResult, pendingUpdate);
     if (plannerTrigger) {
       const planResult = await runPlanner(plannerTrigger);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
       exec.lastPlannerStep = exec.step;
       exec.lastPlannerReason = plannerTrigger;
       if (planResult?.done) {
+        if (isExecutionCancelled(exec)) {
+          return;
+        }
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_OK, actor: AgentS.Actors.PLANNER, taskId: exec.taskId, details: { finalAnswer: planResult.final_answer || 'Task completed' } });
+        await finalizeTaskRecording(exec, 'completed', { finalAnswer: planResult.final_answer || 'Task completed' });
         exec.cancelled = true;
         break;
       }
@@ -3330,7 +7500,13 @@ async function runExecutor() {
 
       // Process as if model returned this
       const result = await AgentS.executeAction(directResponse.action[0], { url: tabUrl, title: 'No page' }, exec.tabId);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
       if (result.isDone) {
+        if (isExecutionCancelled(exec)) {
+          return;
+        }
         const answer = result.extractedContent || result.message;
         sendToPanel({
           type: 'execution_event',
@@ -3339,15 +7515,35 @@ async function runExecutor() {
           taskId: exec.taskId,
           details: { finalAnswer: answer, error: answer }
         });
+        await finalizeTaskRecording(exec, 'failed', { error: answer });
         exec.cancelled = true;
         return;
       }
       continue;
     }
 
-    // Build DOM tree without highlighting (cleaner view)
+    // Clean up previous SoM overlay before building new DOM
+    try {
+      await chrome.tabs.sendMessage(exec.tabId, { type: 'cleanup_som' });
+    } catch (e) {
+      // Ignore - content script may not be ready
+    }
+
+    // PARALLEL: Build DOM tree + fetch tab context simultaneously
     console.log('[DOM] Building DOM tree for exec.tabId:', exec.tabId, 'currentTab.id:', currentTab?.id, 'currentTab.url:', currentTab?.url?.substring(0, 50));
-    const pageState = await AgentS.buildDomTree(exec.tabId, { highlightElements: false, viewportOnly: true });
+    const [pageState, tabsResult] = await Promise.all([
+      AgentS.buildDomTree(exec.tabId, { highlightElements: false, viewportOnly: true }),
+      chrome.tabs.query({ currentWindow: true }).catch(() => [])
+    ]);
+
+    // Pre-build tab context from parallel fetch
+    let tabContext = null;
+    try {
+      tabContext = {
+        currentTab: currentTab ? { id: currentTab.id, url: currentTab.url || '', title: currentTab.title || '' } : { id: exec.tabId, url: pageState.url || '', title: pageState.title || '' },
+        openTabs: tabsResult.map(tab => ({ id: tab.id, url: tab.url || '', title: tab.title || '' }))
+      };
+    } catch (e) {}
     console.log('[DOM] Built DOM tree:', {
       execTabId: exec.tabId,
       elementCount: pageState.elementCount,
@@ -3362,6 +7558,7 @@ async function runExecutor() {
       exec.consecutiveFailures++;
       if (exec.consecutiveFailures >= exec.maxFailures) {
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: `Cannot access page: ${pageState.error}` } });
+        await finalizeTaskRecording(exec, 'failed', { error: `Cannot access page: ${pageState.error}` });
         break;
       }
       await new Promise(r => setTimeout(r, 2000));
@@ -3386,16 +7583,37 @@ async function runExecutor() {
       }
     }
 
-    // Take screenshot if vision is enabled (raw screenshot, no SoM overlay)
+    // Take screenshot if vision is enabled
     let screenshot = null;
+    let somDrawnOnPage = false;
     if (exec.settings.useVision) {
-      // Take clean screenshot (no overlays on actual page)
+      // Draw SoM overlay on the actual page for user to see
+      if (pageState.elements && pageState.elements.length > 0) {
+        try {
+          await chrome.tabs.sendMessage(exec.tabId, {
+            type: 'draw_som',
+            elements: pageState.elements
+          });
+          somDrawnOnPage = true;
+          console.log('[SoM] Drew overlay on page UI with', pageState.elements.length, 'elements');
+        } catch (e) {
+          console.warn('[SoM] Failed to draw overlay on page:', e.message);
+        }
+      }
+
+      // Small delay to ensure SoM is rendered before screenshot
+      if (somDrawnOnPage) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      // Take screenshot (now with SoM visible on the page)
       screenshot = await AgentS.takeScreenshot(exec.tabId);
       if (screenshot) {
         const isValidDataUrl = screenshot.startsWith('data:image/');
         console.log('[Vision] Screenshot captured:', {
           size: screenshot.length,
           isValidDataUrl,
+          hasSoM: somDrawnOnPage,
           prefix: screenshot.substring(0, 50)
         });
         if (!isValidDataUrl) {
@@ -3408,6 +7626,21 @@ async function runExecutor() {
             'Screenshot capture returned invalid format. Vision image not sent.',
             'invalid_screenshot_format'
           );
+        } else if (!somDrawnOnPage && pageState.elements && pageState.elements.length > 0) {
+          // Only annotate programmatically if page overlay failed
+          try {
+            const annotatedScreenshot = await AgentS.annotateScreenshotWithSoM(
+              screenshot,
+              pageState.elements,
+              pageState.viewportInfo
+            );
+            if (annotatedScreenshot && annotatedScreenshot !== screenshot) {
+              console.log('[SoM] Screenshot annotated programmatically (page overlay failed)');
+              screenshot = annotatedScreenshot;
+            }
+          } catch (e) {
+            console.warn('[SoM] Failed to annotate screenshot:', e.message);
+          }
         }
       } else {
         console.log('[Vision] Screenshot capture skipped (restricted page or capture unavailable). Continuing with DOM-only mode.');
@@ -3419,6 +7652,16 @@ async function runExecutor() {
           'screenshot_unavailable'
         );
       }
+
+      // Clean up SoM overlay immediately after screenshot to keep UI clean
+      if (somDrawnOnPage) {
+        try {
+          await chrome.tabs.sendMessage(exec.tabId, { type: 'cleanup_som' });
+          console.log('[SoM] Cleaned up overlay from page after screenshot');
+        } catch (e) {
+          console.warn('[SoM] Failed to cleanup overlay:', e.message);
+        }
+      }
     } else {
       emitModelImageDebug(
         exec,
@@ -3429,15 +7672,41 @@ async function runExecutor() {
       );
     }
 
-    // Build user message with current page state
-    let tabContext = null;
-    try {
-      const tabs = await chrome.tabs.query({ currentWindow: true });
-      tabContext = {
-        currentTab: currentTab ? { id: currentTab.id, url: currentTab.url || '', title: currentTab.title || '' } : { id: exec.tabId, url: pageState.url || '', title: pageState.title || '' },
-        openTabs: tabs.map(tab => ({ id: tab.id, url: tab.url || '', title: tab.title || '' }))
-      };
-    } catch (e) {}
+    // Visual state tracking for before/after comparison
+    const visualTracker = getVisualTracker();
+    let visualDiffWarning = '';
+    let beforeScreenshot = null;
+
+    if (screenshot && exec.step > 1) {
+      // Compare with previous state
+      const comparison = visualTracker.compareWithCurrent(
+        screenshot,
+        pageState.domHash,
+        pageState.url
+      );
+
+      if (comparison.hasBefore) {
+        beforeScreenshot = comparison.beforeScreenshot;
+
+        // Check for no-change streak
+        const noChangeStreak = visualTracker.getNoChangeStreak();
+        if (noChangeStreak >= 2) {
+          visualDiffWarning = `[VISUAL WARNING] No visible change detected for ${noChangeStreak} consecutive actions. Your actions may not be hitting the correct targets. Try a different approach.`;
+          console.log('[VisualDiff] No change streak:', noChangeStreak);
+        }
+
+        if (comparison.likelyNoChange) {
+          visualDiffWarning = `[VISUAL COMPARISON] DOM and URL unchanged since last action. Verify the action actually worked before proceeding.`;
+        }
+      }
+    }
+
+    // Store current screenshot for next comparison
+    if (screenshot) {
+      visualTracker.captureBeforeState(screenshot, pageState.domHash, pageState.url);
+    }
+
+    // tabContext already fetched in parallel above
 
     if (exec.interruptRequested) {
       const preActionInterrupt = flushPendingFollowUps(exec);
@@ -3454,6 +7723,21 @@ async function runExecutor() {
       continue;
     }
 
+    // Get state warnings for loop prevention
+    const stateWarnings = getStateWarnings();
+    let currentStepRecord = null;
+    try {
+      currentStepRecord = await beginTaskRecordingStep(exec, {
+        step: exec.step,
+        pageState,
+        screenshot,
+        plannerTrigger,
+        stateWarnings
+      });
+    } catch (e) {
+      console.warn('[Recorder] Failed to begin step record:', e.message);
+    }
+
     let userMessage = AgentSPrompts.buildNavigatorUserMessage(
       getEffectiveTaskPrompt(exec),
       pageState,
@@ -3463,15 +7747,29 @@ async function runExecutor() {
       tabContext,
       exec.step,
       exec.maxSteps,
-      exec.conversationFocus
+      exec.conversationFocus,
+      stateWarnings
     );
 
-    // Add note about vision if screenshot is available
-    if (screenshot) {
-      userMessage = `[Screenshot of current page is attached for visual reference]\n\n${userMessage}`;
+    // Add visual diff warning if detected
+    if (visualDiffWarning) {
+      userMessage = `${visualDiffWarning}\n\n${userMessage}`;
     }
 
-    exec.messageManager.addStateMessage(userMessage, screenshot ? [screenshot] : []);
+    // Add note about vision if screenshot is available
+    let screenshotsToSend = [];
+    if (screenshot) {
+      if (beforeScreenshot && exec.step > 1) {
+        // Send both before and after for comparison
+        userMessage = `[BEFORE/AFTER COMPARISON - Image 1: BEFORE action, Image 2: AFTER action]\n[Compare carefully to verify if action produced visible change]\n\n${userMessage}`;
+        screenshotsToSend = [beforeScreenshot, screenshot];
+      } else {
+        userMessage = `[Screenshot with SoM overlay attached - numbered labels match element [index] in DOM list]\n\n${userMessage}`;
+        screenshotsToSend = [screenshot];
+      }
+    }
+
+    exec.messageManager.addStateMessage(userMessage, screenshotsToSend);
     exec.eventManager.emit({ state: AgentS.ExecutionState.THINKING, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { message: 'Analyzing...' } });
 
     try {
@@ -3498,6 +7796,9 @@ async function runExecutor() {
           emitModelImageDebug(exec, screenshot, 'navigator');
         }
         response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, exec.settings.useVision, screenshot);
+        if (isExecutionCancelled(exec)) {
+          return;
+        }
       } catch (llmError) {
         const errText = String(llmError?.message || llmError || '').toLowerCase();
         const isTimeout = errText.includes('timed out') || errText.includes('timeout');
@@ -3517,6 +7818,9 @@ async function runExecutor() {
             details: { message: 'Vision unsupported by current model/provider. Retrying without image.' }
           });
           response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, false, null);
+          if (isExecutionCancelled(exec)) {
+            return;
+          }
         } else if (isTimeout && exec.settings.useVision && screenshot) {
           exec.eventManager.emit({
             state: AgentS.ExecutionState.THINKING,
@@ -3526,6 +7830,9 @@ async function runExecutor() {
             details: { message: 'LLM request timed out with screenshot. Retrying without image.' }
           });
           response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, false, null);
+          if (isExecutionCancelled(exec)) {
+            return;
+          }
         } else if (isTimeout) {
           exec.eventManager.emit({
             state: AgentS.ExecutionState.THINKING,
@@ -3535,14 +7842,23 @@ async function runExecutor() {
             details: { message: 'LLM request timed out. Retrying once.' }
           });
           response = await AgentS.callLLM(exec.messageManager.getMessages(), exec.settings, exec.settings.useVision, screenshot);
+          if (isExecutionCancelled(exec)) {
+            return;
+          }
         } else {
           throw llmError;
         }
       }
       console.log('LLM returned response, length:', response?.length);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
 
       const parsed = AgentSPrompts.parseResponse(response);
       console.log('Parsed response:', parsed);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
 
       const validation = AgentSPrompts.validateNavigatorResponse(parsed);
       if (!validation.valid) throw new Error(validation.error);
@@ -3577,6 +7893,7 @@ async function runExecutor() {
 
       const actionName = Object.keys(action)[0];
       const actionParams = JSON.stringify(action[actionName]);
+      annotateTaskRecordingDecision(currentStepRecord, parsed, actionName, action[actionName]);
       const extractClickPoint = (details) => {
         const match = String(details || '').match(/at\s*\((\d+),\s*(\d+)\)/i);
         if (!match) return null;
@@ -3666,9 +7983,12 @@ async function runExecutor() {
                 taskId: exec.taskId,
                 details: { error: blockedReason }
               });
+              finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
+              await finalizeTaskRecording(exec, 'failed', { error: blockedReason });
               exec.cancelled = true;
               return;
             }
+            finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
             continue; // Skip to next step
           }
         }
@@ -3745,11 +8065,57 @@ async function runExecutor() {
               taskId: exec.taskId,
               details: { error: blockedReason }
             });
+            finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
+            await finalizeTaskRecording(exec, 'failed', { error: blockedReason });
             exec.cancelled = true;
             return;
           }
+          finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
           continue; // Skip execution, force LLM to pick another strategy.
         }
+      }
+
+      const javascriptToolPolicyBlock = getJavascriptToolPolicyBlock(exec, actionName, action[actionName], pageState);
+      const explorationPolicyBlock = getExplorationPolicyBlock(exec, actionName, action[actionName], pageState);
+      const policyBlock = javascriptToolPolicyBlock || explorationPolicyBlock;
+      if (policyBlock) {
+        console.warn('[Policy] Guard blocked action:', policyBlock);
+        exec.memory = (exec.memory || '') + `\n[CRITICAL: ${policyBlock}]`;
+        const blockResult = AgentS.createActionResult({
+          success: false,
+          error: policyBlock,
+          message: policyBlock
+        });
+        exec.actionHistory.push({
+          action: actionName,
+          params: action[actionName],
+          success: false,
+          details: policyBlock
+        });
+        exec.eventManager.emit({
+          state: AgentS.ExecutionState.ACT_FAIL,
+          actor: AgentS.Actors.NAVIGATOR,
+          taskId: exec.taskId,
+          step: exec.step,
+          details: { action: actionName, success: false, error: policyBlock }
+        });
+        lastActionResult = blockResult;
+        exec.consecutiveFailures++;
+        finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: policyBlock });
+        if (exec.consecutiveFailures >= exec.maxFailures) {
+          await AgentS.removeHighlights(exec.tabId);
+          sendToPanel({
+            type: 'execution_event',
+            state: AgentS.ExecutionState.TASK_FAIL,
+            actor: AgentS.Actors.SYSTEM,
+            taskId: exec.taskId,
+            details: { error: policyBlock }
+          });
+          await finalizeTaskRecording(exec, 'failed', { error: policyBlock });
+          exec.cancelled = true;
+          return;
+        }
+        continue;
       }
 
       exec.eventManager.emit({ state: AgentS.ExecutionState.ACT_START, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { action: actionName, params: action[actionName], goal: parsed.current_state?.next_goal } });
@@ -3768,19 +8134,33 @@ async function runExecutor() {
         });
         lastActionResult = blockResult;
         exec.consecutiveFailures++;
+        finalizeTaskRecordingStep(currentStepRecord, { outcome: 'blocked', success: false, error: blockedReason });
         if (exec.consecutiveFailures >= exec.maxFailures) {
           await AgentS.removeHighlights(exec.tabId);
           sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: blockedReason } });
+          await finalizeTaskRecording(exec, 'failed', { error: blockedReason });
           exec.cancelled = true;
           return;
         }
         continue; // Skip to next step
       }
 
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
+
       // Execute the single action
       const result = await AgentS.executeAction(action, pageState, exec.tabId);
+      if (isExecutionCancelled(exec)) {
+        return;
+      }
       exec.actionHistory.push({ action: actionName, params: action[actionName], success: result.success, details: result.message || result.error });
       exec.eventManager.emit({ state: result.success ? AgentS.ExecutionState.ACT_OK : AgentS.ExecutionState.ACT_FAIL, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { action: actionName, success: result.success, message: result.message, error: result.error } });
+      finalizeTaskRecordingStep(currentStepRecord, {
+        outcome: result.isDone ? 'done' : (result.success ? 'success' : 'failed'),
+        success: result.success,
+        details: result.message || result.error || ''
+      });
 
       // Update exec.tabId when switching/opening/closing tabs so subsequent actions use the correct tab
       if (result.success && result.newTabId && (actionName === 'switch_tab' || actionName === 'open_tab' || actionName === 'close_tab')) {
@@ -3803,8 +8183,50 @@ async function runExecutor() {
 
       if (result.includeInMemory && result.extractedContent) exec.memory += '\n' + result.extractedContent;
 
+      // Handle ask_user action - pause for user input
+      if (result.isAskUser) {
+        sendToPanel({
+          type: 'execution_event',
+          state: 'ASK_USER',
+          actor: AgentS.Actors.NAVIGATOR,
+          taskId: exec.taskId,
+          step: exec.step,
+          details: {
+            question: result.question,
+            options: result.options,
+            message: result.message
+          }
+        });
+        // Don't mark as done - wait for user response which will come as follow-up
+        exec.memory += `\n[ASKED USER: ${result.question}]`;
+        lastActionResult = result;
+        continue;
+      }
+
+      // Handle suggest_rule action - offer context rule to user
+      if (result.isSuggestRule) {
+        sendToPanel({
+          type: 'execution_event',
+          state: 'SUGGEST_RULE',
+          actor: AgentS.Actors.NAVIGATOR,
+          taskId: exec.taskId,
+          step: exec.step,
+          details: {
+            rule: result.rule,
+            reason: result.reason,
+            message: result.message
+          }
+        });
+        exec.memory += `\n[SUGGESTED RULE: ${result.rule}]`;
+        lastActionResult = result;
+        continue;
+      }
+
       // Handle task completion
       if (result.isDone) {
+        if (isExecutionCancelled(exec)) {
+          return;
+        }
         await AgentS.removeHighlights(exec.tabId);
         const answer = result.extractedContent || result.message || 'Task completed';
         sendToPanel({
@@ -3813,6 +8235,10 @@ async function runExecutor() {
           actor: AgentS.Actors.NAVIGATOR,
           taskId: exec.taskId,
           details: { finalAnswer: answer, error: result.success ? null : answer }
+        });
+        await finalizeTaskRecording(exec, result.success ? 'completed' : 'failed', {
+          finalAnswer: result.success ? answer : '',
+          error: result.success ? '' : answer
         });
         exec.cancelled = true;
         return;
@@ -3826,6 +8252,7 @@ async function runExecutor() {
         await AgentS.removeHighlights(exec.tabId);
         const lastError = lastActionResult?.error || 'Multiple actions failed';
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: `Task stopped: ${lastError}. Please try a different approach.` } });
+        await finalizeTaskRecording(exec, 'failed', { error: `Task stopped: ${lastError}. Please try a different approach.` });
         exec.cancelled = true;
         return;
       }
@@ -3860,11 +8287,13 @@ async function runExecutor() {
 
       console.error('Step error:', error);
       console.error('Error stack:', error.stack);
+      finalizeTaskRecordingStep(currentStepRecord, { outcome: 'step_error', success: false, error: error.message || String(error) });
       exec.eventManager.emit({ state: AgentS.ExecutionState.STEP_FAIL, actor: AgentS.Actors.NAVIGATOR, taskId: exec.taskId, step: exec.step, details: { error: error.message || String(error) } });
       exec.consecutiveFailures++;
       if (exec.consecutiveFailures >= exec.maxFailures) {
         await AgentS.removeHighlights(exec.tabId);
         sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: error.message || String(error) } });
+        await finalizeTaskRecording(exec, 'failed', { error: error.message || String(error) });
         exec.cancelled = true;
         return;
       }
@@ -3874,6 +8303,7 @@ async function runExecutor() {
   if (exec.step >= exec.maxSteps && !exec.cancelled) {
     await AgentS.removeHighlights(exec.tabId);
     sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_FAIL, actor: AgentS.Actors.SYSTEM, taskId: exec.taskId, details: { error: 'Max steps reached' } });
+    await finalizeTaskRecording(exec, 'failed', { error: 'Max steps reached' });
   }
 }
 
@@ -3900,11 +8330,44 @@ async function runPlanner(triggerReason = 'interval') {
       };
     } catch (e) {}
 
-    // Take screenshot for planner if vision is enabled
+    // Take screenshot for planner if vision is enabled (with SoM overlay)
     let plannerScreenshot = null;
     if (exec.settings.useVision) {
+      // Draw SoM overlay on page for planner screenshot
+      let somDrawn = false;
+      if (pageState.elements && pageState.elements.length > 0) {
+        try {
+          await chrome.tabs.sendMessage(exec.tabId, {
+            type: 'draw_som',
+            elements: pageState.elements
+          });
+          somDrawn = true;
+          await new Promise(r => setTimeout(r, 100)); // Wait for render
+        } catch (e) {
+          console.warn('[Planner SoM] Failed to draw overlay:', e.message);
+        }
+      }
+
       plannerScreenshot = await AgentS.takeScreenshot(exec.tabId);
-      if (!plannerScreenshot) {
+
+      if (plannerScreenshot) {
+        // If page overlay failed, annotate programmatically
+        if (!somDrawn && pageState.elements && pageState.elements.length > 0) {
+          try {
+            const annotated = await AgentS.annotateScreenshotWithSoM(
+              plannerScreenshot,
+              pageState.elements,
+              pageState.viewportInfo
+            );
+            if (annotated && annotated !== plannerScreenshot) {
+              plannerScreenshot = annotated;
+              console.log('[Planner SoM] Screenshot annotated programmatically');
+            }
+          } catch (e) {
+            console.warn('[Planner SoM] Failed to annotate:', e.message);
+          }
+        }
+      } else {
         emitModelImageDebug(
           exec,
           null,
@@ -3912,6 +8375,16 @@ async function runPlanner(triggerReason = 'interval') {
           'Planner screenshot unavailable. No image sent.',
           'screenshot_unavailable'
         );
+      }
+
+      // Clean up SoM overlay after screenshot
+      if (somDrawn) {
+        try {
+          await chrome.tabs.sendMessage(exec.tabId, { type: 'cleanup_som' });
+          console.log('[Planner SoM] Cleaned up overlay from page');
+        } catch (e) {
+          console.warn('[Planner SoM] Failed to cleanup overlay:', e.message);
+        }
       }
     } else {
       emitModelImageDebug(
@@ -3934,7 +8407,7 @@ async function runPlanner(triggerReason = 'interval') {
       triggerReason
     );
     if (plannerScreenshot) {
-      userContent = `[Screenshot attached for visual verification]\n\n${userContent}`;
+      userContent = `[Screenshot with SoM overlay attached - numbered labels match element [index] in DOM]\n\n${userContent}`;
     }
 
     const plannerMsgs = [
@@ -4014,6 +8487,9 @@ function handleCancelTask() {
     currentExecution.cancelled = true;
     sendToPanel({ type: 'execution_event', state: AgentS.ExecutionState.TASK_CANCEL, actor: AgentS.Actors.USER, taskId: currentExecution.taskId });
     AgentS.removeHighlights(currentExecution.tabId);
+    finalizeTaskRecording(currentExecution, 'cancelled', { error: 'Cancelled by user' });
+    // Hide visual indicator on cancel
+    hideAgentVisualIndicator(currentExecution.tabId);
   }
 }
 
@@ -4045,10 +8521,858 @@ async function handleScreenshot() {
   sendToPanel({ type: 'screenshot', screenshot });
 }
 
+async function handleExportReplayHtml() {
+  let replay = lastTaskReplayArtifact;
+  if (!replay) {
+    try {
+      const stored = await chrome.storage.local.get('lastTaskReplayArtifact');
+      replay = stored.lastTaskReplayArtifact || null;
+    } catch (e) {
+      // ignore storage read errors
+    }
+  }
+  if (!replay || !Array.isArray(replay.steps) || replay.steps.length === 0) {
+    sendToPanel({
+      type: 'error',
+      error: 'No replay data available yet. Run a task with recording enabled first.'
+    });
+    return;
+  }
+
+  const html = buildReplayHtmlDocument(replay);
+  if (!html) {
+    sendToPanel({
+      type: 'error',
+      error: 'Replay export failed: no captured frames found in last task.'
+    });
+    return;
+  }
+
+  sendToPanel({
+    type: 'recording_export_data',
+    exportType: 'replay_html',
+    mimeType: 'text/html',
+    filename: `crab-agent-replay-${Date.now()}.html`,
+    content: html
+  });
+}
+
+async function handleExportReplayGif() {
+  let replay = lastTaskReplayArtifact;
+  if (!replay) {
+    try {
+      const stored = await chrome.storage.local.get('lastTaskReplayArtifact');
+      replay = stored.lastTaskReplayArtifact || null;
+    } catch (e) {
+      // ignore storage read errors
+    }
+  }
+
+  if (!replay || !Array.isArray(replay.steps) || replay.steps.length === 0) {
+    sendToPanel({
+      type: 'error',
+      error: 'No replay data available yet. Run a task with recording enabled first.'
+    });
+    return;
+  }
+
+  try {
+    const gifExport = await buildReplayGifExport(replay);
+    if (!gifExport?.base64) {
+      sendToPanel({
+        type: 'error',
+        error: 'GIF export failed: no usable replay frames found.'
+      });
+      return;
+    }
+
+    sendToPanel({
+      type: 'recording_export_data',
+      exportType: 'replay_gif',
+      mimeType: 'image/gif',
+      filename: `crab-agent-replay-${Date.now()}.gif`,
+      base64: gifExport.base64
+    });
+  } catch (error) {
+    sendToPanel({
+      type: 'error',
+      error: `GIF export failed: ${error?.message || String(error)}`
+    });
+  }
+}
+
+async function handleExportTeachingRecord() {
+  let record = lastTaskTeachingRecord;
+  if (!record) {
+    try {
+      const stored = await chrome.storage.local.get('lastTaskTeachingRecord');
+      record = stored.lastTaskTeachingRecord || null;
+    } catch (e) {
+      // ignore storage read errors
+    }
+  }
+
+  if (!record) {
+    sendToPanel({
+      type: 'error',
+      error: 'No teaching record available yet. Run a task with recording enabled first.'
+    });
+    return;
+  }
+
+  const json = JSON.stringify(record, null, 2);
+  sendToPanel({
+    type: 'recording_export_data',
+    exportType: 'teaching_json',
+    mimeType: 'application/json',
+    filename: `crab-agent-teaching-record-${Date.now()}.json`,
+    content: json
+  });
+}
+
 async function loadSettings() {
-  const defaults = { provider: 'openai', apiKey: '', model: 'gpt-4o', customModel: '', baseUrl: '', useVision: true, autoScroll: true, enableThinking: false, thinkingBudgetTokens: 1024, maxSteps: 100, planningInterval: 3, maxFailures: 3, maxInputTokens: 128000, llmTimeoutMs: 120000 };
+  const defaults = { provider: 'openai', apiKey: '', model: 'gpt-4o', customModel: '', baseUrl: '', useVision: true, autoScroll: true, enableThinking: false, enableTaskRecording: true, thinkingBudgetTokens: 1024, maxSteps: 100, planningInterval: 3, maxFailures: 3, maxInputTokens: 128000, llmTimeoutMs: 120000 };
   const { settings } = await chrome.storage.local.get('settings');
   return { ...defaults, ...settings };
 }
 
 console.log('Crab-Agent background service worker loaded');
+
+// ============================================================================
+// CANVAS TOOLKIT - CDP Native Interaction & Smart Paste
+// Universal tools for Canvas/WebGL applications (Figma, Miro, Canva, etc.)
+// ============================================================================
+
+const CanvasToolkit = {
+  // CDP Session management
+  _sessions: new Map(), // tabId -> { attached, attachedByUs }
+  _commandTimeout: 5000, // Increased timeout for slow pages
+
+  /**
+   * Ensure CDP is attached to tab
+   */
+  async ensureAttached(tabId) {
+    const target = { tabId };
+    const session = this._sessions.get(tabId) || { attached: false, attachedByUs: false };
+
+    if (session.attached) return { ok: true };
+
+    try {
+      await chrome.debugger.attach(target, '1.3');
+      session.attached = true;
+      session.attachedByUs = true;
+      this._sessions.set(tabId, session);
+      console.log('[CanvasToolkit] CDP attached to tab:', tabId);
+      return { ok: true };
+    } catch (error) {
+      const msg = String(error?.message || error || '');
+      if (/already attached|another debugger/i.test(msg)) {
+        session.attached = true;
+        session.attachedByUs = false;
+        this._sessions.set(tabId, session);
+        return { ok: true };
+      }
+      return { ok: false, error: `CDP attach failed: ${msg}` };
+    }
+  },
+
+  /**
+   * Detach CDP from tab
+   */
+  async detach(tabId) {
+    const session = this._sessions.get(tabId);
+    if (!session || !session.attachedByUs) return;
+
+    try {
+      await chrome.debugger.detach({ tabId });
+      console.log('[CanvasToolkit] CDP detached from tab:', tabId);
+    } catch (e) {
+      // Ignore detach errors
+    }
+    this._sessions.delete(tabId);
+  },
+
+  /**
+   * Send CDP command with timeout
+   */
+  async sendCommand(tabId, method, params = {}) {
+    const attachResult = await this.ensureAttached(tabId);
+    if (!attachResult.ok) throw new Error(attachResult.error);
+
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`CDP command timeout: ${method}`));
+      }, this._commandTimeout);
+
+      chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
+        clearTimeout(timeoutId);
+        if (chrome.runtime.lastError) {
+          reject(new Error(`CDP command failed: ${chrome.runtime.lastError.message}`));
+          return;
+        }
+        resolve(result);
+      });
+    });
+  },
+
+  /**
+   * CDP Click at coordinates
+   */
+  async cdpClick(x, y, options = {}, tabId) {
+    const { button = 'left', clickCount = 1, delay = 50 } = options;
+    const px = Math.round(x);
+    const py = Math.round(y);
+
+    try {
+      // Move mouse
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: px, y: py
+      });
+      await this._sleep(delay);
+
+      // Mouse down
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: px, y: py, button, clickCount
+      });
+      await this._sleep(delay);
+
+      // Mouse up
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: px, y: py, button, clickCount
+      });
+
+      console.log(`[CanvasToolkit] Click at (${px}, ${py})`);
+      return { success: true, x: px, y: py };
+    } catch (error) {
+      console.error('[CanvasToolkit] Click failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * CDP Drag from point A to B
+   */
+  async cdpDrag(startX, startY, endX, endY, options = {}, tabId) {
+    const { steps = 10, duration = 300 } = options;
+    const stepDelay = duration / steps;
+
+    try {
+      // Move to start
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: Math.round(startX), y: Math.round(startY)
+      });
+      await this._sleep(50);
+
+      // Mouse down
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: Math.round(startX), y: Math.round(startY),
+        button: 'left', clickCount: 1
+      });
+
+      // Smooth move to end
+      const deltaX = (endX - startX) / steps;
+      const deltaY = (endY - startY) / steps;
+
+      for (let i = 1; i <= steps; i++) {
+        const currentX = Math.round(startX + deltaX * i);
+        const currentY = Math.round(startY + deltaY * i);
+
+        await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved', x: currentX, y: currentY, button: 'left'
+        });
+        await this._sleep(stepDelay);
+      }
+
+      // Mouse up
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: Math.round(endX), y: Math.round(endY),
+        button: 'left', clickCount: 1
+      });
+
+      console.log(`[CanvasToolkit] Drag from (${startX}, ${startY}) to (${endX}, ${endY})`);
+      return { success: true, startX, startY, endX, endY };
+    } catch (error) {
+      console.error('[CanvasToolkit] Drag failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * CDP Type text - uses clipboard paste for Unicode/emoji support
+   */
+  async cdpType(text, options = {}, tabId) {
+    const { delay = 30, useClipboard = true } = options;
+
+    // Check if text contains non-ASCII characters (emoji, unicode)
+    const hasUnicode = /[^\x00-\x7F]/.test(text);
+
+    // Use clipboard paste for Unicode text (more reliable)
+    if (hasUnicode || useClipboard) {
+      try {
+        // Write to clipboard via page injection
+        await this._writeClipboard('text', text, tabId);
+        await this._sleep(50);
+
+        // Dispatch Ctrl+V
+        const isMac = await this._detectMac(tabId);
+        await this.cdpPressKey('v', { ctrl: !isMac, meta: isMac }, tabId);
+
+        console.log(`[CanvasToolkit] Typed (clipboard): "${text.substring(0, 20)}${text.length > 20 ? '...' : ''}"`);
+        return { success: true, text, method: 'clipboard' };
+      } catch (error) {
+        console.warn('[CanvasToolkit] Clipboard paste failed, falling back to key events:', error);
+        // Fall through to key-by-key method
+      }
+    }
+
+    // Fallback: type character by character (ASCII only)
+    try {
+      for (const char of text) {
+        // Skip non-ASCII characters in fallback mode
+        if (char.charCodeAt(0) > 127) continue;
+
+        await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyDown', text: char, key: char,
+          code: this._getKeyCode(char),
+          windowsVirtualKeyCode: char.charCodeAt(0)
+        });
+
+        await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'char', text: char
+        });
+
+        await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyUp', key: char,
+          code: this._getKeyCode(char),
+          windowsVirtualKeyCode: char.charCodeAt(0)
+        });
+
+        await this._sleep(delay);
+      }
+
+      console.log(`[CanvasToolkit] Typed (keys): "${text.substring(0, 20)}${text.length > 20 ? '...' : ''}"`);
+      return { success: true, text, method: 'keyevents' };
+    } catch (error) {
+      console.error('[CanvasToolkit] Type failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * CDP Press special key with modifiers
+   */
+  async cdpPressKey(key, modifiers = {}, tabId) {
+    const { ctrl = false, alt = false, shift = false, meta = false } = modifiers;
+
+    let modifierFlags = 0;
+    if (alt) modifierFlags |= 1;
+    if (ctrl) modifierFlags |= 2;
+    if (meta) modifierFlags |= 4;
+    if (shift) modifierFlags |= 8;
+
+    const keyDefs = {
+      'Enter': { code: 'Enter', keyCode: 13 },
+      'Tab': { code: 'Tab', keyCode: 9 },
+      'Escape': { code: 'Escape', keyCode: 27 },
+      'Backspace': { code: 'Backspace', keyCode: 8 },
+      'Delete': { code: 'Delete', keyCode: 46 },
+      'ArrowUp': { code: 'ArrowUp', keyCode: 38 },
+      'ArrowDown': { code: 'ArrowDown', keyCode: 40 },
+      'ArrowLeft': { code: 'ArrowLeft', keyCode: 37 },
+      'ArrowRight': { code: 'ArrowRight', keyCode: 39 },
+      'a': { code: 'KeyA', keyCode: 65 },
+      'c': { code: 'KeyC', keyCode: 67 },
+      'v': { code: 'KeyV', keyCode: 86 },
+      'x': { code: 'KeyX', keyCode: 88 },
+      'z': { code: 'KeyZ', keyCode: 90 }
+    };
+
+    const keyDef = keyDefs[key] || { code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0) };
+
+    try {
+      await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyDown', key, code: keyDef.code,
+        windowsVirtualKeyCode: keyDef.keyCode,
+        modifiers: modifierFlags
+      });
+
+      await this._sleep(30);
+
+      await this.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+        type: 'keyUp', key, code: keyDef.code,
+        windowsVirtualKeyCode: keyDef.keyCode,
+        modifiers: modifierFlags
+      });
+
+      const modStr = `${ctrl ? 'Ctrl+' : ''}${alt ? 'Alt+' : ''}${shift ? 'Shift+' : ''}${meta ? 'Meta+' : ''}`;
+      console.log(`[CanvasToolkit] Pressed: ${modStr}${key}`);
+      return { success: true, key, modifiers };
+    } catch (error) {
+      console.error('[CanvasToolkit] PressKey failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * CDP Scroll at position
+   */
+  async cdpScroll(x, y, deltaX, deltaY, tabId) {
+    try {
+      await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x: Math.round(x), y: Math.round(y),
+        deltaX, deltaY
+      });
+
+      console.log(`[CanvasToolkit] Scroll at (${x}, ${y}) delta: (${deltaX}, ${deltaY})`);
+      return { success: true };
+    } catch (error) {
+      console.error('[CanvasToolkit] Scroll failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Smart Paste - Write to clipboard and paste
+   */
+  async smartPaste(x, y, contentType, payload, tabId) {
+    try {
+      console.log(`[CanvasToolkit] SmartPaste at (${x}, ${y}) type: ${contentType}`);
+
+      // 1. Click to focus
+      await this.cdpClick(x, y, {}, tabId);
+      await this._sleep(100);
+
+      // 2. Write to clipboard via page injection
+      await this._writeClipboard(contentType, payload, tabId);
+      await this._sleep(50);
+
+      // 3. Dispatch Ctrl+V
+      const isMac = await this._detectMac(tabId);
+      await this.cdpPressKey('v', { ctrl: !isMac, meta: isMac }, tabId);
+
+      console.log('[CanvasToolkit] SmartPaste completed');
+      return { success: true, x, y, contentType };
+    } catch (error) {
+      console.error('[CanvasToolkit] SmartPaste failed:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Write content to clipboard via page injection
+   */
+  async _writeClipboard(contentType, payload, tabId) {
+    const mimeTypes = {
+      'svg': 'image/svg+xml',
+      'html': 'text/html',
+      'text': 'text/plain'
+    };
+    const mimeType = mimeTypes[contentType] || 'text/plain';
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (mType, content) => {
+        try {
+          const blob = new Blob([content], { type: mType });
+          const items = { [mType]: blob };
+          if (mType !== 'text/plain') {
+            items['text/plain'] = new Blob([content], { type: 'text/plain' });
+          }
+          await navigator.clipboard.write([new ClipboardItem(items)]);
+          return { success: true };
+        } catch (err) {
+          // Fallback: execCommand
+          const textarea = document.createElement('textarea');
+          textarea.value = content;
+          textarea.style.cssText = 'position:fixed;opacity:0;';
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+          return { success: true, method: 'execCommand' };
+        }
+      },
+      args: [mimeType, payload]
+    });
+  },
+
+  /**
+   * Detect Mac OS
+   */
+  async _detectMac(tabId) {
+    try {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => navigator.platform.toLowerCase().includes('mac')
+      });
+      return result[0]?.result || false;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Generate flowchart SVG - smart multi-row layout
+   * Supports: linear, grid, tree layouts based on node count and edges
+   */
+  generateFlowchartSVG(nodes, edges, options = {}) {
+    const nodeWidth = options.nodeWidth || 140;
+    const nodeHeight = options.nodeHeight || 50;
+    const hSpacing = options.hSpacing || 80;
+    const vSpacing = options.vSpacing || 80;
+    const padding = options.padding || 40;
+    const maxPerRow = options.maxPerRow || 4; // Auto-wrap after this many nodes
+
+    // Color palette with more variety
+    const colors = {
+      start: { fill: '#10B981', stroke: '#059669', text: '#fff' },
+      end: { fill: '#EF4444', stroke: '#DC2626', text: '#fff' },
+      diamond: { fill: '#F59E0B', stroke: '#D97706', text: '#1F2937' },
+      decision: { fill: '#F59E0B', stroke: '#D97706', text: '#1F2937' },
+      circle: { fill: '#8B5CF6', stroke: '#7C3AED', text: '#fff' },
+      database: { fill: '#8B5CF6', stroke: '#7C3AED', text: '#fff' },
+      process: { fill: '#3B82F6', stroke: '#2563EB', text: '#fff' },
+      rect: { fill: '#3B82F6', stroke: '#2563EB', text: '#fff' },
+      io: { fill: '#EC4899', stroke: '#DB2777', text: '#fff' },
+      document: { fill: '#06B6D4', stroke: '#0891B2', text: '#fff' },
+      default: { fill: '#E5E7EB', stroke: '#6B7280', text: '#1F2937' }
+    };
+
+    // Calculate grid positions for each node
+    const nodePositions = [];
+    const numRows = Math.ceil(nodes.length / maxPerRow);
+
+    nodes.forEach((node, idx) => {
+      const row = Math.floor(idx / maxPerRow);
+      const col = idx % maxPerRow;
+      // Alternate row direction for snake-like flow
+      const actualCol = row % 2 === 0 ? col : (Math.min(nodes.length - row * maxPerRow, maxPerRow) - 1 - col);
+
+      nodePositions.push({
+        x: padding + actualCol * (nodeWidth + hSpacing),
+        y: padding + row * (nodeHeight + vSpacing),
+        row,
+        col: actualCol
+      });
+    });
+
+    // Calculate SVG dimensions
+    const maxCol = Math.min(nodes.length, maxPerRow);
+    const totalWidth = maxCol * (nodeWidth + hSpacing) - hSpacing + padding * 2;
+    const totalHeight = numRows * (nodeHeight + vSpacing) - vSpacing + padding * 2;
+
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="${totalHeight}" style="font-family: 'Segoe UI', Arial, sans-serif;">`;
+
+    // Definitions
+    svg += `<defs>
+      <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#64748B"/>
+      </marker>
+      <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="1" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.1"/>
+      </filter>
+      <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#FAFBFC"/>
+        <stop offset="100%" style="stop-color:#F1F5F9"/>
+      </linearGradient>
+    </defs>`;
+
+    // Background
+    svg += `<rect width="100%" height="100%" fill="url(#bgGrad)"/>`;
+
+    // Draw edges first (so they're behind nodes)
+    edges.forEach(edge => {
+      const fromPos = nodePositions[edge.from];
+      const toPos = nodePositions[edge.to];
+      if (!fromPos || !toPos) return;
+
+      const fromCenterX = fromPos.x + nodeWidth / 2;
+      const fromCenterY = fromPos.y + nodeHeight / 2;
+      const toCenterX = toPos.x + nodeWidth / 2;
+      const toCenterY = toPos.y + nodeHeight / 2;
+
+      // Determine connection points
+      let fromX, fromY, toX, toY;
+
+      if (fromPos.row === toPos.row) {
+        // Same row - horizontal arrow
+        if (fromPos.col < toPos.col) {
+          fromX = fromPos.x + nodeWidth;
+          toX = toPos.x;
+        } else {
+          fromX = fromPos.x;
+          toX = toPos.x + nodeWidth;
+        }
+        fromY = toY = fromCenterY;
+        svg += `<line x1="${fromX}" y1="${fromY}" x2="${toX - 8}" y2="${toY}" stroke="#64748B" stroke-width="2" marker-end="url(#arrowhead)"/>`;
+      } else {
+        // Different rows - use curved path
+        if (fromPos.row < toPos.row) {
+          fromY = fromPos.y + nodeHeight;
+          toY = toPos.y;
+        } else {
+          fromY = fromPos.y;
+          toY = toPos.y + nodeHeight;
+        }
+        fromX = fromCenterX;
+        toX = toCenterX;
+
+        // Draw curved arrow
+        const midY = (fromY + toY) / 2;
+        svg += `<path d="M ${fromX} ${fromY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${toY - 8}"
+          fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrowhead)"/>`;
+      }
+
+      // Add edge label if provided
+      if (edge.label) {
+        const labelX = (fromX + toX) / 2;
+        const labelY = (fromY + toY) / 2 - 5;
+        svg += `<text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="11" fill="#64748B">${edge.label}</text>`;
+      }
+    });
+
+    // Draw nodes
+    nodes.forEach((node, idx) => {
+      const pos = nodePositions[idx];
+      const colorScheme = colors[node.type] || colors.default;
+      const nx = pos.x;
+      const ny = pos.y;
+
+      // Draw node shape based on type
+      if (node.type === 'diamond' || node.type === 'decision') {
+        const cx = nx + nodeWidth / 2;
+        const cy = ny + nodeHeight / 2;
+        const halfW = nodeWidth / 2;
+        const halfH = nodeHeight / 2;
+        svg += `<polygon points="${cx},${ny} ${nx + nodeWidth},${cy} ${cx},${ny + nodeHeight} ${nx},${cy}"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else if (node.type === 'circle' || node.type === 'database') {
+        svg += `<ellipse cx="${nx + nodeWidth/2}" cy="${ny + nodeHeight/2}" rx="${nodeWidth/2}" ry="${nodeHeight/2}"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else if (node.type === 'start' || node.type === 'end') {
+        svg += `<rect x="${nx}" y="${ny}" width="${nodeWidth}" height="${nodeHeight}" rx="${nodeHeight/2}"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else if (node.type === 'io') {
+        // Parallelogram for I/O
+        const skew = 15;
+        svg += `<polygon points="${nx + skew},${ny} ${nx + nodeWidth},${ny} ${nx + nodeWidth - skew},${ny + nodeHeight} ${nx},${ny + nodeHeight}"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else if (node.type === 'document') {
+        // Document shape with wavy bottom
+        svg += `<path d="M ${nx} ${ny + 5} Q ${nx} ${ny}, ${nx + 5} ${ny} L ${nx + nodeWidth - 5} ${ny} Q ${nx + nodeWidth} ${ny}, ${nx + nodeWidth} ${ny + 5} L ${nx + nodeWidth} ${ny + nodeHeight - 10} Q ${nx + nodeWidth * 0.75} ${ny + nodeHeight - 5}, ${nx + nodeWidth * 0.5} ${ny + nodeHeight - 10} Q ${nx + nodeWidth * 0.25} ${ny + nodeHeight - 15}, ${nx} ${ny + nodeHeight - 10} Z"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      } else {
+        // Default rectangle with rounded corners
+        svg += `<rect x="${nx}" y="${ny}" width="${nodeWidth}" height="${nodeHeight}" rx="8"
+          fill="${colorScheme.fill}" stroke="${colorScheme.stroke}" stroke-width="2" filter="url(#shadow)"/>`;
+      }
+
+      // Node label with text wrapping for long labels
+      const label = node.label || '';
+      const maxChars = Math.floor(nodeWidth / 8);
+      const displayLabel = label.length > maxChars ? label.substring(0, maxChars - 2) + '..' : label;
+
+      svg += `<text x="${nx + nodeWidth/2}" y="${ny + nodeHeight/2 + 5}"
+        text-anchor="middle" font-size="12" font-weight="500" fill="${colorScheme.text}">${displayLabel}</text>`;
+    });
+
+    svg += '</svg>';
+    return svg;
+  },
+
+  /**
+   * Generate table HTML
+   */
+  generateTableHTML(data, options = {}) {
+    const { headers = true, border = true } = options;
+
+    let html = '<table style="border-collapse: collapse;">';
+    data.forEach((row, rowIndex) => {
+      html += '<tr>';
+      row.forEach(cell => {
+        const tag = headers && rowIndex === 0 ? 'th' : 'td';
+        const style = border
+          ? 'border: 1px solid #ccc; padding: 8px; background: ' + (headers && rowIndex === 0 ? '#f0f0f0' : '#fff')
+          : 'padding: 8px;';
+        html += `<${tag} style="${style}">${cell}</${tag}>`;
+      });
+      html += '</tr>';
+    });
+    html += '</table>';
+    return html;
+  },
+
+  // Helpers
+  _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  },
+
+  _getKeyCode(char) {
+    const code = char.toUpperCase().charCodeAt(0);
+    if (code >= 65 && code <= 90) return `Key${char.toUpperCase()}`;
+    if (code >= 48 && code <= 57) return `Digit${char}`;
+    if (char === ' ') return 'Space';
+    return `Key${char}`;
+  }
+};
+
+// ===== Add Canvas Actions to AgentS.actions =====
+
+AgentS.actions.cdpClick = async function(x, y, options, tabId) {
+  try {
+    const result = await CanvasToolkit.cdpClick(x, y, options, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP clicked at (${x}, ${y})` });
+  } catch (error) {
+    // Fallback to regular click_at if CDP fails
+    console.warn('[cdpClick] CDP failed, falling back to click_at:', error.message);
+    try {
+      return await AgentS.actions.clickAtCoordinates(x, y, tabId);
+    } catch (fallbackError) {
+      return AgentS.createActionResult({ success: false, error: `CDP and fallback both failed: ${error.message}` });
+    }
+  }
+};
+
+AgentS.actions.cdpDoubleClick = async function(x, y, tabId) {
+  try {
+    await CanvasToolkit.cdpClick(x, y, { clickCount: 2 }, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP double-clicked at (${x}, ${y})` });
+  } catch (error) {
+    // Fallback: simulate double-click with two rapid clicks
+    console.warn('[cdpDoubleClick] CDP failed, falling back to double click_at:', error.message);
+    try {
+      await AgentS.actions.clickAtCoordinates(x, y, tabId);
+      await new Promise(r => setTimeout(r, 100));
+      return await AgentS.actions.clickAtCoordinates(x, y, tabId);
+    } catch (fallbackError) {
+      return AgentS.createActionResult({ success: false, error: `CDP and fallback both failed: ${error.message}` });
+    }
+  }
+};
+
+AgentS.actions.cdpRightClick = async function(x, y, tabId) {
+  try {
+    await CanvasToolkit.cdpClick(x, y, { button: 'right' }, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP right-clicked at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.cdpDrag = async function(startX, startY, endX, endY, options, tabId) {
+  try {
+    await CanvasToolkit.cdpDrag(startX, startY, endX, endY, options, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP dragged from (${startX}, ${startY}) to (${endX}, ${endY})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.cdpType = async function(text, options, tabId) {
+  try {
+    await CanvasToolkit.cdpType(text, options, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP typed: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"` });
+  } catch (error) {
+    // Fallback to send_keys if CDP fails
+    console.warn('[cdpType] CDP failed, falling back to send_keys:', error.message);
+    try {
+      return await AgentS.actions.sendKeys(text, tabId);
+    } catch (fallbackError) {
+      return AgentS.createActionResult({ success: false, error: `CDP and fallback both failed: ${error.message}` });
+    }
+  }
+};
+
+AgentS.actions.cdpPressKey = async function(key, modifiers, tabId) {
+  try {
+    await CanvasToolkit.cdpPressKey(key, modifiers, tabId);
+    const modStr = `${modifiers.ctrl ? 'Ctrl+' : ''}${modifiers.alt ? 'Alt+' : ''}${modifiers.shift ? 'Shift+' : ''}${modifiers.meta ? 'Meta+' : ''}`;
+    return AgentS.createActionResult({ success: true, message: `CDP pressed: ${modStr}${key}` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.cdpScroll = async function(x, y, deltaX, deltaY, tabId) {
+  try {
+    await CanvasToolkit.cdpScroll(x, y, deltaX, deltaY, tabId);
+    return AgentS.createActionResult({ success: true, message: `CDP scrolled at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.smartPaste = async function(x, y, contentType, payload, tabId) {
+  try {
+    await CanvasToolkit.smartPaste(x, y, contentType, payload, tabId);
+    return AgentS.createActionResult({ success: true, message: `Smart pasted ${contentType} at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.pasteSvg = async function(x, y, svg, tabId) {
+  try {
+    // Ensure SVG has namespace
+    let svgContent = svg;
+    if (!svgContent.includes('xmlns')) {
+      svgContent = svgContent.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    await CanvasToolkit.smartPaste(x, y, 'svg', svgContent, tabId);
+    return AgentS.createActionResult({ success: true, message: `Pasted SVG at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.pasteHtml = async function(x, y, html, tabId) {
+  try {
+    await CanvasToolkit.smartPaste(x, y, 'html', html, tabId);
+    return AgentS.createActionResult({ success: true, message: `Pasted HTML at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.pasteTable = async function(x, y, data, options, tabId) {
+  try {
+    const html = CanvasToolkit.generateTableHTML(data, options);
+    await CanvasToolkit.smartPaste(x, y, 'html', html, tabId);
+    return AgentS.createActionResult({ success: true, message: `Pasted table at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.pasteFlowchart = async function(x, y, nodes, edges, tabId) {
+  try {
+    const svg = CanvasToolkit.generateFlowchartSVG(nodes, edges);
+    await CanvasToolkit.smartPaste(x, y, 'svg', svg, tabId);
+    return AgentS.createActionResult({ success: true, message: `Pasted flowchart with ${nodes.length} nodes at (${x}, ${y})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+AgentS.actions.drawShape = async function(toolX, toolY, startX, startY, endX, endY, tabId) {
+  try {
+    // 1. Click tool
+    await CanvasToolkit.cdpClick(toolX, toolY, {}, tabId);
+    await CanvasToolkit._sleep(100);
+    // 2. Drag to draw
+    await CanvasToolkit.cdpDrag(startX, startY, endX, endY, {}, tabId);
+    return AgentS.createActionResult({ success: true, message: `Drew shape from (${startX}, ${startY}) to (${endX}, ${endY})` });
+  } catch (error) {
+    return AgentS.createActionResult({ success: false, error: error.message });
+  }
+};
+
+// Cleanup CDP on tab close
+chrome.tabs.onRemoved.addListener((tabId) => {
+  CanvasToolkit._sessions.delete(tabId);
+});
+
+console.log('[CanvasToolkit] Canvas actions registered');
