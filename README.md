@@ -301,3 +301,7 @@ In Settings:
 | `notifications` | Task completion alerts |
 | `system.display` | Viewport/display info for coordinate mapping |
 | `host_permissions: <all_urls>` | Allow actions on any website |
+
+## Licence
+
+MIT License
