@@ -270,6 +270,18 @@ body {
   color: var(--error);
 }
 
+.message.system.success {
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--success, #4ade80);
+}
+
+/* Ask User hint */
+.ask-user-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 6px;
+}
+
 /* Execution Bar */
 .execution-bar {
   display: flex;

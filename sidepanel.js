@@ -427,6 +427,52 @@ function handleBackgroundMessage(message) {
     case 'recording_export_data':
       handleRecordingExportData(message);
       break;
+
+    case 'replay_html':
+      // New modular format: background-new.js sends replay HTML directly
+      if (message.html) {
+        const blob = new Blob([message.html], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `crab-agent-replay-${Date.now()}.html`;
+        a.click();
+        URL.revokeObjectURL(url);
+        addSystemMessage('Replay HTML exported!', 'success', false);
+      }
+      break;
+
+    case 'replay_gif':
+      // New modular format: background-new.js sends GIF data
+      if (message.base64) {
+        const binary = atob(message.base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'image/gif' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = message.filename || `crab-agent-replay-${Date.now()}.gif`;
+        a.click();
+        URL.revokeObjectURL(url);
+        addSystemMessage('Replay GIF exported!', 'success', false);
+      }
+      break;
+
+    case 'teaching_record':
+      // New modular format: background-new.js sends teaching record JSON
+      if (message.record) {
+        const json = JSON.stringify(message.record, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `crab-agent-teaching-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        addSystemMessage('Teaching record exported!', 'success', false);
+      }
+      break;
   }
 }
 
@@ -531,17 +577,49 @@ function handleExecutionEvent(event) {
       addSystemMessage(`Step failed: ${details?.error}`, 'error');
       break;
 
+    case 'ACTION': {
+      // New modular format from agent-loop.js: details = { thought, tool, params }
+      const toolName = details?.tool || details?.action || 'unknown';
+      const toolParams = details?.params || {};
+      const thought = details?.thought;
+
+      // Display thought if available
+      if (thought) {
+        const thoughtText = typeof thought === 'object'
+          ? (thought.analysis || thought.observation || thought.plan || JSON.stringify(thought))
+          : String(thought);
+        if (thoughtText) {
+          showThinkingIndicator(thoughtText);
+        }
+      }
+
+      // Build human-readable action label
+      let actionLabel = toolName;
+      if (toolName === 'computer' && toolParams.action) {
+        actionLabel = `computer.${toolParams.action}`;
+      }
+      setExecutionText(`Executing: ${actionLabel}`);
+      addActionMessage(actionLabel, toolParams, 'start');
+      notifyCrabActivity('thinking', actionLabel);
+
+      // Handle plan updates from update_plan tool
+      if (toolName === 'update_plan' && toolParams.plan) {
+        addSystemMessage(`📋 Plan updated:\n${toolParams.plan}`, 'info', false);
+      }
+      break;
+    }
+
     case 'ACT_START':
-      setExecutionText(`${details?.action}: ${details?.goal || ''}`);
-      addActionMessage(details?.action, details?.params, 'start');
+      setExecutionText(`${details?.action || details?.tool}: ${details?.goal || ''}`);
+      addActionMessage(details?.action || details?.tool, details?.params, 'start');
       break;
 
     case 'ACT_OK':
-      addActionMessage(details?.action, null, 'success', details?.message);
+      addActionMessage(details?.action || details?.tool, null, 'success', details?.message);
       break;
 
     case 'ACT_FAIL':
-      addActionMessage(details?.action, null, 'error', details?.error);
+      addActionMessage(details?.action || details?.tool, null, 'error', details?.error);
       break;
 
     case 'THINKING':
@@ -1260,7 +1338,8 @@ function addAssistantMessage(content, save = true) {
  */
 function addSystemMessage(content, type = 'info', save = true) {
   const messageDiv = document.createElement('div');
-  messageDiv.className = `message system ${type === 'error' ? 'error' : ''}`.trim();
+  const typeClass = type === 'error' ? 'error' : type === 'success' ? 'success' : '';
+  messageDiv.className = `message system ${typeClass}`.trim();
   messageDiv.textContent = content;
   triggerAnimation(messageDiv, 'message-enter');
   elements.chatMessages.appendChild(messageDiv);
@@ -1289,8 +1368,15 @@ function addAskUserMessage(message, options = []) {
   // Message text
   const textDiv = document.createElement('div');
   textDiv.className = 'ask-user-text';
-  textDiv.textContent = message || 'Cần thêm thông tin...';
+  textDiv.textContent = message || 'Need more information...';
   messageDiv.appendChild(textDiv);
+
+  // Helper to send user response to background
+  function sendUserResponse(response) {
+    if (port) {
+      port.postMessage({ type: 'user_response', response });
+    }
+  }
 
   // Options buttons if provided
   if (options && options.length > 0) {
@@ -1302,14 +1388,9 @@ function addAskUserMessage(message, options = []) {
       btn.className = 'ask-user-option';
       btn.textContent = option;
       btn.addEventListener('click', () => {
-        // Send selected option as follow-up message
-        const input = elements.chatInput;
-        if (input) {
-          input.value = option;
-          // Trigger send
-          const sendBtn = document.getElementById('sendBtn');
-          if (sendBtn) sendBtn.click();
-        }
+        // Send selected option as user_response to resume execution
+        sendUserResponse(option);
+        addUserMessage(option, true);
         // Disable all option buttons
         optionsDiv.querySelectorAll('button').forEach(b => b.disabled = true);
         btn.classList.add('selected');
@@ -1319,6 +1400,13 @@ function addAskUserMessage(message, options = []) {
 
     messageDiv.appendChild(optionsDiv);
   }
+
+  // Also allow free-text response via chat input
+  const inputHint = document.createElement('div');
+  inputHint.className = 'ask-user-hint';
+  inputHint.textContent = 'Or type your response below';
+  inputHint.style.cssText = 'font-size: 11px; opacity: 0.6; margin-top: 6px;';
+  messageDiv.appendChild(inputHint);
 
   triggerAnimation(messageDiv, 'message-enter');
   elements.chatMessages.appendChild(messageDiv);
@@ -1339,7 +1427,7 @@ function addSuggestRuleMessage(message, rule, reason = '') {
   // Message text
   const textDiv = document.createElement('div');
   textDiv.className = 'suggest-rule-text';
-  textDiv.textContent = message || `Gợi ý rule: "${rule}"`;
+  textDiv.textContent = message || `Suggested rule: "${rule}"`;
   messageDiv.appendChild(textDiv);
 
   // Action buttons
@@ -1408,6 +1496,77 @@ function toCompactText(value, maxLen = 220) {
  */
 function humanizeAction(action, params) {
   const actionMap = {
+    // New modular tool names (from tools/index.js)
+    'computer.left_click': () => {
+      const ref = params?.ref || '';
+      const coord = params?.coordinate ? `(${params.coordinate.join(',')})` : '';
+      return ref ? `Clicking element ref_${ref}` : coord ? `Clicking at ${coord}` : 'Clicking element';
+    },
+    'computer.right_click': () => 'Right-clicking',
+    'computer.double_click': () => 'Double-clicking',
+    'computer.triple_click': () => 'Triple-clicking',
+    'computer.type': () => {
+      const text = params?.text || '';
+      return text ? `Typing "${toCompactText(text, 25)}"` : 'Entering text';
+    },
+    'computer.key': () => {
+      const keys = params?.keys || '';
+      return keys ? `Pressing ${keys}` : 'Pressing key';
+    },
+    'computer.screenshot': () => 'Taking screenshot',
+    'computer.scroll': () => {
+      const dir = params?.direction || 'down';
+      return `Scrolling ${dir}`;
+    },
+    'computer.scroll_to': () => `Scrolling to element`,
+    'computer.hover': () => 'Hovering element',
+    'computer.left_click_drag': () => 'Dragging element',
+    'computer.zoom': () => 'Zooming in on region',
+    'computer.wait': () => 'Waiting...',
+    'navigate': () => {
+      const a = params?.action || '';
+      if (a === 'go_to_url' && params?.url) {
+        try { return `Navigating to ${new URL(params.url).hostname}`; } catch { return 'Navigating'; }
+      }
+      if (a === 'go_back') return 'Going back';
+      if (a === 'go_forward') return 'Going forward';
+      if (a === 'search_google') return `Searching: "${toCompactText(params?.query || '', 25)}"`;
+      return 'Navigating';
+    },
+    'read_page': () => 'Reading accessibility tree',
+    'find': () => {
+      const q = params?.query || '';
+      return q ? `Finding "${toCompactText(q, 25)}"` : 'Finding element';
+    },
+    'form_input': () => {
+      const val = params?.value || '';
+      return val ? `Setting form value "${toCompactText(val, 25)}"` : 'Setting form value';
+    },
+    'get_page_text': () => 'Extracting page text',
+    'tabs_context': () => 'Getting tabs info',
+    'tabs_create': () => 'Opening new tab',
+    'switch_tab': () => 'Switching tab',
+    'close_tab': () => 'Closing tab',
+    'read_console_messages': () => 'Reading console',
+    'read_network_requests': () => 'Reading network',
+    'resize_window': () => 'Resizing window',
+    'update_plan': () => 'Updating plan',
+    'file_upload': () => 'Uploading file',
+    'upload_image': () => 'Uploading image',
+    'gif_creator': () => {
+      const a = params?.action || '';
+      if (a === 'start_recording') return 'Starting recording';
+      if (a === 'stop_recording') return 'Stopping recording';
+      return 'Recording';
+    },
+    'shortcuts_list': () => 'Listing shortcuts',
+    'shortcuts_execute': () => 'Running shortcut',
+    'javascript_tool': () => 'Running JavaScript',
+    'canvas_toolkit': () => 'Using canvas tool',
+    'done': () => 'Task completed',
+    'ask_user': () => 'Asking for input',
+
+    // Legacy action names (backward compat with old format)
     'click': () => {
       const target = params?.text || params?.element_text || '';
       return target ? `Clicking "${toCompactText(target, 30)}"` : 'Clicking element';
@@ -1454,7 +1613,6 @@ function humanizeAction(action, params) {
     'screenshot': () => 'Taking screenshot',
     'extract_content': () => 'Reading page content',
     'get_dom_tree': () => 'Analyzing page',
-    'done': () => 'Task completed',
     'select_option': () => {
       const option = params?.option || params?.value || '';
       return option ? `Selecting "${toCompactText(option, 25)}"` : 'Selecting option';
@@ -1463,9 +1621,9 @@ function humanizeAction(action, params) {
       const key = params?.key || '';
       return key ? `Pressing ${key}` : 'Pressing key';
     },
-    'switch_tab': () => 'Switching tab',
+    'switch_tab_legacy': () => 'Switching tab',
     'open_tab': () => 'Opening new tab',
-    'close_tab': () => 'Closing tab'
+    'close_tab_legacy': () => 'Closing tab'
   };
 
   const actionLower = (action || '').toLowerCase().replace(/-/g, '_');
@@ -1477,6 +1635,7 @@ function humanizeAction(action, params) {
 
   // Fallback: capitalize and clean up action name
   return action
+    .replace(/\./g, ' ')
     .replace(/_/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase());
 }
