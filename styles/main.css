@@ -1,4 +1,4 @@
-/* Crab-Agent - Clean UI inspired by Claude Extension */
+/* Crab-Agent - Claude Style UI */
 
 :root {
   --bg-primary: #1a1a1a;
@@ -9,8 +9,11 @@
   --text-primary: #e8e8e8;
   --text-secondary: #a0a0a0;
   --text-muted: #666666;
-  --accent: #d4a574;
-  --accent-hover: #e0b589;
+  /* Claude Orange palette */
+  --accent: #D97757;
+  --accent-hover: #E08868;
+  --accent-light: rgba(217, 119, 87, 0.1);
+  --accent-medium: rgba(217, 119, 87, 0.3);
   --border-color: #3a3a3a;
   --success: #4ade80;
   --error: #f87171;
@@ -21,17 +24,18 @@
 }
 
 [data-theme="light"] {
-  --bg-primary: #ffffff;
+  --bg-primary: #FAF9F5;
   --bg-secondary: #f5f5f5;
   --bg-tertiary: #eeeeee;
   --bg-hover: #e5e5e5;
   --bg-input: #ffffff;
-  --text-primary: #1a1a1a;
+  --text-primary: #141413;
   --text-secondary: #666666;
   --text-muted: #999999;
-  --accent: #b8956c;
-  --accent-hover: #a68459;
-  --border-color: #e0e0e0;
+  /* Claude Orange for light mode */
+  --accent: #D97757;
+  --accent-hover: #C96647;
+  --border-color: rgba(31, 30, 29, 0.15);
 }
 
 * {
@@ -301,7 +305,7 @@ body {
 .execution-spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid var(--border-color);
+  border: 2px solid rgba(217, 119, 87, 0.3);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;

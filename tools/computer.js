@@ -168,9 +168,17 @@ async function _handleClick(action, params, tabId) {
       : action === 'double_click' ? 'Double-clicked'
       : action === 'triple_click' ? 'Triple-clicked'
       : 'Right-clicked';
-    result.message = params.ref
-      ? `${clickLabel} on element ${params.ref}`
-      : `${clickLabel} at (${Math.round(coords.x)}, ${Math.round(coords.y)})`;
+
+    if (params.ref && coords.resolved) {
+      // Include element info when available
+      const tag = coords.resolved.tag || 'element';
+      const text = coords.resolved.text ? ` "${coords.resolved.text.substring(0, 30)}"` : '';
+      result.message = `${clickLabel} [${params.ref}] <${tag}>${text}`;
+    } else if (params.ref) {
+      result.message = `${clickLabel} on element ${params.ref}`;
+    } else {
+      result.message = `${clickLabel} at (${Math.round(coords.x)}, ${Math.round(coords.y)})`;
+    }
   }
 
   return result;

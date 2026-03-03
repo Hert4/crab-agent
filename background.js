@@ -1,6 +1,7 @@
 /**
  * Crab-Agent Background Service Worker
- * Slim orchestrator - delegates to modular components.
+ * Claude-style architecture: Simple agent loop + Prompt-based loop detection
+ * (Model relies on screenshot reasoning to detect stuck states)
  *
  *   ████████
  *   █▌▐██▌▐█
@@ -62,13 +63,13 @@ chrome.runtime.onConnect.addListener((port) => {
         case 'follow_up_task':
           if (isRunning()) {
             queueFollowUp(message.task, message.images || []);
-            // Resume if paused (e.g., waiting for user input during ask_user)
+            // Resume if paused (e.g., waiting for user input)
             const exec = getCurrentExecution();
             if (exec?.paused) {
               resumeExecution();
             }
           } else {
-            // Start new task if no execution running
+            // Start new task
             await handleNewTask(
               message.task,
               message.settings || {},
@@ -148,7 +149,7 @@ chrome.runtime.onConnect.addListener((port) => {
           break;
 
         case 'user_response':
-          // User responded to ask_user - resume execution
+          // User responded to ask_user - resume
           if (isRunning()) {
             queueFollowUp(message.response);
             resumeExecution();
@@ -175,10 +176,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case 'STOP_AGENT':
       cancelExecution();
+      sendToPanel({
+        type: 'execution_event',
+        state: 'TASK_CANCEL',
+        taskId: getCurrentExecution()?.taskId,
+        details: { message: 'Stopped by user' }
+      });
       sendResponse({ success: true });
       break;
     case 'OPEN_SIDEPANEL':
       chrome.sidePanel.open({ windowId: sender.tab?.windowId }).catch(() => {});
+      sendResponse({ success: true });
+      break;
+    case 'SWITCH_TO_MAIN_TAB':
+      chrome.sidePanel.open({ windowId: sender.tab?.windowId }).catch(() => {});
+      sendResponse({ success: true });
+      break;
+    case 'DISMISS_STATIC_INDICATOR_FOR_GROUP':
       sendResponse({ success: true });
       break;
     case 'STATIC_INDICATOR_HEARTBEAT':
@@ -190,7 +204,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ========== Tab Management ==========
 
-// Cleanup CDP when tabs close
 chrome.tabs.onRemoved.addListener((tabId) => {
   cdp.release(tabId);
 });
@@ -243,5 +256,5 @@ async function _handleScreenshot() {
 
 // ========== Startup ==========
 
-console.log('[Crab-Agent] Background service worker loaded (modular v2.0)');
-console.log('[Crab-Agent] Modules: core(4), tools(19), prompts(2), lib(5)');
+console.log('[Crab-Agent] Background service worker loaded (Claude-style architecture v2.2)');
+console.log('[Crab-Agent] Modules: agent-loop, cdp-manager, tools(19)');

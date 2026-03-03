@@ -5,7 +5,7 @@
  */
 
 import { cdp } from './cdp-manager.js';
-import { StateManager, VisualStateTracker } from './state-manager.js';
+import { StateManager, VisualStateTracker, ScreenshotComparator } from './state-manager.js';
 import { MessageManager } from './message-manager.js';
 import { callLLM } from './llm-client.js';
 import { executeTool, getToolSchemas } from '../tools/index.js';
@@ -24,6 +24,7 @@ import {
 let currentExecution = null;
 const stateManager = new StateManager();
 const visualTracker = new VisualStateTracker();
+const screenshotComparator = new ScreenshotComparator();
 
 // ========== Public API ==========
 
@@ -40,6 +41,7 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
   // Reset state
   stateManager.reset();
   visualTracker.reset();
+  screenshotComparator.reset();
   updateUserStyle(task);
 
   // Get active tab
@@ -90,6 +92,11 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
     details: { task }
   });
 
+  // Show visual indicator on the page
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: 'SHOW_AGENT_INDICATORS' });
+  } catch (e) { /* content script may not be loaded */ }
+
   try {
     await runExecutor();
   } catch (error) {
@@ -101,8 +108,10 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
     });
     await finalizeTaskRecording(currentExecution, 'failed', { error: error.message });
   } finally {
-    // Cleanup CDP connections after task
-    // (keep connections alive briefly for reuse)
+    // Hide visual indicator
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: 'HIDE_AGENT_INDICATORS' });
+    } catch (e) { /* tab may have closed */ }
   }
 }
 
@@ -234,7 +243,12 @@ async function runExecutor() {
     // 1. Take screenshot for context
     const screenshot = await _takeScreenshot(exec.tabId);
 
-    // 2. Get page accessibility tree (lightweight)
+    // 2. Get previous screenshot and update tracker (Claude-style: send both to model)
+    const screenshotInfo = screenshot?.base64
+      ? screenshotComparator.update(screenshot.base64, screenshot.format || 'jpeg')
+      : { hasPrevious: false, previous: null };
+
+    // 3. Get page accessibility tree (lightweight)
     const pageInfo = await _getPageInfo(exec.tabId);
 
     // Begin recording step
@@ -244,8 +258,8 @@ async function runExecutor() {
       screenshotBase64: screenshot?.base64
     });
 
-    // 3. Build LLM message with current state
-    const stateMessage = _buildStateMessage(exec, pageInfo, screenshot, currentTab, useNativeTools);
+    // 4. Build LLM message with current state
+    const stateMessage = _buildStateMessage(exec, pageInfo, screenshot, currentTab, useNativeTools, screenshotInfo.hasPrevious);
 
     // Update system prompt with latest warnings
     const updatedSystemPrompt = buildSystemPrompt({
@@ -256,9 +270,21 @@ async function runExecutor() {
     });
 
     exec.messageManager.updateSystemPrompt(updatedSystemPrompt);
-    const screenshotFormat = screenshot?.format || 'jpeg';
-    const screenshotDataUrl = screenshot?.base64 ? `data:image/${screenshotFormat};base64,${screenshot.base64}` : null;
-    exec.messageManager.addMessage('user', stateMessage, screenshotDataUrl ? [screenshotDataUrl] : []);
+
+    // Build image array: [previous_screenshot, current_screenshot] for visual comparison
+    const images = [];
+    if (screenshotInfo.hasPrevious && screenshotInfo.previous) {
+      // Add previous screenshot first (labeled in message)
+      const prevFormat = screenshotInfo.previousFormat || 'jpeg';
+      images.push(`data:image/${prevFormat};base64,${screenshotInfo.previous}`);
+    }
+    if (screenshot?.base64) {
+      // Add current screenshot
+      const currFormat = screenshot.format || 'jpeg';
+      images.push(`data:image/${currFormat};base64,${screenshot.base64}`);
+    }
+
+    exec.messageManager.addMessage('user', stateMessage, images);
 
     // 4. Call LLM (with native tool_use for Anthropic providers)
     sendToPanel({
@@ -540,7 +566,7 @@ async function _getPageInfo(tabId) {
   }
 }
 
-function _buildStateMessage(exec, pageInfo, screenshot, tab, nativeToolUse = false) {
+function _buildStateMessage(exec, pageInfo, screenshot, tab, nativeToolUse = false, hasPreviousScreenshot = false) {
   const parts = [];
 
   parts.push(`<current_state>`);
@@ -549,17 +575,33 @@ function _buildStateMessage(exec, pageInfo, screenshot, tab, nativeToolUse = fal
   parts.push(`Interactive elements: ${pageInfo.elementCount || 0}`);
   parts.push(`Step: ${exec.step}/${exec.maxSteps}`);
 
-  if (screenshot?.success) {
-    parts.push(`Screenshot: attached (${screenshot.width}x${screenshot.height})`);
+  // Describe screenshots attached
+  if (hasPreviousScreenshot && screenshot?.success) {
+    parts.push(`Screenshots: 2 images attached`);
+    parts.push(`  - Image 1: PREVIOUS screenshot (before your last action)`);
+    parts.push(`  - Image 2: CURRENT screenshot (after your last action)`);
+    parts.push(`Compare them to verify if your action worked!`);
+  } else if (screenshot?.success) {
+    parts.push(`Screenshot: 1 image attached (${screenshot.width}x${screenshot.height})`);
   }
 
   parts.push(`</current_state>`);
+
+  // Add visual comparison instruction when we have 2 screenshots
+  if (hasPreviousScreenshot) {
+    parts.push(`\n<visual_verification>`);
+    parts.push(`Compare Image 1 (BEFORE) with Image 2 (AFTER):`);
+    parts.push(`- If they look THE SAME → your action FAILED, try different approach`);
+    parts.push(`- If page changed → action likely succeeded, continue`);
+    parts.push(`- If error/popup appeared → handle it first`);
+    parts.push(`</visual_verification>`);
+  }
 
   parts.push(`\n<user_request>${_getEffectiveTask(exec)}</user_request>`);
 
   // Add efficiency hints based on step count
   if (exec.step <= 1) {
-    parts.push(`\nA screenshot is already attached above. Analyze it and take action immediately.`);
+    parts.push(`\nAnalyze the screenshot and take action immediately.`);
     parts.push(`For messaging tasks: click the input area → type → press Enter. Be fast and direct.`);
   } else if (exec.step >= 4) {
     parts.push(`\nYou have used ${exec.step} steps already. Be more direct - take the action now instead of gathering more info.`);

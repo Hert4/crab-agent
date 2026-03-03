@@ -56,6 +56,53 @@ export class StateManager {
 }
 
 /**
+ * Screenshot Comparator - Simple approach: store previous screenshot
+ * and send BOTH to model for visual comparison.
+ * Model does the comparison using its vision capabilities.
+ */
+export class ScreenshotComparator {
+  constructor() {
+    this.previousScreenshot = null; // base64 of previous screenshot
+    this.previousFormat = 'jpeg';
+  }
+
+  reset() {
+    this.previousScreenshot = null;
+    this.previousFormat = 'jpeg';
+  }
+
+  /**
+   * Update with new screenshot and return the previous one.
+   * @param {string} currentBase64 - Current screenshot base64
+   * @param {string} format - Image format (jpeg/png)
+   * @returns {Object} { previous: base64|null, hasPrevious: boolean }
+   */
+  update(currentBase64, format = 'jpeg') {
+    const previous = this.previousScreenshot;
+    const previousFormat = this.previousFormat;
+    const hasPrevious = !!previous;
+
+    // Store current as new previous
+    this.previousScreenshot = currentBase64;
+    this.previousFormat = format;
+
+    return {
+      previous,
+      previousFormat,
+      hasPrevious
+    };
+  }
+
+  /**
+   * Get previous screenshot data URL for sending to model
+   */
+  getPreviousDataUrl() {
+    if (!this.previousScreenshot) return null;
+    return `data:image/${this.previousFormat};base64,${this.previousScreenshot}`;
+  }
+}
+
+/**
  * Visual State Tracker - Simplified: no change streak tracking.
  * Model relies on screenshot reasoning to detect stuck states.
  */
