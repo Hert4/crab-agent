@@ -143,6 +143,7 @@ async function _handleClick(action, params, tabId) {
     await new Promise(r => setTimeout(r, 150));
   }
 
+  // --- Execute CDP click (no effect detection — model reasons from screenshot) ---
   const modifiers = params.modifiers ? cdp._parseModifiers(params.modifiers) : 0;
   let result;
 
@@ -162,9 +163,14 @@ async function _handleClick(action, params, tabId) {
   }
 
   if (result.success) {
-    const ref = params.ref || '';
-    const target = coords.resolved ? ` on <${coords.resolved.tag}> "${coords.resolved.text}"` : '';
-    result.message = `${action} at (${coords.x}, ${coords.y})${target}${ref ? ` [${ref}]` : ''}`;
+    // Match Claude's output format exactly
+    const clickLabel = action === 'left_click' ? 'Clicked'
+      : action === 'double_click' ? 'Double-clicked'
+      : action === 'triple_click' ? 'Triple-clicked'
+      : 'Right-clicked';
+    result.message = params.ref
+      ? `${clickLabel} on element ${params.ref}`
+      : `${clickLabel} at (${Math.round(coords.x)}, ${Math.round(coords.y)})`;
   }
 
   return result;

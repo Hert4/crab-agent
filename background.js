@@ -2,11 +2,11 @@
  * Crab-Agent Background Service Worker
  * Slim orchestrator - delegates to modular components.
  *
- *  ████████
- *  █▌▐██▌▐█
+ *   ████████
+ *   █▌▐██▌▐█
  * ████████████
- *  ████████
- *   ▐▐  ▌▌
+ *   ████████
+ *   ▐▐    ▌▌
  */
 
 import { cdp } from './core/cdp-manager.js';

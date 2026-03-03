@@ -68,7 +68,6 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
     consecutiveFailures: 0,
     maxFailures: settings.maxFailures || 3,
     memory: '',
-    actionHistory: [],
     contextRules: '',
     taskImages: Array.isArray(images) ? images : [],
     pendingFollowUps: [],
@@ -200,7 +199,7 @@ async function runExecutor() {
 
     // Wait for page stabilization + ensure content scripts are injected
     await _ensureContentScriptsReady(exec.tabId);
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => setTimeout(r, 200));
 
     // Get current tab
     let currentTab = await _getCurrentTab(exec);
@@ -369,19 +368,20 @@ async function runExecutor() {
     const toolParams = parsed.tool_use.parameters || {};
     const context = { tabId: exec.tabId, exec, cdp };
 
-    // Record pre-action state
-    const preState = stateManager.recordPreActionState(tabUrl, pageInfo.domHash || '');
+    // 6a. Execute the tool (no loop/stuck detection — model reasons from screenshots)
+    let toolResult;
+    toolResult = await executeTool(toolName, toolParams, context);
 
-    const toolResult = await executeTool(toolName, toolParams, context);
-
-    // Wait for page to settle after action (clicks/types may trigger async DOM changes)
-    if (['computer', 'form_input', 'navigate'].includes(toolName)) {
-      await new Promise(r => setTimeout(r, 500));
+    // Adaptive page settle — matches Claude's approach:
+    // Wait minMs first, then poll up to maxMs checking page readiness
+    const settleTimings = _getSettleTimings(toolName, toolParams.action);
+    if (settleTimings.minMs > 0 || settleTimings.maxMs > 0) {
+      await _adaptivePageSettle(exec.tabId, settleTimings.minMs, settleTimings.maxMs);
     }
 
     if (exec.cancelled) break;
 
-    // Record action result
+    // 6b. Record action result (minimal — no state change tracking)
     stateManager.recordActionResult(toolName, toolParams, toolResult.success, toolResult.message || toolResult.error || '');
     finalizeRecordingStep(stepRecord, {
       outcome: toolResult.success ? 'success' : 'failed',
@@ -444,18 +444,7 @@ async function runExecutor() {
       exec.messageManager.addMessage('user', `Tool result (${toolName}): ${resultSummary}`);
     }
 
-    // Track action in history
-    exec.actionHistory.push({
-      step: exec.step,
-      tool: toolName,
-      success: toolResult.success,
-      message: (toolResult.message || '').substring(0, 100)
-    });
-
-    // Trim action history
-    if (exec.actionHistory.length > 20) {
-      exec.actionHistory = exec.actionHistory.slice(-20);
-    }
+    // (No action history tracking — model relies on screenshots)
   }
 
   // Max steps reached
@@ -562,14 +551,6 @@ function _buildStateMessage(exec, pageInfo, screenshot, tab, nativeToolUse = fal
 
   if (screenshot?.success) {
     parts.push(`Screenshot: attached (${screenshot.width}x${screenshot.height})`);
-  }
-
-  if (exec.actionHistory.length > 0) {
-    const recent = exec.actionHistory.slice(-5);
-    parts.push(`\nRecent actions:`);
-    for (const a of recent) {
-      parts.push(`  Step ${a.step}: ${a.tool} → ${a.success ? '✓' : '✗'} ${a.message}`);
-    }
   }
 
   parts.push(`</current_state>`);
@@ -710,6 +691,59 @@ function _getProviderType(settings) {
   if (['openai', 'openai-compatible', 'openrouter'].includes(settings.provider)) return 'openai';
   if (settings.provider === 'google') return 'google';
   return 'other';
+}
+
+/**
+ * Get settle timing for a tool action (matches Claude's approach).
+ * Returns {minMs, maxMs} where:
+ *  - minMs: minimum wait before polling
+ *  - maxMs: maximum total wait (poll for page readiness during maxMs - minMs)
+ */
+function _getSettleTimings(toolName, action) {
+  if (toolName === 'computer') {
+    const clickActions = ['left_click', 'right_click', 'double_click', 'triple_click', 'left_click_drag'];
+    if (clickActions.includes(action)) return { minMs: 200, maxMs: 500 };
+    if (action === 'scroll' || action === 'scroll_to') return { minMs: 100, maxMs: 0 };
+    if (action === 'type' || action === 'key') return { minMs: 200, maxMs: 800 };
+    if (action === 'screenshot' || action === 'wait' || action === 'zoom') return { minMs: 0, maxMs: 0 };
+    if (action === 'hover') return { minMs: 100, maxMs: 300 };
+  }
+  if (toolName === 'navigate') return { minMs: 0, maxMs: 500 };
+  if (toolName === 'form_input') return { minMs: 200, maxMs: 800 };
+  return { minMs: 0, maxMs: 0 };
+}
+
+/**
+ * Adaptive page settle — wait minMs, then poll until page is ready or maxMs elapsed.
+ * Checks: document.readyState === 'complete' && document.getAnimations().length === 0
+ * Matches Claude extension's lightning_page_settle approach.
+ */
+async function _adaptivePageSettle(tabId, minMs, maxMs) {
+  if (minMs > 0) {
+    await new Promise(r => setTimeout(r, minMs));
+  }
+  const remainingMs = Math.max(0, maxMs - minMs);
+  if (remainingMs <= 0) return;
+
+  const startTime = Date.now();
+  while (Date.now() - startTime < remainingMs) {
+    const timeLeft = remainingMs - (Date.now() - startTime);
+    if (timeLeft <= 0) break;
+
+    try {
+      const result = await Promise.race([
+        chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => document.readyState === 'complete' && document.getAnimations().length === 0
+        }),
+        new Promise(r => setTimeout(() => r(null), timeLeft))
+      ]);
+      if (result?.[0]?.result === true) break;
+    } catch {
+      break;
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
 }
 
 async function _loadContextRules(url) {
