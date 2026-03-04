@@ -75,6 +75,19 @@ class CDPManager {
     }
   }
 
+  /**
+   * Force-detach from a tab immediately.
+   * Use this when a task completes to remove the "debugging this browser" bar right away.
+   */
+  async forceDetach(tabId) {
+    const entry = this.attachedTabs.get(tabId);
+    if (entry?.detachTimer) {
+      clearTimeout(entry.detachTimer);
+      entry.detachTimer = null;
+    }
+    await this._detach(tabId);
+  }
+
   async _detach(tabId) {
     const entry = this.attachedTabs.get(tabId);
     if (!entry) return;

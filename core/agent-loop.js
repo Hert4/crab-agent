@@ -125,6 +125,10 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
     try {
       await chrome.tabs.sendMessage(tab.id, { type: 'HIDE_AGENT_INDICATORS' });
     } catch (e) { /* tab may have closed */ }
+
+    // Release CDP debugger connection so the "debugging this browser" bar disappears
+    await cdp.forceDetach(tab.id);
+    currentExecution = null;
   }
 }
 

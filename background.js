@@ -96,16 +96,22 @@ chrome.runtime.onConnect.addListener((port) => {
           }
           break;
 
-        case 'cancel_task':
+        case 'cancel_task': {
+          const cancelledExec = getCurrentExecution();
           cancelExecution();
           tabGroupManager.showError();
           sendToPanel({
             type: 'execution_event',
             state: 'TASK_CANCEL',
-            taskId: getCurrentExecution()?.taskId,
+            taskId: cancelledExec?.taskId,
             details: { message: 'Task cancelled by user' }
           });
+          // Force-detach CDP debugger so the "debugging this browser" bar disappears
+          if (cancelledExec?.tabId) {
+            await cdp.forceDetach(cancelledExec.tabId);
+          }
           break;
+        }
 
         case 'pause_task':
           pauseExecution();
