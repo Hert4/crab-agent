@@ -19,6 +19,7 @@ import { gifCreatorTool } from './gif-creator.js';
 import { shortcutsListTool, shortcutsExecuteTool } from './shortcuts.js';
 import { javascriptTool } from './javascript-tool.js';
 import { canvasToolkitTool } from './canvas-toolkit.js';
+import { codeEditorTool } from './code-editor.js';
 
 /**
  * All registered tools.
@@ -44,7 +45,8 @@ export const TOOLS = {
   shortcuts_list: shortcutsListTool,
   shortcuts_execute: shortcutsExecuteTool,
   javascript_tool: javascriptTool,
-  canvas_toolkit: canvasToolkitTool
+  canvas_toolkit: canvasToolkitTool,
+  code_editor: codeEditorTool
 };
 
 /**

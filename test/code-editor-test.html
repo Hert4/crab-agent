@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Code Editor Tool Test - Crab-Agent</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 { color: #569cd6; margin-bottom: 10px; }
+    h2 { color: #4ec9b0; margin-top: 30px; }
+    .container { max-width: 1400px; margin: 0 auto; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .panel {
+      background: #252526;
+      border: 1px solid #3c3c3c;
+      border-radius: 8px;
+      padding: 15px;
+    }
+    .editor-container {
+      height: 300px;
+      border: 1px solid #3c3c3c;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 5px 5px 5px 0;
+      font-size: 13px;
+    }
+    button:hover { background: #1177bb; }
+    button.danger { background: #c42b1c; }
+    button.danger:hover { background: #e03e2e; }
+    button.success { background: #16825d; }
+    button.success:hover { background: #1a9f72; }
+    input, textarea, select {
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      padding: 8px;
+      border-radius: 4px;
+      width: 100%;
+      margin: 5px 0;
+    }
+    textarea { min-height: 100px; font-family: 'Consolas', monospace; }
+    .log {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      border-radius: 4px;
+      padding: 10px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: 'Consolas', monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    .log-entry { margin: 5px 0; padding: 5px; border-radius: 3px; }
+    .log-success { background: #1e3a29; color: #4ec9b0; }
+    .log-error { background: #3a1e1e; color: #f48771; }
+    .log-info { background: #1e2a3a; color: #9cdcfe; }
+    .tabs { display: flex; gap: 5px; margin-bottom: 10px; }
+    .tab {
+      padding: 8px 16px;
+      background: #3c3c3c;
+      border: none;
+      color: #d4d4d4;
+      cursor: pointer;
+      border-radius: 4px 4px 0 0;
+    }
+    .tab.active { background: #0e639c; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    label { display: block; margin-top: 10px; color: #9cdcfe; font-size: 12px; }
+    .inline { display: flex; gap: 10px; align-items: center; }
+    .status {
+      padding: 5px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: inline-block;
+    }
+    .status.detected { background: #16825d; }
+    .status.not-detected { background: #c42b1c; }
+    #editorType { font-weight: bold; color: #dcdcaa; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🦀 Crab-Agent Code Editor Tool Test</h1>
+    <p>Test the <code>code_editor</code> tool without LLM. Open Crab-Agent sidepanel and use the console or this page.</p>
+
+    <div class="grid">
+      <!-- Left: Editor Selection -->
+      <div class="panel">
+        <h2>1. Select Editor Type</h2>
+        <div class="tabs">
+          <button class="tab active" data-editor="monaco">Monaco</button>
+          <button class="tab" data-editor="codemirror">CodeMirror</button>
+          <button class="tab" data-editor="ace">Ace</button>
+        </div>
+
+        <div id="monaco-container" class="tab-content active">
+          <div class="editor-container" id="monaco-editor"></div>
+        </div>
+        <div id="codemirror-container" class="tab-content">
+          <div class="editor-container" id="codemirror-editor"></div>
+        </div>
+        <div id="ace-container" class="tab-content">
+          <div class="editor-container" id="ace-editor"></div>
+        </div>
+
+        <div style="margin-top: 15px;">
+          <span>Detected: </span>
+          <span id="editorType">-</span>
+          <span id="detectionStatus" class="status not-detected">Not Detected</span>
+        </div>
+      </div>
+
+      <!-- Right: Test Controls -->
+      <div class="panel">
+        <h2>2. Test Actions</h2>
+
+        <div class="inline">
+          <button id="btnDetect" class="success">detect()</button>
+          <button id="btnFocus">focus()</button>
+          <button id="btnGetCode">get_code()</button>
+          <button id="btnGetLang">get_language()</button>
+        </div>
+
+        <label>Code to set/insert:</label>
+        <textarea id="codeInput">function hello() {
+  console.log("Hello from Crab-Agent!");
+  return 42;
+}</textarea>
+
+        <div class="inline">
+          <button id="btnSetCode" class="success">set_code()</button>
+          <button id="btnInsert">insert()</button>
+          <button id="btnClear" class="danger">clear()</button>
+          <button id="btnFormat">format()</button>
+        </div>
+
+        <label>Language:</label>
+        <div class="inline">
+          <select id="langSelect">
+            <option value="javascript">JavaScript</option>
+            <option value="python">Python</option>
+            <option value="cpp">C++</option>
+            <option value="java">Java</option>
+            <option value="go">Go</option>
+            <option value="rust">Rust</option>
+          </select>
+          <button id="btnSetLang">set_language()</button>
+        </div>
+
+        <label>Select lines (start - end):</label>
+        <div class="inline">
+          <input type="number" id="lineStart" value="1" style="width: 60px;">
+          <span>-</span>
+          <input type="number" id="lineEnd" value="3" style="width: 60px;">
+          <button id="btnSelectLines">select_lines()</button>
+        </div>
+
+        <h2>3. Test Log</h2>
+        <div id="log" class="log"></div>
+        <button id="btnClearLog" class="danger" style="margin-top: 10px;">Clear Log</button>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top: 20px;">
+      <h2>4. Test on Real Sites</h2>
+      <p>Open these sites in a new tab, then use Crab-Agent sidepanel to test:</p>
+      <div class="inline" style="flex-wrap: wrap;">
+        <a href="https://vscode.dev" target="_blank"><button>VSCode.dev (Monaco)</button></a>
+        <a href="https://codepen.io/pen/" target="_blank"><button>CodePen (CodeMirror)</button></a>
+        <a href="https://leetcode.com/problems/two-sum/" target="_blank"><button>LeetCode (Monaco)</button></a>
+        <a href="https://www.hackerrank.com/challenges/solve-me-first/problem" target="_blank"><button>HackerRank (Ace)</button></a>
+        <a href="https://replit.com/new/nodejs" target="_blank"><button>Replit (CodeMirror 6)</button></a>
+      </div>
+
+      <h3 style="margin-top: 20px;">Console Test Commands</h3>
+      <p>Copy these to browser console with Crab-Agent extension active:</p>
+      <pre style="background: #1e1e1e; padding: 10px; border-radius: 4px; overflow-x: auto;">
+// Detect editor
+window.__crabCodeEditor?.detect()
+
+// Get code
+window.__crabCodeEditor?.getCode()
+
+// Set code
+window.__crabCodeEditor?.setCode('console.log("hello")')
+
+// Insert at cursor
+window.__crabCodeEditor?.insertAtCursor('// inserted')
+
+// Get language
+window.__crabCodeEditor?.getLanguage()
+
+// Set language
+window.__crabCodeEditor?.setLanguage('python')
+
+// Format (Monaco only)
+window.__crabCodeEditor?.format()
+
+// Select lines 1-5
+window.__crabCodeEditor?.selectLines(1, 5)
+      </pre>
+    </div>
+  </div>
+
+  <!-- Load Editor Libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ace.js"></script>
+
+  <script>
+    // ==================== Editors Setup ====================
+    let monacoEditor = null;
+    let codemirrorEditor = null;
+    let aceEditor = null;
+    let currentEditor = 'monaco';
+
+    const defaultCode = `// Welcome to Code Editor Test
+function fibonacci(n) {
+  if (n <= 1) return n;
+  return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+console.log(fibonacci(10));
+`;
+
+    // Initialize Monaco
+    require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
+    require(['vs/editor/editor.main'], function () {
+      monacoEditor = monaco.editor.create(document.getElementById('monaco-editor'), {
+        value: defaultCode,
+        language: 'javascript',
+        theme: 'vs-dark',
+        automaticLayout: true,
+        minimap: { enabled: false }
+      });
+      log('Monaco editor initialized', 'info');
+      updateDetection();
+    });
+
+    // Initialize CodeMirror
+    codemirrorEditor = CodeMirror(document.getElementById('codemirror-editor'), {
+      value: defaultCode,
+      mode: 'javascript',
+      theme: 'dracula',
+      lineNumbers: true
+    });
+
+    // Initialize Ace
+    aceEditor = ace.edit('ace-editor');
+    aceEditor.setTheme('ace/theme/monokai');
+    aceEditor.session.setMode('ace/mode/javascript');
+    aceEditor.setValue(defaultCode, -1);
+
+    // ==================== Tab Switching ====================
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+        tab.classList.add('active');
+        currentEditor = tab.dataset.editor;
+        document.getElementById(`${currentEditor}-container`).classList.add('active');
+
+        // Refresh editors
+        if (currentEditor === 'codemirror') codemirrorEditor.refresh();
+        if (currentEditor === 'ace') aceEditor.resize();
+
+        updateDetection();
+      });
+    });
+
+    // ==================== Logging ====================
+    function log(message, type = 'info') {
+      const logEl = document.getElementById('log');
+      const entry = document.createElement('div');
+      entry.className = `log-entry log-${type}`;
+      const timestamp = new Date().toLocaleTimeString();
+      entry.textContent = `[${timestamp}] ${typeof message === 'object' ? JSON.stringify(message, null, 2) : message}`;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    document.getElementById('btnClearLog').addEventListener('click', () => {
+      document.getElementById('log').innerHTML = '';
+    });
+
+    // ==================== Detection ====================
+    function updateDetection() {
+      const editorTypeEl = document.getElementById('editorType');
+      const statusEl = document.getElementById('detectionStatus');
+
+      if (window.__crabCodeEditor) {
+        const result = window.__crabCodeEditor.detect();
+        editorTypeEl.textContent = result.detected ? `${result.name} (${result.type})` : 'None';
+        statusEl.textContent = result.detected ? 'Detected' : 'Not Detected';
+        statusEl.className = `status ${result.detected ? 'detected' : 'not-detected'}`;
+      } else {
+        editorTypeEl.textContent = 'API not loaded';
+        statusEl.textContent = 'Not Loaded';
+        statusEl.className = 'status not-detected';
+      }
+    }
+
+    // ==================== Inject Code Editor API ====================
+    // This simulates what the extension does
+    const CODE_EDITOR_API = `
+(function() {
+  if (window.__crabCodeEditor) return window.__crabCodeEditor;
+
+  const adapters = {
+    monaco: {
+      name: 'Monaco',
+      detect: () => !!(window.monaco?.editor?.getEditors?.()?.length > 0),
+      getEditor: () => {
+        const editors = window.monaco?.editor?.getEditors?.();
+        if (editors?.length > 0) return { type: 'instance', editor: editors[0] };
+        return null;
+      },
+      getCode: (ctx) => ctx.editor.getValue(),
+      setCode: (ctx, code) => { ctx.editor.setValue(code); return true; },
+      insertAtCursor: (ctx, code) => {
+        const selection = ctx.editor.getSelection();
+        ctx.editor.executeEdits('test', [{ range: selection, text: code, forceMoveMarkers: true }]);
+        return true;
+      },
+      getLanguage: (ctx) => ctx.editor.getModel()?.getLanguageId?.() || 'unknown',
+      setLanguage: (ctx, lang) => {
+        const model = ctx.editor.getModel();
+        if (model && window.monaco?.editor?.setModelLanguage) {
+          window.monaco.editor.setModelLanguage(model, lang);
+          return true;
+        }
+        return false;
+      },
+      format: (ctx) => { ctx.editor.getAction('editor.action.formatDocument')?.run(); return true; },
+      focus: (ctx) => { ctx.editor.focus(); return true; },
+      selectLines: (ctx, start, end) => {
+        const model = ctx.editor.getModel();
+        const endCol = model.getLineMaxColumn(end);
+        ctx.editor.setSelection(new window.monaco.Selection(start, 1, end, endCol));
+        return true;
+      }
+    },
+    codemirror: {
+      name: 'CodeMirror',
+      detect: () => !!document.querySelector('.CodeMirror'),
+      getEditor: () => {
+        const el = document.querySelector('.CodeMirror');
+        if (el?.CodeMirror) return { type: 'cm5', editor: el.CodeMirror };
+        return null;
+      },
+      getCode: (ctx) => ctx.editor.getValue(),
+      setCode: (ctx, code) => { ctx.editor.setValue(code); return true; },
+      insertAtCursor: (ctx, code) => { ctx.editor.replaceSelection(code); return true; },
+      getLanguage: (ctx) => ctx.editor.getMode()?.name || 'unknown',
+      setLanguage: (ctx, lang) => { ctx.editor.setOption('mode', lang); return true; },
+      format: () => false,
+      focus: (ctx) => { ctx.editor.focus(); return true; },
+      selectLines: (ctx, start, end) => {
+        ctx.editor.setSelection({ line: start - 1, ch: 0 }, { line: end - 1, ch: ctx.editor.getLine(end - 1)?.length || 0 });
+        return true;
+      }
+    },
+    ace: {
+      name: 'Ace',
+      detect: () => !!document.querySelector('.ace_editor'),
+      getEditor: () => {
+        const el = document.querySelector('.ace_editor');
+        if (el?.env?.editor) return { type: 'ace', editor: el.env.editor };
+        return null;
+      },
+      getCode: (ctx) => ctx.editor.getValue(),
+      setCode: (ctx, code) => { ctx.editor.setValue(code, -1); return true; },
+      insertAtCursor: (ctx, code) => { ctx.editor.insert(code); return true; },
+      getLanguage: (ctx) => (ctx.editor.session.getMode().$id || '').replace('ace/mode/', ''),
+      setLanguage: (ctx, lang) => { ctx.editor.session.setMode('ace/mode/' + lang); return true; },
+      format: () => false,
+      focus: (ctx) => { ctx.editor.focus(); return true; },
+      selectLines: (ctx, start, end) => {
+        const Range = window.ace.require('ace/range').Range;
+        const endCol = ctx.editor.session.getLine(end - 1)?.length || 0;
+        ctx.editor.selection.setRange(new Range(start - 1, 0, end - 1, endCol));
+        return true;
+      }
+    }
+  };
+
+  window.__crabCodeEditor = {
+    detect: () => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          return { detected: true, type, name: adapter.name, hasInstance: !!ctx };
+        }
+      }
+      return { detected: false };
+    },
+    getCode: () => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          if (ctx) return { success: true, code: adapter.getCode(ctx), editorType: type };
+        }
+      }
+      return { success: false, error: 'No editor found' };
+    },
+    setCode: (code) => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          if (ctx && adapter.setCode(ctx, code)) return { success: true, editorType: type };
+        }
+      }
+      return { success: false };
+    },
+    insertAtCursor: (code) => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          if (ctx && adapter.insertAtCursor(ctx, code)) return { success: true, editorType: type };
+        }
+      }
+      return { success: false };
+    },
+    getLanguage: () => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          if (ctx) return { success: true, language: adapter.getLanguage(ctx), editorType: type };
+        }
+      }
+      return { success: false };
+    },
+    setLanguage: (lang) => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          if (ctx && adapter.setLanguage(ctx, lang)) return { success: true, editorType: type };
+        }
+      }
+      return { success: false };
+    },
+    format: () => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          if (ctx && adapter.format(ctx)) return { success: true, editorType: type };
+        }
+      }
+      return { success: false };
+    },
+    focus: () => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          if (ctx && adapter.focus(ctx)) return { success: true, editorType: type };
+        }
+      }
+      return { success: false };
+    },
+    selectLines: (start, end) => {
+      for (const [type, adapter] of Object.entries(adapters)) {
+        if (adapter.detect()) {
+          const ctx = adapter.getEditor();
+          if (ctx && adapter.selectLines(ctx, start, end)) return { success: true, editorType: type };
+        }
+      }
+      return { success: false };
+    },
+    clear: () => window.__crabCodeEditor.setCode('')
+  };
+
+  return window.__crabCodeEditor;
+})();
+    `;
+
+    // Inject the API
+    setTimeout(() => {
+      eval(CODE_EDITOR_API);
+      log('Code Editor API injected', 'success');
+      updateDetection();
+    }, 1000);
+
+    // ==================== Button Handlers ====================
+    document.getElementById('btnDetect').addEventListener('click', () => {
+      const result = window.__crabCodeEditor?.detect();
+      log(result, result?.detected ? 'success' : 'error');
+      updateDetection();
+    });
+
+    document.getElementById('btnFocus').addEventListener('click', () => {
+      const result = window.__crabCodeEditor?.focus();
+      log(result, result?.success ? 'success' : 'error');
+    });
+
+    document.getElementById('btnGetCode').addEventListener('click', () => {
+      const result = window.__crabCodeEditor?.getCode();
+      if (result?.success) {
+        log(`Code (${result.code.length} chars):\n${result.code.substring(0, 500)}${result.code.length > 500 ? '...' : ''}`, 'success');
+      } else {
+        log(result, 'error');
+      }
+    });
+
+    document.getElementById('btnGetLang').addEventListener('click', () => {
+      const result = window.__crabCodeEditor?.getLanguage();
+      log(result, result?.success ? 'success' : 'error');
+    });
+
+    document.getElementById('btnSetCode').addEventListener('click', () => {
+      const code = document.getElementById('codeInput').value;
+      const result = window.__crabCodeEditor?.setCode(code);
+      log(result, result?.success ? 'success' : 'error');
+    });
+
+    document.getElementById('btnInsert').addEventListener('click', () => {
+      const code = document.getElementById('codeInput').value;
+      const result = window.__crabCodeEditor?.insertAtCursor(code);
+      log(result, result?.success ? 'success' : 'error');
+    });
+
+    document.getElementById('btnClear').addEventListener('click', () => {
+      const result = window.__crabCodeEditor?.clear();
+      log(result, result?.success ? 'success' : 'error');
+    });
+
+    document.getElementById('btnFormat').addEventListener('click', () => {
+      const result = window.__crabCodeEditor?.format();
+      log(result, result?.success ? 'success' : 'error');
+    });
+
+    document.getElementById('btnSetLang').addEventListener('click', () => {
+      const lang = document.getElementById('langSelect').value;
+      const result = window.__crabCodeEditor?.setLanguage(lang);
+      log(result, result?.success ? 'success' : 'error');
+    });
+
+    document.getElementById('btnSelectLines').addEventListener('click', () => {
+      const start = parseInt(document.getElementById('lineStart').value) || 1;
+      const end = parseInt(document.getElementById('lineEnd').value) || 1;
+      const result = window.__crabCodeEditor?.selectLines(start, end);
+      log(result, result?.success ? 'success' : 'error');
+    });
+  </script>
+</body>
+</html>
