@@ -58,10 +58,18 @@ javascript_tool({
     }
 
     // DRAW.IO
-    if (window.editorUi?.editor?.graph) {
+    if (typeof Draw !== 'undefined' && Draw.loadPlugin) {
       result.app = 'drawio';
-      window.__canvasAPI = window.editorUi.editor.graph;
-      result.api = 'drawio';
+      if (window.__canvasAPI?.insertVertex) {
+        result.api = 'drawio';
+        result.useUniversal = false;
+        return result;
+      }
+      Draw.loadPlugin(function(ui) {
+        window.__drawioUI = ui;
+        window.__canvasAPI = ui.editor.graph;
+      });
+      result.api = 'drawio-loading';
       result.useUniversal = false;
       return result;
     }
