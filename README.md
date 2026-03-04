@@ -42,7 +42,7 @@ Plain JavaScript, no build step required.
 
 **v1** had ~15 browser actions as `switch/case` branches inside `background.js`. Adding a tool meant editing 3+ places (prompt, executor, content script handler).
 
-**v2** has a tool registry (`tools/index.js`) with 21 external + 2 internal tools. Each tool is a module with `{ name, description, parameters, execute() }`. Adding a tool = 1 new file + 1 import.
+**v2** has a tool registry (`tools/index.js`) with 22 external + 2 internal tools. Each tool is a module with `{ name, description, parameters, execute() }`. Adding a tool = 1 new file + 1 import.
 
 **v1 tools** (action strings):
 ```
@@ -74,6 +74,7 @@ shortcuts_list         - List keyboard shortcuts for current app
 shortcuts_execute      - Execute keyboard shortcuts
 javascript_tool        - Run JS on page (render/script/ops modes)
 canvas_toolkit         - Canvas/WebGL interaction via CDP
+code_editor            - Interact with online code editors (Monaco/CodeMirror/Ace)
 done                   - Complete task (internal)
 ask_user               - Ask user for clarification (internal)
 ```
@@ -238,7 +239,7 @@ crab-agent/
 │   ├── quick-mode.js          # Compact text-based mode (opt-in)
 │   └── state-manager.js       # Action tracking + loop detection
 │
-├── tools/                     # Tool modules (21 external + 2 internal)
+├── tools/                     # Tool modules (22 external + 2 internal)
 │   ├── index.js               # Registry + dispatcher
 │   ├── computer.js            # Mouse/keyboard via CDP (13 actions) + coordinate scaling
 │   ├── navigate.js            # URL navigation
@@ -255,7 +256,8 @@ crab-agent/
 │   ├── gif-creator.js         # Task recording + replay export
 │   ├── shortcuts.js           # Keyboard shortcuts
 │   ├── javascript-tool.js     # JS execution on page
-│   └── canvas-toolkit.js      # Canvas/WebGL interaction
+│   ├── canvas-toolkit.js      # Canvas/WebGL interaction
+│   └── code-editor.js         # Online code editor interaction
 │
 ├── prompts/                   # LLM prompts
 │   ├── system-prompt.js       # Auto-generated from tool schemas
@@ -271,7 +273,9 @@ crab-agent/
 ├── styles/main.css            # Side panel styles
 ├── icons/                     # Extension icons
 ├── docs/plans/                # Design documents
-└── technical_report/          # Technical documentation
+├── technical_report/          # Technical documentation
+└── test/                      # Test pages
+    └── code-editor-test.html  # Code editor tool test page
 ```
 
 ## Supported Providers
@@ -322,6 +326,38 @@ Screenshots are captured at the CSS viewport resolution, then scaled down to max
 - **Ref-based clicks** (`computer` with `ref` parameter): Coordinates resolved from live `getBoundingClientRect()` — always accurate, preferred method
 - **Coordinate-based clicks** (`computer` with `coordinate` parameter): Coordinates from LLM in screenshot-space, scaled by `exec.coordScaleX/Y` to viewport-space
 - **Scaling factor**: `coordScaleX = viewportWidth / screenshotWidth` (1.0 when no scaling needed)
+
+## Code Editor Tool
+
+The `code_editor` tool provides direct API access to online code editors, more reliable than click+type for code manipulation.
+
+### Supported Editors
+
+| Editor | Platforms | Detection |
+|--------|-----------|-----------|
+| Monaco | VSCode.dev, LeetCode, GitHub.dev, StackBlitz | `window.monaco.editor` |
+| CodeMirror 5/6 | CodePen, Replit, CodeSandbox | `.CodeMirror`, `.cm-editor` |
+| Ace | HackerRank, CodeChef, Cloud9 | `.ace_editor` |
+
+### Actions
+
+| Action | Description |
+|--------|-------------|
+| `detect` | Auto-detect editor type on page |
+| `get_code` | Get current code from editor |
+| `set_code` | Replace all code in editor |
+| `insert` | Insert code at cursor position |
+| `clear` | Clear all code |
+| `get_language` | Get current programming language |
+| `set_language` | Set programming language |
+| `format` | Auto-format code (Monaco only) |
+| `select_lines` | Select specific line range |
+| `focus` | Focus the editor |
+| `find_button` | Find Run/Submit button coordinates |
+
+### Cross-Origin Iframe Support
+
+Sites like VSCode.dev load Monaco in a sandboxed iframe. The tool uses `allFrames: true` injection to access editors inside cross-origin iframes (not possible from browser console).
 
 ## Permissions
 
