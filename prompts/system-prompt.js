@@ -4,6 +4,7 @@
  */
 
 import { getToolSchemas } from '../tools/index.js';
+import { getCanvasAppsSkill, detectCanvasApp } from './skills/canvas-apps.js';
 
 /**
  * Build the full system prompt for the LLM.
@@ -12,10 +13,18 @@ import { getToolSchemas } from '../tools/index.js';
  * @param {string} options.memory - Agent memory from previous steps
  * @param {string} options.warnings - State manager warnings
  * @param {boolean} options.nativeToolUse - If true, tools go through API (Anthropic), skip tool docs in prompt
+ * @param {string} options.currentUrl - Current page URL for skill detection
  * @returns {string} Complete system prompt
  */
 export function buildSystemPrompt(options = {}) {
-  const { contextRules = '', memory = '', warnings = '', nativeToolUse = false } = options;
+  const { contextRules = '', memory = '', warnings = '', nativeToolUse = false, currentUrl = '' } = options;
+
+  // Auto-detect and inject domain-specific skills
+  let skills = '';
+  const canvasApp = detectCanvasApp(currentUrl);
+  if (canvasApp) {
+    skills = getCanvasAppsSkill();
+  }
 
   const coreInstructions = `You are a browser automation agent. You control web browsers to complete user tasks by executing precise actions.
 
@@ -96,6 +105,7 @@ ${toolDocs}
   return `<system_instructions>
 ${coreInstructions}
 ${toolSection}
+${skills ? `\n${skills}` : ''}
 ${contextRules ? `\n## Context Rules\n${contextRules}` : ''}
 ${memory ? `\n## Memory\n${memory}` : ''}
 ${warnings ? `\n## Warnings\n${warnings}` : ''}
@@ -132,4 +142,4 @@ export function buildToolListShort() {
   return schemas.map(t => `- ${t.name}: ${t.description.split('\n')[0]}`).join('\n');
 }
 
-export default { buildSystemPrompt, buildToolListShort };
+export default { buildSystemPrompt, buildToolListShort, detectCanvasApp };

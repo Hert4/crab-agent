@@ -261,7 +261,9 @@ crab-agent/
 │
 ├── prompts/                   # LLM prompts
 │   ├── system-prompt.js       # Auto-generated from tool schemas
-│   └── personality.js         # Crab personality formatting
+│   ├── personality.js         # Crab personality formatting
+│   └── skills/                # Domain-specific skills
+│       └── canvas-apps.js     # Canvas/drawing apps (Excalidraw, Miro, etc.)
 │
 ├── lib/                       # Content-side libraries
 │   ├── accessibility-tree-inject.js  # A11y tree + ref ID mapping
@@ -358,6 +360,49 @@ The `code_editor` tool provides direct API access to online code editors, more r
 ### Cross-Origin Iframe Support
 
 Sites like VSCode.dev load Monaco in a sandboxed iframe. The tool uses `allFrames: true` injection to access editors inside cross-origin iframes (not possible from browser console).
+
+## Domain-Specific Skills
+
+Skills are auto-injected into the system prompt when visiting specific domains.
+
+### Canvas Apps Skill
+
+Automatically loaded for: Excalidraw, tldraw, Miro, Draw.io, Figma, Canva, Lucidchart, Whimsical
+
+Provides knowledge to use `javascript_tool` with native app APIs:
+
+| App | API Access | Element Types |
+|-----|------------|---------------|
+| Excalidraw | `window.__excalidrawAPI.updateScene()` | rectangle, diamond, ellipse, arrow, text |
+| tldraw | `editor.createShape()` | geo shapes, arrows, text |
+| Miro | `miro.board.createStickyNote/createShape()` | sticky notes, shapes, connectors |
+| Draw.io | `editorUi.editor.graph.insertVertex()` | all flowchart shapes |
+
+**Benefits:**
+- Creates native editable elements (not images)
+- Much faster than clicking toolbar + dragging
+- Programmatic control over positions, colors, sizes
+
+**Example:**
+```javascript
+// LLM can generate this to create editable rectangle in Excalidraw
+javascript_tool({
+  mode: "script",
+  world: "page",
+  script: `
+    const api = window.__excalidrawAPI;
+    api.updateScene({
+      elements: [...api.getSceneElements(), {
+        type: 'rectangle', x: 100, y: 100,
+        width: 150, height: 80,
+        backgroundColor: '#3B82F6'
+        // ... other required props
+      }]
+    });
+  `,
+  tabId: 123
+})
+```
 
 ## Permissions
 
