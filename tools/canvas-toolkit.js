@@ -94,13 +94,26 @@ async function _smartPaste(tabId, x, y, contentType, payload) {
 
   // 1. Click to focus at target position
   await cdp.click(tabId, x, y);
-  await _sleep(100);
+  await _sleep(200);
 
-  // 2. Write to clipboard via page injection
+  // 2. Try synthetic paste event first (works in iframes like Google Docs/Sheets)
+  const syntheticResult = await _syntheticPaste(tabId, contentType, payload);
+  if (syntheticResult) {
+    return {
+      success: true,
+      action: 'smart_paste',
+      method: 'synthetic_paste_event',
+      contentType,
+      x, y,
+      message: `Pasted ${contentType} content at (${x}, ${y}) via synthetic paste event`
+    };
+  }
+
+  // 3. Fallback: Write to clipboard via content script + Ctrl+V
+  console.log('[CanvasToolkit] Synthetic paste failed, falling back to clipboard write + Ctrl+V');
   await _writeClipboard(tabId, contentType, payload);
   await _sleep(50);
 
-  // 3. Dispatch Ctrl+V / Cmd+V
   const isMac = await _detectMac(tabId);
   const pasteCombo = isMac ? 'meta+v' : 'ctrl+v';
   await cdp.pressKey(tabId, pasteCombo);
@@ -108,10 +121,121 @@ async function _smartPaste(tabId, x, y, contentType, payload) {
   return {
     success: true,
     action: 'smart_paste',
+    method: 'clipboard_ctrlv',
     contentType,
     x, y,
-    message: `Pasted ${contentType} content at (${x}, ${y})`
+    message: `Pasted ${contentType} content at (${x}, ${y}) via clipboard`
   };
+}
+
+/**
+ * Synthetic paste: Dispatch a paste event with DataTransfer containing our data.
+ * This bypasses clipboard permissions entirely — works inside iframes (Google Docs/Sheets).
+ */
+async function _syntheticPaste(tabId, contentType, payload) {
+  const mimeTypes = { 'svg': 'image/svg+xml', 'html': 'text/html', 'text': 'text/plain' };
+  const mimeType = mimeTypes[contentType] || 'text/plain';
+
+  try {
+    // Use CDP Runtime.evaluate to dispatch paste event in the page's JS context
+    // This runs in the main frame — but the event targets the focused element (even in iframes via CDP)
+    const result = await cdp.sendCommand(tabId, 'Runtime.evaluate', {
+      expression: `
+        (function() {
+          try {
+            // Create DataTransfer with our content
+            const dt = new DataTransfer();
+            dt.setData('${mimeType}', ${JSON.stringify(payload)});
+            ${mimeType !== 'text/plain' ? `dt.setData('text/plain', ${JSON.stringify(payload)});` : ''}
+
+            // Find the focused element (works even for contentEditable inside iframes)
+            let target = document.activeElement;
+            // If focused on an iframe, try to get its contentDocument's active element
+            if (target && target.tagName === 'IFRAME') {
+              try {
+                target = target.contentDocument?.activeElement || target;
+              } catch(e) {
+                // Cross-origin iframe, use the iframe itself
+              }
+            }
+            if (!target) target = document.body;
+
+            // Dispatch paste event
+            const pasteEvent = new ClipboardEvent('paste', {
+              bubbles: true,
+              cancelable: true,
+              clipboardData: dt
+            });
+            const dispatched = target.dispatchEvent(pasteEvent);
+            return { success: true, dispatched, targetTag: target.tagName };
+          } catch(e) {
+            return { success: false, error: e.message };
+          }
+        })()
+      `,
+      returnByValue: true,
+      awaitPromise: false
+    });
+
+    const val = result?.result?.value;
+    if (val?.success && val?.dispatched) {
+      console.log('[CanvasToolkit] Synthetic paste dispatched to:', val.targetTag);
+      return true;
+    }
+
+    // Synthetic paste on main frame didn't work (e.g. Google Sheets uses cross-origin iframe)
+    // Try alternative: use chrome.scripting.executeScript with allFrames
+    const allFramesResult = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: (mType, content) => {
+        // Only run in the frame that has focus/editable element
+        const active = document.activeElement;
+        const hasFocus = active && (
+          active.isContentEditable ||
+          ['INPUT', 'TEXTAREA'].includes(active.tagName) ||
+          document.designMode === 'on' ||
+          active.getAttribute('role') === 'textbox' ||
+          active.getAttribute('contenteditable') === 'true' ||
+          active.classList?.contains('cell-input') ||
+          active.id === 'waffle-rich-text-editor' ||  // Google Sheets cell editor
+          active.closest?.('[role="textbox"]') ||       // nested in a textbox
+          active.closest?.('.cell-input')               // nested in Sheets cell
+        );
+        // Skip frames that clearly don't have a focused editable
+        if (!hasFocus && !active?.closest?.('[contenteditable]') && document.activeElement === document.body) return null;
+
+        try {
+          const dt = new DataTransfer();
+          dt.setData(mType, content);
+          if (mType !== 'text/plain') dt.setData('text/plain', content);
+
+          const target = document.activeElement || document.body;
+          const pasteEvent = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: dt
+          });
+          target.dispatchEvent(pasteEvent);
+          return { success: true, frame: window.location.href?.substring(0, 80) };
+        } catch(e) {
+          return { success: false, error: e.message };
+        }
+      },
+      args: [mimeType, payload]
+    });
+
+    // Check if any frame succeeded
+    const success = allFramesResult?.some(r => r?.result?.success);
+    if (success) {
+      console.log('[CanvasToolkit] Synthetic paste via allFrames succeeded');
+      return true;
+    }
+
+    return false;
+  } catch (e) {
+    console.warn('[CanvasToolkit] Synthetic paste error:', e.message);
+    return false;
+  }
 }
 
 // ========== Paste Table ==========
@@ -121,8 +245,278 @@ async function _pasteTable(tabId, x, y, data, options = {}) {
     return { success: false, error: 'data parameter required: 2D array of cell values.' };
   }
 
+  // For spreadsheet apps, use a special multi-format paste:
+  // - text/html with <table> (Google Sheets reads this for cell boundaries)
+  // - text/plain with TSV fallback
+  const isSpreadsheet = await _isSpreadsheetApp(tabId);
+  if (isSpreadsheet) {
+    return await _pasteTableSpreadsheet(tabId, x, y, data, options);
+  }
+
   const html = _generateTableHTML(data, options);
   return await _smartPaste(tabId, x, y, 'html', html);
+}
+
+/**
+ * Spreadsheet paste: Use multiple strategies to paste table data into Google Sheets.
+ *
+ * Strategy priority:
+ * 1. Clipboard API write (TSV + HTML) → Ctrl+V   (most reliable, needs clipboard permission)
+ * 2. Synthetic ClipboardEvent with TSV+HTML in DataTransfer (works in iframes)
+ * 3. Fallback: cell-by-cell typing with rawKeyDown for Tab/Enter
+ *
+ * Google Sheets recognizes TSV (tab-separated values) on paste and auto-splits
+ * into separate cells. It also reads HTML <table> for styled paste.
+ */
+async function _pasteTableSpreadsheet(tabId, x, y, data, options = {}) {
+  const totalRows = data.length;
+  const totalCols = Math.max(...data.map(r => (Array.isArray(r) ? r : [r]).length));
+
+  // Generate TSV and HTML table representations
+  const tsv = _generateTSV(data);
+  const html = _generateTableHTML(data, options);
+
+  // Step 1: Click on spreadsheet to focus
+  await cdp.click(tabId, x, y);
+  await _sleep(400);
+  await cdp.click(tabId, x, y);
+  await _sleep(200);
+
+  // Step 2: Escape any edit mode, then Ctrl+Home to go to A1
+  await _dispatchRawKey(tabId, 'Escape', 'Escape', 27, 0);
+  await _sleep(100);
+  await _dispatchRawKey(tabId, 'Home', 'Home', 36, 2); // 2 = Ctrl modifier
+  await _sleep(300);
+
+  // Step 3: Try Strategy 1 - Write to clipboard via content script, then Ctrl+V
+  let pasted = false;
+  try {
+    pasted = await _clipboardWriteAndPaste(tabId, tsv, html);
+  } catch (e) {
+    console.warn('[CanvasToolkit] Clipboard write strategy failed:', e.message);
+  }
+
+  if (pasted) {
+    console.log(`[CanvasToolkit] Spreadsheet: pasted ${totalRows}×${totalCols} via clipboard+Ctrl+V`);
+    return {
+      success: true,
+      action: 'paste_table',
+      method: 'clipboard_paste',
+      x, y,
+      rows: totalRows,
+      cols: totalCols,
+      message: `Pasted ${totalRows} rows × ${totalCols} cols into spreadsheet via clipboard`
+    };
+  }
+
+  // Step 4: Try Strategy 2 - Synthetic paste event with TSV in allFrames
+  let syntheticOk = false;
+  try {
+    syntheticOk = await _syntheticPasteMultiFormat(tabId, tsv, html);
+  } catch (e) {
+    console.warn('[CanvasToolkit] Synthetic paste strategy failed:', e.message);
+  }
+
+  if (syntheticOk) {
+    console.log(`[CanvasToolkit] Spreadsheet: pasted ${totalRows}×${totalCols} via synthetic paste event`);
+    return {
+      success: true,
+      action: 'paste_table',
+      method: 'synthetic_paste',
+      x, y,
+      rows: totalRows,
+      cols: totalCols,
+      message: `Pasted ${totalRows} rows × ${totalCols} cols via synthetic paste event`
+    };
+  }
+
+  // Step 5: Fallback - cell-by-cell typing with rawKeyDown for navigation
+  console.log('[CanvasToolkit] All paste strategies failed, falling back to cell-by-cell typing');
+  return await _typeTableCellByCell(tabId, x, y, data, totalRows, totalCols);
+}
+
+/**
+ * Write TSV+HTML to clipboard via extension page, then dispatch Ctrl+V via CDP.
+ * Uses chrome.offscreen or background page to write clipboard (no iframe restrictions).
+ */
+async function _clipboardWriteAndPaste(tabId, tsv, html) {
+  // Write TSV to clipboard via content script in the page
+  // Use execCommand('copy') approach which works more reliably
+  const writeResult = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (tsvText, htmlText) => {
+      return new Promise((resolve) => {
+        // Method 1: Try Clipboard API with both formats
+        if (navigator.clipboard && window.ClipboardItem) {
+          try {
+            const textBlob = new Blob([tsvText], { type: 'text/plain' });
+            const htmlBlob = new Blob([htmlText], { type: 'text/html' });
+            navigator.clipboard.write([
+              new ClipboardItem({
+                'text/plain': textBlob,
+                'text/html': htmlBlob
+              })
+            ]).then(() => resolve({ success: true, method: 'clipboardAPI' }))
+              .catch(() => {
+                // Method 2: Fallback to old execCommand
+                const textarea = document.createElement('textarea');
+                textarea.value = tsvText;
+                textarea.style.cssText = 'position:fixed;opacity:0;left:-9999px;';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                resolve({ success: true, method: 'execCommand' });
+              });
+            return;
+          } catch (e) {
+            // fall through to execCommand
+          }
+        }
+
+        // Method 2: execCommand fallback
+        const textarea = document.createElement('textarea');
+        textarea.value = tsvText;
+        textarea.style.cssText = 'position:fixed;opacity:0;left:-9999px;';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        resolve({ success: true, method: 'execCommand' });
+      });
+    },
+    args: [tsv, html]
+  });
+
+  const writeOk = writeResult?.[0]?.result?.success;
+  if (!writeOk) return false;
+
+  await _sleep(100);
+
+  // Dispatch Ctrl+V via CDP (rawKeyDown, works with Google Sheets canvas)
+  const isMac = await _detectMac(tabId);
+  const modifier = isMac ? 4 : 2; // 4 = Meta, 2 = Ctrl
+  await _dispatchRawKey(tabId, 'v', 'KeyV', 86, modifier);
+  await _sleep(500);
+
+  return true;
+}
+
+/**
+ * Dispatch synthetic paste event with both TSV (text/plain) and HTML (text/html)
+ * in the DataTransfer object. Tries all frames (Google Sheets uses iframes).
+ */
+async function _syntheticPasteMultiFormat(tabId, tsv, html) {
+  const allFramesResult = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: (tsvText, htmlText) => {
+      const active = document.activeElement;
+      // Skip frames without focused elements
+      if (!active || active === document.body) {
+        // But still try if this looks like a Sheets frame
+        const sheetsCanvas = document.querySelector('canvas.waffle-overlay');
+        if (!sheetsCanvas) return null;
+      }
+
+      try {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', tsvText);
+        dt.setData('text/html', htmlText);
+
+        const target = document.activeElement || document.body;
+        const pasteEvent = new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dt
+        });
+        const dispatched = target.dispatchEvent(pasteEvent);
+        return { success: dispatched, frame: window.location.href?.substring(0, 80) };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+    args: [tsv, html]
+  });
+
+  return allFramesResult?.some(r => r?.result?.success);
+}
+
+/**
+ * Fallback: type data cell-by-cell using rawKeyDown for Tab/Enter navigation.
+ * rawKeyDown (not keyDown) is required for Google Sheets canvas to process
+ * non-printable keys like Tab, Enter, Escape, Home, Arrow keys.
+ */
+async function _typeTableCellByCell(tabId, x, y, data, totalRows, totalCols) {
+  for (let rowIdx = 0; rowIdx < totalRows; rowIdx++) {
+    const row = Array.isArray(data[rowIdx]) ? data[rowIdx] : [data[rowIdx]];
+
+    for (let colIdx = 0; colIdx < row.length; colIdx++) {
+      const cellValue = String(row[colIdx] ?? '');
+
+      if (cellValue) {
+        await cdp.type(tabId, cellValue);
+        await _sleep(50);
+      }
+
+      if (colIdx < row.length - 1) {
+        // Tab = commit + move right (MUST use rawKeyDown for Sheets canvas)
+        await _dispatchRawKey(tabId, 'Tab', 'Tab', 9, 0);
+        await _sleep(150);
+      }
+    }
+
+    // End of row
+    if (rowIdx < totalRows - 1) {
+      // Enter = commit + move down
+      await _dispatchRawKey(tabId, 'Enter', 'Enter', 13, 0);
+      await _sleep(150);
+      // Home = go back to column A
+      await _dispatchRawKey(tabId, 'Home', 'Home', 36, 0);
+      await _sleep(150);
+    }
+  }
+
+  // Confirm last cell
+  await _dispatchRawKey(tabId, 'Enter', 'Enter', 13, 0);
+  await _sleep(50);
+  await _dispatchRawKey(tabId, 'Escape', 'Escape', 27, 0);
+
+  console.log(`[CanvasToolkit] Spreadsheet: typed ${totalRows} rows × ${totalCols} cols cell-by-cell`);
+  return {
+    success: true,
+    action: 'paste_table',
+    method: 'type_cell_by_cell',
+    x, y,
+    rows: totalRows,
+    cols: totalCols,
+    message: `Typed ${totalRows} rows × ${totalCols} cols into spreadsheet cell-by-cell`
+  };
+}
+
+/**
+ * Dispatch a raw key event via CDP Input.dispatchKeyEvent.
+ * Uses 'rawKeyDown' type which is essential for Google Sheets canvas
+ * to recognize non-printable keys (Tab, Enter, Escape, Home, arrows).
+ * Regular 'keyDown' events are ignored by Sheets' canvas event handler.
+ */
+async function _dispatchRawKey(tabId, key, code, keyCode, modifiers = 0) {
+  await cdp.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+    type: 'rawKeyDown',
+    key,
+    code,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+    modifiers
+  });
+  await _sleep(20);
+  await cdp.sendCommand(tabId, 'Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key,
+    code,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+    modifiers
+  });
 }
 
 // ========== Paste Flowchart ==========
@@ -210,6 +604,26 @@ async function _detectMac(tabId) {
 
 function _sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function _isSpreadsheetApp(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = (tab.url || '').toLowerCase();
+    return url.includes('sheets.google.com') ||
+           url.includes('docs.google.com/spreadsheets') ||
+           url.includes('excel.office.com') ||
+           url.includes('airtable.com') ||
+           url.includes('notion.so');  // Notion tables also prefer TSV
+  } catch { return false; }
+}
+
+// ========== TSV/HTML Generation ==========
+
+function _generateTSV(data) {
+  return data.map(row =>
+    (Array.isArray(row) ? row : [row]).join('\t')
+  ).join('\n');
 }
 
 // ========== SVG/HTML Generation ==========

@@ -243,8 +243,13 @@ async function _handleType(params, tabId) {
     });
     const focus = focusCheck?.[0]?.result;
     if (!focus?.hasFocus) {
-      // No input is focused - the type may not land correctly
-      console.warn('[Computer] No input element is focused, type may fail. Active element:', focus?.activeTag);
+      // iframe is a valid focus target for canvas apps (Google Docs, Sheets, etc.)
+      // CDP Input.dispatchKeyEvent works at browser level and reaches inside iframes
+      if (focus?.activeTag === 'iframe') {
+        console.log('[Computer] Active element is iframe (canvas/doc app) - CDP type will work via hardware-level events');
+      } else {
+        console.warn('[Computer] No input element is focused, type may fail. Active element:', focus?.activeTag);
+      }
     }
   } catch (e) { /* ignore focus check errors */ }
 

@@ -1232,11 +1232,96 @@ function _extractDomainFromTab(tab) {
   }
 }
 
+// ========== Canvas App Auto-Detection ==========
+
+const CANVAS_APP_PATTERNS = [
+  'excalidraw',
+  'miro.com',
+  'figma.com',
+  'canva.com',
+  'docs.google.com',
+  'sheets.google.com',
+  'docs.google.com/spreadsheets',
+  'docs.google.com/presentations',
+  'slides.google.com',
+  'tldraw',
+  'draw.io',
+  'app.diagrams.net',
+  'whimsical.com',
+  'lucid.app',
+  'lucidchart.com',
+  'creately.com',
+  'sketch.com'
+];
+
+const CANVAS_CONTEXT_RULES = `
+## CANVAS APP DETECTED - ALWAYS USE canvas_toolkit FIRST!
+
+### CRITICAL: canvas_toolkit is your PRIMARY tool on canvas apps!
+Canvas apps (Google Docs, Slides, Excalidraw, Miro, Figma, etc.) render on <canvas>/<iframe>.
+The computer tool's type/click actions are UNRELIABLE here — they often fail to focus, cause stagnation, and cannot create formatted content.
+
+### TOOL SELECTION GUIDE:
+| Task | Use This Tool | Why |
+|------|--------------|-----|
+| Write text/paragraphs | **canvas_toolkit** smart_paste(contentType="html") | Clipboard paste is reliable in canvas/iframe editors |
+| Write formatted text (bold, headers) | **canvas_toolkit** paste_html | HTML renders with formatting preserved |
+| Create tables | **canvas_toolkit** paste_table or paste_html | Tables are impossible with computer type |
+| Draw diagrams, flowcharts | **canvas_toolkit** paste_svg or paste_flowchart | Instant, reliable SVG injection |
+| Draw basic shapes via toolbar | **canvas_toolkit** draw_shape | Clicks tool + drags in one action |
+| Click buttons, menus, navigate UI | **computer** (click, scroll) | Standard UI interaction |
+| Press keyboard shortcuts | **computer** (key) | e.g. Ctrl+Z, Ctrl+S |
+
+### PRIORITY ORDER (IMPORTANT):
+1. **ALWAYS FIRST: canvas_toolkit** for ANY content creation (text, tables, diagrams, shapes)
+2. **computer tool** ONLY for: clicking UI buttons/menus, scrolling, keyboard shortcuts
+3. **NEVER use computer type** to write content in canvas apps — use canvas_toolkit smart_paste instead!
+
+### Canvas Toolkit Actions:
+- **paste_svg**: Paste custom SVG markup at (x,y). YOU write the SVG - full creative control!
+- **paste_html**: Paste HTML content at (x,y) — tables, formatted text, headings, lists, bold/italic
+- **paste_table**: Quick table from 2D array data at (x,y)
+- **paste_flowchart**: Instant flowchart with nodes[] and edges[] at (x,y)
+- **smart_paste**: Generic paste at (x,y) with contentType (svg|html|text) + payload
+- **draw_shape**: Click toolbar tool at (toolX,toolY) then drag from (startX,startY) to (endX,endY)
+
+### Canvas Workflow:
+1. **Screenshot** → Analyze the app, find where to place content
+2. **Click** target area with computer tool to position cursor
+3. **Use canvas_toolkit** to paste content:
+   - Writing text → smart_paste(x, y, contentType="text", payload="your text here")
+   - Formatted text → paste_html(x, y, html="<h1>Title</h1><p>Paragraph with <b>bold</b></p>")
+   - Tables → paste_table(x, y, data=[["Header1","Header2"],["row1","row2"]])
+   - Diagrams → paste_flowchart or paste_svg
+4. **Screenshot** → Verify result
+
+### Examples for Google Docs/Slides:
+- Write a paragraph: smart_paste(x=500, y=400, contentType="text", payload="Hello World")
+- Formatted content: paste_html(x=500, y=400, html="<h2>Report</h2><p>This is <b>important</b></p><ul><li>Item 1</li><li>Item 2</li></ul>")
+- Create table: paste_table(x=500, y=400, data=[["Name","Score"],["Alice","95"],["Bob","87"]])
+- Flowchart: paste_flowchart(x=500, y=400, nodes=[{label:"Start",type:"start"},{label:"Process",type:"process"},{label:"End",type:"end"}], edges=[{from:0,to:1},{from:1,to:2}])
+
+### Examples for Google Sheets:
+- Fill data into cells: paste_table(x, y, data=[["Name","Age","City"],["Alice","25","Hanoi"],["Bob","30","HCMC"]]) — auto-detects spreadsheet and types each cell value + Tab/Enter to navigate. Reliable!
+- Write into a single cell: Click cell with computer, then use computer type action
+- IMPORTANT: Do NOT use paste_html or smart_paste for Google Sheets — clipboard paste doesn't work in Sheets iframe. Use paste_table (types cell-by-cell via CDP keyboard).
+
+### SVG Quick Reference (for paste_svg):
+- Rectangle: <rect x="0" y="0" width="100" height="50" rx="5" fill="#3B82F6"/>
+- Circle: <circle cx="50" cy="50" r="40" fill="#10B981"/>
+- Diamond: <polygon points="50,0 100,50 50,100 0,50" fill="#F59E0B"/>
+- Text: <text x="50" y="30" text-anchor="middle" font-size="14">Label</text>
+- Always wrap in: <svg xmlns="http://www.w3.org/2000/svg" width="W" height="H">...</svg>
+`;
+
 async function _loadContextRules(url) {
   if (!currentExecution) return;
   try {
     const urlObj = new URL(url);
     const hostname = urlObj.hostname;
+    const fullUrl = urlObj.href.toLowerCase();
+
+    // --- Existing user-defined context rules ---
     const { contextRules = [] } = await chrome.storage.local.get('contextRules');
 
     const matching = contextRules.filter(r => {
@@ -1254,8 +1339,22 @@ async function _loadContextRules(url) {
       return hostname === ruleDomain || hostname === 'www.' + ruleDomain;
     });
 
+    let rules = '';
     if (matching.length > 0) {
-      currentExecution.contextRules = matching.map(r => `[${r.domain}]: ${r.context}`).join('\n\n');
+      rules = matching.map(r => `[${r.domain}]: ${r.context}`).join('\n\n');
+    }
+
+    // --- Auto-detect canvas apps and inject canvas_toolkit instructions ---
+    const isCanvasApp = CANVAS_APP_PATTERNS.some(pattern =>
+      hostname.includes(pattern) || fullUrl.includes(pattern)
+    );
+    if (isCanvasApp) {
+      console.log('[ContextRules] Canvas app detected:', hostname, '→ injecting canvas_toolkit instructions');
+      rules = rules ? rules + '\n\n' + CANVAS_CONTEXT_RULES : CANVAS_CONTEXT_RULES;
+    }
+
+    if (rules) {
+      currentExecution.contextRules = rules;
     }
   } catch (e) {
     console.error('[ContextRules] Error:', e);

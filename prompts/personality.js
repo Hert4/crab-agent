@@ -40,7 +40,8 @@ export const CrabPersonality = {
         .replace(/\[effect:[^\]]+\]/gi, '')
         .replace(/\[trusted\]/gi, '')
         .replace(/at\s*\(\d+,\s*\d+\)/gi, '')
-        .replace(/\s+/g, ' ')
+        .replace(/[ \t]+/g, ' ')     // collapse only spaces/tabs, NOT newlines
+        .replace(/\n{3,}/g, '\n\n')  // collapse 3+ newlines into 2
         .trim();
     }
     if (userStyle === 'brief' && simplified.length > 50) {

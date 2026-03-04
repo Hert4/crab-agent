@@ -797,7 +797,7 @@ function setupEventListeners() {
   // Auto-resize textarea and update char counter
   elements.chatInput.addEventListener('input', () => {
     elements.chatInput.style.height = 'auto';
-    elements.chatInput.style.height = Math.min(elements.chatInput.scrollHeight, 120) + 'px';
+    elements.chatInput.style.height = Math.min(elements.chatInput.scrollHeight, 150) + 'px';
     updateCharCounter();
     notifyCrabActivity('user');
   });
@@ -1138,7 +1138,7 @@ function openTask(task) {
   elements.chatInput.placeholder = 'Ask for follow-up changes...';
   clearPendingImages();
   showView('chat');
-  scrollToBottom();
+  scrollToBottom(true);  // force scroll when opening task
 }
 
 function requestTaskCancellation() {
@@ -2332,23 +2332,205 @@ function updateTimer() {
 }
 
 /**
- * Scroll chat to bottom
+ * Scroll chat to bottom (respects autoScroll setting)
  */
-function scrollToBottom() {
-  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+function scrollToBottom(force = false) {
+  if (!force && settings && settings.autoScroll === false) return;
+  // Use requestAnimationFrame to ensure DOM has updated before scrolling
+  requestAnimationFrame(() => {
+    if (elements.chatMessages) {
+      elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+    }
+  });
 }
 
 /**
- * Format markdown text
+ * Format markdown text to HTML (Claude-quality rendering)
  */
 function formatMarkdown(text) {
-  // Basic markdown formatting
+  if (!text) return '';
+
+  // 1. Protect code blocks from further processing
+  const codeBlocks = [];
+  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codeBlocks.length;
+    const langLabel = lang ? `<div class="code-lang">${escapeHtml(lang)}</div>` : '';
+    codeBlocks.push(`<div class="code-block-wrap">${langLabel}<pre class="code-block"><code>${escapeHtml(code.replace(/^\n|\n$/g, ''))}</code></pre></div>`);
+    return `\x00CB${idx}\x00`;
+  });
+
+  // 2. Protect inline code
+  const inlineCodes = [];
+  text = text.replace(/`([^`]+)`/g, (_, code) => {
+    const idx = inlineCodes.length;
+    inlineCodes.push(`<code>${escapeHtml(code)}</code>`);
+    return `\x00IC${idx}\x00`;
+  });
+
+  // 3. Split into lines for block-level processing
+  const lines = text.split('\n');
+  const output = [];
+  let inList = false;
+  let listType = '';
+  let inBlockquote = false;
+  let inTable = false;
+  let tableHeaderDone = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+
+    // --- Table detection ---
+    const isTableRow = /^\|(.+)\|$/.test(line.trim());
+    const isSeparator = /^\|[\s\-:|]+\|$/.test(line.trim());
+
+    if (isTableRow || isSeparator) {
+      // Close other open blocks
+      if (inList) { output.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      if (inBlockquote) { output.push('</blockquote>'); inBlockquote = false; }
+
+      if (isSeparator) {
+        // This is the |---|---| separator line, skip it but mark header done
+        tableHeaderDone = true;
+        continue;
+      }
+
+      if (!inTable) {
+        output.push('<table class="md-table">');
+        inTable = true;
+        tableHeaderDone = false;
+      }
+
+      const cells = line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      // Check if next line is separator (then this is header)
+      const nextLine = (i + 1 < lines.length) ? lines[i + 1].trim() : '';
+      const nextIsSep = /^\|[\s\-:|]+\|$/.test(nextLine);
+
+      if (!tableHeaderDone && nextIsSep) {
+        // This is a header row
+        output.push('<thead><tr>' + cells.map(c => `<th>${inlineFormat(c)}</th>`).join('') + '</tr></thead><tbody>');
+      } else {
+        output.push('<tr>' + cells.map(c => `<td>${inlineFormat(c)}</td>`).join('') + '</tr>');
+      }
+      continue;
+    }
+
+    // Close table if no longer in table rows
+    if (inTable) {
+      output.push('</tbody></table>');
+      inTable = false;
+      tableHeaderDone = false;
+    }
+
+    // Horizontal rule
+    if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
+      if (inList) { output.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      if (inBlockquote) { output.push('</blockquote>'); inBlockquote = false; }
+      output.push('<hr class="md-hr">');
+      continue;
+    }
+
+    // Headings
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      if (inList) { output.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      if (inBlockquote) { output.push('</blockquote>'); inBlockquote = false; }
+      const level = headingMatch[1].length;
+      output.push(`<h${level} class="md-heading">${inlineFormat(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    // Blockquote
+    const bqMatch = line.match(/^>\s?(.*)$/);
+    if (bqMatch) {
+      if (inList) { output.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+      if (!inBlockquote) { output.push('<blockquote class="md-blockquote">'); inBlockquote = true; }
+      output.push(inlineFormat(bqMatch[1]) + '<br>');
+      continue;
+    } else if (inBlockquote) {
+      output.push('</blockquote>');
+      inBlockquote = false;
+    }
+
+    // Unordered list
+    const ulMatch = line.match(/^(\s*)[-*+]\s+(.+)$/);
+    if (ulMatch) {
+      if (!inList || listType !== 'ul') {
+        if (inList) output.push(listType === 'ul' ? '</ul>' : '</ol>');
+        output.push('<ul>');
+        inList = true;
+        listType = 'ul';
+      }
+      output.push(`<li>${inlineFormat(ulMatch[2])}</li>`);
+      continue;
+    }
+
+    // Ordered list
+    const olMatch = line.match(/^(\s*)\d+[.)]\s+(.+)$/);
+    if (olMatch) {
+      if (!inList || listType !== 'ol') {
+        if (inList) output.push(listType === 'ul' ? '</ul>' : '</ol>');
+        output.push('<ol>');
+        inList = true;
+        listType = 'ol';
+      }
+      output.push(`<li>${inlineFormat(olMatch[2])}</li>`);
+      continue;
+    }
+
+    // End list if line is not a list item
+    if (inList) {
+      output.push(listType === 'ul' ? '</ul>' : '</ol>');
+      inList = false;
+    }
+
+    // Empty line = paragraph break
+    if (line.trim() === '') {
+      output.push('<div class="md-spacer"></div>');
+      continue;
+    }
+
+    // Normal paragraph line
+    output.push(`<p>${inlineFormat(line)}</p>`);
+  }
+
+  // Close any open tags
+  if (inList) output.push(listType === 'ul' ? '</ul>' : '</ol>');
+  if (inBlockquote) output.push('</blockquote>');
+  if (inTable) output.push('</tbody></table>');
+
+  let html = output.join('\n');
+
+  // 4. Restore code blocks and inline codes
+  html = html.replace(/\x00CB(\d+)\x00/g, (_, idx) => codeBlocks[idx]);
+  html = html.replace(/\x00IC(\d+)\x00/g, (_, idx) => inlineCodes[idx]);
+
+  return html;
+}
+
+/** Inline markdown formatting (bold, italic, links, etc.) */
+function inlineFormat(text) {
   return text
-    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // Images: ![alt](url)
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="md-img">')
+    // Links: [text](url)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="md-link">$1</a>')
+    // Bold + italic: ***text***
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
+    // Bold: **text**
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\n/g, '<br>');
+    // Italic: *text*
+    .replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, '<em>$1</em>')
+    // Strikethrough: ~~text~~
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+}
+
+/** Escape HTML entities to prevent XSS in code blocks */
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /**
