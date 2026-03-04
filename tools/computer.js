@@ -2,9 +2,37 @@
  * Computer Tool - Swiss-army tool for browser interaction via CDP.
  * 13 actions: left_click, right_click, double_click, triple_click,
  * type, key, screenshot, wait, scroll, left_click_drag, zoom, scroll_to, hover
+ *
+ * Aligned with Claude computer_20250124 spec:
+ *   - All 13 actions matching Claude's action enum
+ *   - ref parameter for element targeting (alternative to coordinates)
+ *   - modifiers for clicks (ctrl, shift, alt, cmd)
+ *   - repeat for key action
+ *   - region for zoom
+ *   - Permission type mapping per action
  */
 
 import { cdp } from '../core/cdp-manager.js';
+
+/**
+ * Permission type mapping for each computer action.
+ * Used by permission-manager to check user consent.
+ */
+export const COMPUTER_PERMISSION_MAP = {
+  screenshot: 'READ_PAGE_CONTENT',
+  scroll: 'READ_PAGE_CONTENT',
+  scroll_to: 'READ_PAGE_CONTENT',
+  zoom: 'READ_PAGE_CONTENT',
+  wait: 'READ_PAGE_CONTENT',
+  left_click: 'CLICK',
+  right_click: 'CLICK',
+  double_click: 'CLICK',
+  triple_click: 'CLICK',
+  hover: 'CLICK',
+  left_click_drag: 'CLICK',
+  type: 'TYPE',
+  key: 'TYPE'
+};
 
 export const computerTool = {
   name: 'computer',
@@ -79,7 +107,7 @@ export const computerTool = {
       case 'right_click':
       case 'double_click':
       case 'triple_click':
-        return await _handleClick(action, params, tabId);
+        return await _handleClick(action, params, tabId, context);
 
       case 'type':
         return await _handleType(params, tabId);
@@ -97,7 +125,7 @@ export const computerTool = {
         return await _handleScroll(params, tabId);
 
       case 'left_click_drag':
-        return await _handleDrag(params, tabId);
+        return await _handleDrag(params, tabId, context);
 
       case 'zoom':
         return await _handleZoom(params, tabId);
@@ -106,7 +134,7 @@ export const computerTool = {
         return await _handleScrollTo(params, tabId);
 
       case 'hover':
-        return await _handleHover(params, tabId);
+        return await _handleHover(params, tabId, context);
 
       default:
         return { success: false, error: `Unknown computer action: ${action}` };
@@ -116,8 +144,8 @@ export const computerTool = {
 
 // ========== Action Handlers ==========
 
-async function _resolveCoordinates(params, tabId) {
-  // If ref provided, resolve to coordinates
+async function _resolveCoordinates(params, tabId, context) {
+  // If ref provided, resolve to coordinates (already in viewport space)
   if (params.ref) {
     const resolved = await cdp.resolveRef(tabId, params.ref);
     if (!resolved) {
@@ -126,16 +154,27 @@ async function _resolveCoordinates(params, tabId) {
     return { x: resolved.x, y: resolved.y, resolved };
   }
 
-  // Use explicit coordinates
+  // Use explicit coordinates — scale from screenshot space to viewport space
   if (params.coordinate && params.coordinate.length >= 2) {
-    return { x: params.coordinate[0], y: params.coordinate[1] };
+    let x = params.coordinate[0];
+    let y = params.coordinate[1];
+
+    // Apply scaling if screenshot was resized for token optimization
+    const scaleX = context?.exec?.coordScaleX || 1;
+    const scaleY = context?.exec?.coordScaleY || 1;
+    if (scaleX !== 1 || scaleY !== 1) {
+      x = Math.round(x * scaleX);
+      y = Math.round(y * scaleY);
+    }
+
+    return { x, y };
   }
 
   return { error: 'Either "coordinate" [x,y] or "ref" must be provided.' };
 }
 
-async function _handleClick(action, params, tabId) {
-  const coords = await _resolveCoordinates(params, tabId);
+async function _handleClick(action, params, tabId, context) {
+  const coords = await _resolveCoordinates(params, tabId, context);
   if (coords.error) return { success: false, error: coords.error };
 
   // If resolved from ref, wait for scrollIntoView to settle
@@ -143,7 +182,8 @@ async function _handleClick(action, params, tabId) {
     await new Promise(r => setTimeout(r, 150));
   }
 
-  // --- Execute CDP click (no effect detection — model reasons from screenshot) ---
+  // --- Execute CDP click ---
+  // Parse modifiers (ctrl+shift+alt+cmd) for all click types
   const modifiers = params.modifiers ? cdp._parseModifiers(params.modifiers) : 0;
   let result;
 
@@ -152,13 +192,13 @@ async function _handleClick(action, params, tabId) {
       result = await cdp.click(tabId, coords.x, coords.y, { modifiers });
       break;
     case 'right_click':
-      result = await cdp.rightClick(tabId, coords.x, coords.y);
+      result = await cdp.rightClick(tabId, coords.x, coords.y, { modifiers });
       break;
     case 'double_click':
-      result = await cdp.doubleClick(tabId, coords.x, coords.y);
+      result = await cdp.doubleClick(tabId, coords.x, coords.y, { modifiers });
       break;
     case 'triple_click':
-      result = await cdp.tripleClick(tabId, coords.x, coords.y);
+      result = await cdp.tripleClick(tabId, coords.x, coords.y, { modifiers });
       break;
   }
 
@@ -218,7 +258,18 @@ async function _handleKey(params, tabId) {
 }
 
 async function _handleScreenshot(tabId) {
+  // Hide Claude/Crab overlay before screenshot (matching Claude behavior)
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'HIDE_FOR_TOOL_USE' });
+  } catch (e) { /* content script may not be injected */ }
+
   const result = await cdp.screenshot(tabId, { format: 'jpeg', quality: 80 });
+
+  // Show overlay again after screenshot
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'SHOW_AFTER_TOOL_USE' });
+  } catch (e) { /* ignore */ }
+
   if (result.success) {
     return {
       success: true,
@@ -257,16 +308,22 @@ async function _handleScroll(params, tabId) {
   return await cdp.scroll(tabId, x, y, dir, amount);
 }
 
-async function _handleDrag(params, tabId) {
+async function _handleDrag(params, tabId, context) {
   if (!params.start_coordinate || params.start_coordinate.length < 2) {
     return { success: false, error: 'start_coordinate [x,y] is required for left_click_drag' };
   }
-  const coords = await _resolveCoordinates(params, tabId);
+  const coords = await _resolveCoordinates(params, tabId, context);
   if (coords.error) return { success: false, error: coords.error };
+
+  // Scale start_coordinate too
+  const scaleX = context?.exec?.coordScaleX || 1;
+  const scaleY = context?.exec?.coordScaleY || 1;
+  const startX = Math.round(params.start_coordinate[0] * scaleX);
+  const startY = Math.round(params.start_coordinate[1] * scaleY);
 
   return await cdp.drag(
     tabId,
-    params.start_coordinate[0], params.start_coordinate[1],
+    startX, startY,
     coords.x, coords.y
   );
 }
@@ -313,8 +370,8 @@ async function _handleScrollTo(params, tabId) {
   return r || { success: false, error: 'scroll_to script failed' };
 }
 
-async function _handleHover(params, tabId) {
-  const coords = await _resolveCoordinates(params, tabId);
+async function _handleHover(params, tabId, context) {
+  const coords = await _resolveCoordinates(params, tabId, context);
   if (coords.error) return { success: false, error: coords.error };
   return await cdp.hover(tabId, coords.x, coords.y);
 }

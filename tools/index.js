@@ -108,14 +108,22 @@ export async function executeTool(toolName, params, context) {
 
 /**
  * Get all tool schemas for system prompt generation.
+ * @param {Object} options - Optional { viewportWidth, viewportHeight } for dynamic descriptions
  * @returns {Array<{name: string, description: string, parameters: Object}>}
  */
-export function getToolSchemas() {
+export function getToolSchemas(options = {}) {
   const schemas = [];
   for (const [name, tool] of Object.entries(TOOLS)) {
+    let description = tool.description;
+    // Dynamically inject viewport dimensions into computer tool description
+    if (name === 'computer' && options.viewportWidth && options.viewportHeight) {
+      description = `Use a mouse and keyboard to interact with a web browser. Display: ${options.viewportWidth}x${options.viewportHeight}px.\n` +
+        `* Coordinates are in CSS pixels from the top-left corner of the viewport.\n` +
+        `* Click the CENTER of elements. Use read_page to get ref IDs for precise targeting.`;
+    }
     schemas.push({
       name,
-      description: tool.description,
+      description,
       parameters: tool.parameters || {}
     });
   }

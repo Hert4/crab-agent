@@ -11,7 +11,8 @@ const SCREENSHOT_QUALITY = {
   INITIAL_JPEG_QUALITY: 80,
   JPEG_QUALITY_STEP: 10,
   MIN_JPEG_QUALITY: 40,
-  MAX_BASE64_CHARS: 500000
+  MAX_BASE64_CHARS: 500000,
+  MAX_TARGET_PX: 1568   // Claude-style: max dimension for token optimization
 };
 
 class CDPManager {
@@ -669,7 +670,8 @@ class CDPManager {
   /**
    * Take screenshot via CDP (better quality control than chrome.tabs.captureVisibleTab).
    * Returns screenshot scaled down to CSS pixel dimensions (accounting for devicePixelRatio)
-   * so that LLM coordinates match viewport coordinates for CDP input events.
+   * and further optimized for LLM token cost (max 1568px dimension, progressive JPEG quality).
+   * Coordinates in the screenshot will match viewport coordinates for CDP input events.
    */
   async screenshot(tabId, options = {}) {
     const { format = 'jpeg', quality = SCREENSHOT_QUALITY.INITIAL_JPEG_QUALITY } = options;
@@ -691,10 +693,13 @@ class CDPManager {
         throw new Error('No screenshot data returned');
       }
 
+      // Step 1: Scale from native resolution to CSS pixel dimensions
       // CDP captures at native resolution (viewport × devicePixelRatio).
-      // We need to scale down to viewport (CSS pixel) dimensions so that
-      // coordinates the LLM returns from the screenshot match the CSS pixel
-      // coordinates that CDP Input.dispatchMouseEvent expects.
+      // We need CSS pixel coords so LLM coordinates match CDP Input events.
+      let screenshotBase64 = result.data;
+      let outputWidth = viewport.width;
+      let outputHeight = viewport.height;
+
       if (dpr > 1) {
         try {
           const scaled = await this._scaleScreenshot(
@@ -702,28 +707,55 @@ class CDPManager {
             viewport.width, viewport.height, dpr
           );
           if (scaled) {
-            return {
-              success: true,
-              base64: scaled.base64,
-              format,
-              width: scaled.width,
-              height: scaled.height,
-              viewportWidth: viewport.width,
-              viewportHeight: viewport.height
-            };
+            screenshotBase64 = scaled.base64;
+            outputWidth = scaled.width;
+            outputHeight = scaled.height;
           }
         } catch (scaleErr) {
-          // If scaling fails, fall through to unscaled version
-          console.warn('[CDP] Screenshot scaling failed, using native resolution:', scaleErr.message);
+          console.warn('[CDP] DPR scaling failed, using native resolution:', scaleErr.message);
+        }
+      }
+
+      // Step 2: Token optimization — scale down if larger than MAX_TARGET_PX (Claude-style)
+      const maxDim = SCREENSHOT_QUALITY.MAX_TARGET_PX;
+      if (outputWidth > maxDim || outputHeight > maxDim) {
+        const scale = maxDim / Math.max(outputWidth, outputHeight);
+        const targetW = Math.round(outputWidth * scale);
+        const targetH = Math.round(outputHeight * scale);
+        try {
+          const optimized = await this._resizeScreenshot(tabId, screenshotBase64, format, targetW, targetH);
+          if (optimized) {
+            screenshotBase64 = optimized.base64;
+            outputWidth = optimized.width;
+            outputHeight = optimized.height;
+          }
+        } catch (resizeErr) {
+          console.warn('[CDP] Token optimization resize failed:', resizeErr.message);
+        }
+      }
+
+      // Step 3: Progressive JPEG quality reduction if still too large
+      if (format === 'jpeg' && screenshotBase64.length > SCREENSHOT_QUALITY.MAX_BASE64_CHARS) {
+        let q = 70;
+        while (q >= SCREENSHOT_QUALITY.MIN_JPEG_QUALITY && screenshotBase64.length > SCREENSHOT_QUALITY.MAX_BASE64_CHARS) {
+          try {
+            const recompressed = await this._recompressJpeg(tabId, screenshotBase64, q, outputWidth, outputHeight);
+            if (recompressed) {
+              screenshotBase64 = recompressed;
+            }
+          } catch (e) {
+            break;
+          }
+          q -= SCREENSHOT_QUALITY.JPEG_QUALITY_STEP;
         }
       }
 
       return {
         success: true,
-        base64: result.data,
+        base64: screenshotBase64,
         format,
-        width: viewport.width,
-        height: viewport.height,
+        width: outputWidth,
+        height: outputHeight,
         viewportWidth: viewport.width,
         viewportHeight: viewport.height
       };
@@ -799,6 +831,68 @@ class CDPManager {
       args: [base64Data, format, targetWidth, targetHeight, dpr]
     });
 
+    return result?.[0]?.result || null;
+  }
+
+  /**
+   * Resize a screenshot to target dimensions for token optimization.
+   * Used when screenshot CSS dimensions exceed MAX_TARGET_PX.
+   */
+  async _resizeScreenshot(tabId, base64Data, format, targetWidth, targetHeight) {
+    const result = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (b64, fmt, tw, th) => {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = tw;
+            canvas.height = th;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) { reject(new Error('No 2d context')); return; }
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, tw, th);
+            const mimeType = fmt === 'png' ? 'image/png' : 'image/jpeg';
+            const quality = fmt === 'jpeg' ? 0.80 : undefined;
+            const dataUrl = canvas.toDataURL(mimeType, quality);
+            resolve({ base64: dataUrl.split(',')[1], width: tw, height: th });
+          };
+          img.onerror = () => reject(new Error('Failed to load image for resize'));
+          img.src = `data:image/${fmt === 'png' ? 'png' : 'jpeg'};base64,${b64}`;
+        });
+      },
+      args: [base64Data, format, targetWidth, targetHeight]
+    });
+    return result?.[0]?.result || null;
+  }
+
+  /**
+   * Recompress a JPEG screenshot at a lower quality level.
+   * Returns new base64 string or null on failure.
+   */
+  async _recompressJpeg(tabId, base64Data, quality, width, height) {
+    const result = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (b64, q, w, h) => {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = w || img.width;
+            canvas.height = h || img.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) { reject(new Error('No 2d context')); return; }
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL('image/jpeg', q / 100);
+            resolve(dataUrl.split(',')[1]);
+          };
+          img.onerror = () => reject(new Error('Failed to load image for recompress'));
+          img.src = `data:image/jpeg;base64,${b64}`;
+        });
+      },
+      args: [base64Data, quality, width, height]
+    });
     return result?.[0]?.result || null;
   }
 
@@ -957,16 +1051,24 @@ class CDPManager {
         const el = weakRef.deref ? weakRef.deref() : weakRef;
         if (!el || !el.isConnected) return null;
 
-        el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-
+        // Only scrollIntoView if element is NOT already in the viewport
+        // This prevents dismissing dropdowns/popups that are already visible
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) return null;
+        const inViewport = rect.top >= 0 && rect.left >= 0 &&
+          rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+        if (!inViewport) {
+          el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+        }
+
+        // Re-read rect after possible scroll
+        const finalRect = inViewport ? rect : el.getBoundingClientRect();
+        if (finalRect.width === 0 && finalRect.height === 0) return null;
 
         return {
-          x: Math.round(rect.x + rect.width / 2),
-          y: Math.round(rect.y + rect.height / 2),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
+          x: Math.round(finalRect.x + finalRect.width / 2),
+          y: Math.round(finalRect.y + finalRect.height / 2),
+          width: Math.round(finalRect.width),
+          height: Math.round(finalRect.height),
           tag: (el.tagName || '').toLowerCase(),
           text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 80)
         };

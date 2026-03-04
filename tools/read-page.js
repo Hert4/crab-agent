@@ -1,24 +1,32 @@
 /**
  * Read Page Tool - Get accessibility tree representation.
+ * Aligned with Claude extension spec:
+ *   filter (interactive/all), tabId, depth (default 15),
+ *   ref_id (scope to subtree), max_chars (default 50000)
  */
 
 export const readPageTool = {
   name: 'read_page',
-  description: 'Get an accessibility tree representation of elements on the page. Returns element roles, labels, and ref IDs for targeting with the computer tool. Filter for "interactive" to see only clickable/editable elements. Output limited to 50000 chars.',
+  description: 'Get an accessibility tree representation of elements on the page. By default returns all elements including non-visible ones. Output is limited to 50000 characters.',
   parameters: {
     filter: {
-      type: 'string', enum: ['all', 'interactive'],
-      description: 'Filter mode: "all" (default) or "interactive" (only clickable/editable).'
+      type: 'string',
+      enum: ['interactive', 'all'],
+      description: 'Filter: "interactive" for buttons/links/inputs only, "all" for all elements'
     },
-    maxDepth: {
-      type: 'number', minimum: 1, maximum: 20,
-      description: 'Max tree depth. Default 15.'
+    tabId: { type: 'number', description: 'Tab ID.' },
+    depth: {
+      type: 'number',
+      description: 'Max tree depth (default: 15)'
     },
     ref_id: {
       type: 'string',
-      description: 'Focus on subtree of this ref_id element.'
+      description: 'Reference ID of a parent element to scope the read to (e.g. "ref_5")'
     },
-    tabId: { type: 'number', description: 'Tab ID.' }
+    max_chars: {
+      type: 'number',
+      description: 'Max characters for output (default: 50000)'
+    }
   },
 
   async execute(params, context) {
@@ -26,19 +34,21 @@ export const readPageTool = {
     if (!tabId) return { success: false, error: 'No tabId. Use tabs_context first.' };
 
     const filter = params.filter || 'all';
-    const maxDepth = Math.min(20, Math.max(1, params.maxDepth || 15));
+    // Support both 'depth' (Claude spec) and legacy 'maxDepth'
+    const depth = Math.min(20, Math.max(1, params.depth || params.maxDepth || 15));
     const refId = params.ref_id || null;
+    const maxChars = Math.min(100000, Math.max(1000, params.max_chars || 50000));
 
     try {
       const result = await chrome.scripting.executeScript({
         target: { tabId },
-        func: (f, d, r) => {
+        func: (f, d, r, includeCoords, mc) => {
           if (!window.__generateAccessibilityTree) {
             return { success: false, error: 'Accessibility tree not loaded. Page may not be ready.' };
           }
-          return window.__generateAccessibilityTree(f, d, r, true);
+          return window.__generateAccessibilityTree(f, d, r, includeCoords, mc);
         },
-        args: [filter, maxDepth, refId]
+        args: [filter, depth, refId, true, maxChars]
       });
 
       const payload = result?.[0]?.result;
@@ -48,10 +58,10 @@ export const readPageTool = {
       const lines = payload.lines || [];
       const treeText = lines.join('\n');
 
-      if (treeText.length > 50000) {
+      if (treeText.length > maxChars) {
         return {
           success: false,
-          error: `Output exceeds 50000 chars (${treeText.length}). Use a smaller maxDepth or specify ref_id to focus on a subtree.`
+          error: `Output exceeds ${maxChars} chars (${treeText.length}). Use a smaller depth or specify ref_id to focus on a subtree.`
         };
       }
 

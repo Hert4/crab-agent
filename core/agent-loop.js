@@ -5,12 +5,20 @@
  */
 
 import { cdp } from './cdp-manager.js';
-import { StateManager, VisualStateTracker, ScreenshotComparator } from './state-manager.js';
+import { StateManager, VisualStateTracker } from './state-manager.js';
 import { MessageManager } from './message-manager.js';
-import { callLLM } from './llm-client.js';
+import { callLLM, cancelLLMRequest } from './llm-client.js';
 import { executeTool, getToolSchemas } from '../tools/index.js';
 import { buildSystemPrompt } from '../prompts/system-prompt.js';
 import { CrabPersonality, updateUserStyle, formatCrabResponse } from '../prompts/personality.js';
+import { permissionManager } from './permission-manager.js';
+import { tabGroupManager } from './tab-group-manager.js';
+import {
+  getQuickModeSystemPrompt,
+  parseQuickModeResponse,
+  executeQuickModeCommands,
+  isQuickModeAvailable
+} from './quick-mode.js';
 import {
   ensureTaskRecorder,
   beginRecordingStep,
@@ -24,7 +32,6 @@ import {
 let currentExecution = null;
 const stateManager = new StateManager();
 const visualTracker = new VisualStateTracker();
-const screenshotComparator = new ScreenshotComparator();
 
 // ========== Public API ==========
 
@@ -41,7 +48,8 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
   // Reset state
   stateManager.reset();
   visualTracker.reset();
-  screenshotComparator.reset();
+  permissionManager.reset();
+  await permissionManager.loadDomainRules();
   updateUserStyle(task);
 
   // Get active tab
@@ -76,6 +84,11 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
     interruptRequested: false,
     currentPlan: null,
     recorder: null,
+    actionHistory: [],
+    loopWarningCount: 0,
+    stagnationCount: 0,
+    lastDomHash: null,
+    lastUrl: null,
     sendToPanel
   };
 
@@ -146,6 +159,7 @@ export function resumeExecution() {
 export function cancelExecution() {
   if (currentExecution) {
     currentExecution.cancelled = true;
+    cancelLLMRequest(); // Abort any in-flight streaming LLM call
     finalizeTaskRecording(currentExecution, 'cancelled', { summary: 'User cancelled' });
   }
 }
@@ -166,7 +180,15 @@ async function runExecutor() {
 
   const { sendToPanel } = exec;
 
-  // Build system prompt
+  // Detect Quick Mode
+  const quickMode = isQuickModeAvailable(exec.settings);
+  console.log('[AgentLoop] Quick Mode:', quickMode ? 'ENABLED' : 'disabled');
+
+  if (quickMode) {
+    return await _runQuickModeLoop(exec);
+  }
+
+  // Standard Mode: Build system prompt
   const useNativeTools = _supportsNativeTools(exec.settings);
   const systemPrompt = buildSystemPrompt({
     contextRules: exec.contextRules,
@@ -241,15 +263,47 @@ async function runExecutor() {
     // ---- Step execution ----
 
     // 1. Take screenshot for context
+    console.log('[AgentLoop] Step', exec.step, '- Taking screenshot for tab', exec.tabId);
     const screenshot = await _takeScreenshot(exec.tabId);
+    console.log('[AgentLoop] Screenshot result:', screenshot ? { success: screenshot.success, width: screenshot.width, height: screenshot.height, viewportWidth: screenshot.viewportWidth, viewportHeight: screenshot.viewportHeight, base64Len: screenshot.base64?.length } : 'null');
 
-    // 2. Get previous screenshot and update tracker (Claude-style: send both to model)
-    const screenshotInfo = screenshot?.base64
-      ? screenshotComparator.update(screenshot.base64, screenshot.format || 'jpeg')
-      : { hasPrevious: false, previous: null };
+    // 2. Build image array: only CURRENT screenshot (previous is already in conversation history)
+    const images = [];
+    if (screenshot?.base64) {
+      const currFormat = screenshot.format || 'jpeg';
+      images.push(`data:image/${currFormat};base64,${screenshot.base64}`);
+
+      // Store screenshot → viewport scaling info for coordinate correction in computer tool
+      if (screenshot.viewportWidth && screenshot.width && screenshot.viewportWidth !== screenshot.width) {
+        exec.coordScaleX = screenshot.viewportWidth / screenshot.width;
+        exec.coordScaleY = (screenshot.viewportHeight || screenshot.height) / screenshot.height;
+      } else {
+        exec.coordScaleX = 1;
+        exec.coordScaleY = 1;
+      }
+    }
 
     // 3. Get page accessibility tree (lightweight)
     const pageInfo = await _getPageInfo(exec.tabId);
+
+    // 3b. Track stagnation via DOM hash + URL (more reliable than screenshot base64 length)
+    if (exec.step > 1 && pageInfo.domHash) {
+      const lastTool = exec.actionHistory.length > 0 ? exec.actionHistory[exec.actionHistory.length - 1]?.tool : null;
+      const readOnlyTools = ['read_page', 'find', 'tabs_context', 'read_console_messages', 'read_network_requests', 'get_page_text'];
+      const wasMutating = lastTool && !readOnlyTools.includes(lastTool);
+
+      const currentDomHash = pageInfo.domHash;
+      const currentUrl = pageInfo.url || tabUrl;
+
+      if (wasMutating && exec.lastDomHash !== null &&
+          currentDomHash === exec.lastDomHash && currentUrl === exec.lastUrl) {
+        exec.stagnationCount++;
+      } else if (wasMutating) {
+        exec.stagnationCount = 0; // Page changed after a mutating action, reset
+      }
+      exec.lastDomHash = currentDomHash;
+      exec.lastUrl = currentUrl;
+    }
 
     // Begin recording step
     const stepRecord = await beginRecordingStep(exec, {
@@ -259,7 +313,7 @@ async function runExecutor() {
     });
 
     // 4. Build LLM message with current state
-    const stateMessage = _buildStateMessage(exec, pageInfo, screenshot, currentTab, useNativeTools, screenshotInfo.hasPrevious);
+    const stateMessage = _buildStateMessage(exec, pageInfo, screenshot, currentTab, useNativeTools);
 
     // Update system prompt with latest warnings
     const updatedSystemPrompt = buildSystemPrompt({
@@ -271,22 +325,67 @@ async function runExecutor() {
 
     exec.messageManager.updateSystemPrompt(updatedSystemPrompt);
 
-    // Build image array: [previous_screenshot, current_screenshot] for visual comparison
-    const images = [];
-    if (screenshotInfo.hasPrevious && screenshotInfo.previous) {
-      // Add previous screenshot first (labeled in message)
-      const prevFormat = screenshotInfo.previousFormat || 'jpeg';
-      images.push(`data:image/${prevFormat};base64,${screenshotInfo.previous}`);
-    }
-    if (screenshot?.base64) {
-      // Add current screenshot
-      const currFormat = screenshot.format || 'jpeg';
-      images.push(`data:image/${currFormat};base64,${screenshot.base64}`);
-    }
-
     exec.messageManager.addMessage('user', stateMessage, images);
 
+    // Proactive message compaction every 5 steps (prevent conversation from growing too large)
+    if (exec.step % 5 === 0) {
+      exec.messageManager.compactIfNeeded();
+    }
+
+    // Check for loops: parameter repetition, screenshot stagnation, and step budget
+    const repetitionWarning = _detectRepetition(exec.actionHistory);
+    const isStagnant = exec.stagnationCount >= 3;
+    const isOverBudget = exec.step >= 20;
+
+    // Only count as a real warning if page is stagnant or over budget
+    // Repetition alone is a soft hint (the page might still be changing)
+    const isHardWarning = isStagnant || isOverBudget;
+    const isSoftWarning = repetitionWarning && !isHardWarning;
+    const needsWarning = isHardWarning || isSoftWarning;
+
+    if (needsWarning) {
+      if (isHardWarning) {
+        exec.loopWarningCount++;
+      }
+      // Soft warnings don't increment the counter but still advise the agent
+
+      const warningParts = [];
+      if (repetitionWarning) warningParts.push(repetitionWarning);
+      if (isStagnant) warningParts.push(`⚠️ STAGNATION: The page has NOT changed for ${exec.stagnationCount} consecutive steps. Your actions are not having any effect.`);
+      if (isOverBudget) warningParts.push(`⚠️ STEP BUDGET: You have used ${exec.step}/${exec.maxSteps} steps. This task should take at most 10-15 steps. You are wasting steps.`);
+
+      console.warn(`[AgentLoop] Warning #${exec.loopWarningCount} (${isHardWarning ? 'HARD' : 'soft'}) at step ${exec.step}:`, warningParts.join(' | '));
+
+      if (exec.loopWarningCount >= 5 || exec.step >= 30) {
+        // Hard stop — force fail the task
+        console.error('[AgentLoop] Force-stopping task: too many warnings or step limit.');
+        sendToPanel({
+          type: 'execution_event',
+          state: 'TASK_FAIL',
+          taskId: exec.taskId,
+          details: { error: 'Agent stuck — unable to complete this task. Please try a more specific instruction or complete this step manually.' }
+        });
+        await finalizeTaskRecording(exec, 'failed', { error: `Stuck after ${exec.step} steps, ${exec.loopWarningCount} warnings` });
+        exec.cancelled = true;
+        break;
+      }
+
+      const warningText = warningParts.join('\n');
+      if (exec.loopWarningCount >= 3) {
+        exec.messageManager.addMessage('user', `${warningText}\n\n🛑 CRITICAL: You have been warned ${exec.loopWarningCount} times. You MUST call the "ask_user" tool NOW to ask the user for help. Explain what you've tried and ask the user to guide you. Do NOT attempt another click or find.`);
+      } else if (isHardWarning) {
+        exec.messageManager.addMessage('user', `${warningText}\n\nYou MUST try a COMPLETELY different approach:\n- If coordinate clicks don't work, use computer tool with "ref" parameter instead (e.g. ref: "ref_36"). Ref-based clicks resolve live coordinates and are more reliable.\n- If ref clicks also fail, use javascript_tool to click programmatically: document.querySelector(...).click()\n- If you've tried 3+ different approaches, call ask_user.`);
+      } else {
+        // Soft warning: repetition detected but page is still changing — gentle hint
+        exec.messageManager.addMessage('user', `${warningText}\n\nHint: Try using ref-based clicking (computer with ref parameter) instead of coordinates, or try a different element.`);
+      }
+    } else if (exec.loopWarningCount > 0 && !isStagnant) {
+      // Reset warning count only if page is actually changing
+      exec.loopWarningCount = 0;
+    }
+
     // 4. Call LLM (with native tool_use for Anthropic providers)
+    console.log('[AgentLoop] Calling LLM with settings:', { provider: exec.settings.provider, model: exec.settings.model, baseUrl: exec.settings.baseUrl, enableThinking: exec.settings.enableThinking, messageCount: exec.messageManager.length, imageCount: images.length });
     sendToPanel({
       type: 'execution_event',
       state: 'THINKING',
@@ -296,14 +395,62 @@ async function runExecutor() {
     });
 
     // Pass tool schemas for native tool calling
-    const toolSchemas = useNativeTools ? getToolSchemas() : null;
+    // IMPORTANT: Use screenshot IMAGE dimensions (not viewport) for Display: line
+    // The LLM picks coordinates based on the image it sees, so coordinates must match image pixels
+    const toolSchemas = useNativeTools ? getToolSchemas({
+      viewportWidth: screenshot?.width,
+      viewportHeight: screenshot?.height
+    }) : null;
 
-    const llmResponse = await callLLM(
-      exec.messageManager.getMessages(),
-      exec.settings,
-      true, // useVision
-      toolSchemas
-    );
+    let llmResponse;
+    try {
+      // Throttle streaming THINKING events to max 1 per second
+      let _lastThinkingEmit = 0;
+      llmResponse = await callLLM(
+        exec.messageManager.getMessages(),
+        exec.settings,
+        true, // useVision
+        toolSchemas,
+        {
+          stream: !!exec.settings.enableStreaming,
+          onThinking: (delta, full) => {
+            if (exec.cancelled) return; // stop emitting after cancel
+            const now = Date.now();
+            if (now - _lastThinkingEmit < 1000) return; // throttle
+            _lastThinkingEmit = now;
+            sendToPanel({
+              type: 'execution_event',
+              state: 'THINKING',
+              taskId: exec.taskId,
+              step: exec.step,
+              details: { message: full.substring(0, 200) }
+            });
+          }
+        }
+      );
+    } catch (llmError) {
+      console.error('[AgentLoop] LLM call failed:', llmError.message, llmError);
+      exec.consecutiveFailures++;
+      sendToPanel({
+        type: 'execution_event',
+        state: 'STEP_FAIL',
+        taskId: exec.taskId,
+        step: exec.step,
+        details: { error: `LLM error: ${llmError.message}` }
+      });
+      if (exec.consecutiveFailures >= exec.maxFailures) {
+        sendToPanel({
+          type: 'execution_event',
+          state: 'TASK_FAIL',
+          taskId: exec.taskId,
+          details: { error: `LLM failed ${exec.consecutiveFailures} times: ${llmError.message}` }
+        });
+        await finalizeTaskRecording(exec, 'failed', { error: llmError.message });
+        exec.cancelled = true;
+        break;
+      }
+      continue;
+    }
 
     if (exec.cancelled) break;
 
@@ -358,6 +505,21 @@ async function runExecutor() {
           params: llmResponse.toolUse.parameters
         }));
       }
+    } else if (llmResponse && typeof llmResponse === 'object' && !llmResponse.toolUse) {
+      // Model returned no tool call — this means "done" per Claude 1.0.56 architecture.
+      // "Loop continues until Claude returns a response with no tool calls."
+      const responseText = llmResponse.text || 'Task completed.';
+      exec.messageManager.addMessage('assistant', responseText);
+
+      sendToPanel({
+        type: 'execution_event',
+        state: 'TASK_OK',
+        taskId: exec.taskId,
+        details: { finalAnswer: responseText }
+      });
+      await finalizeTaskRecording(exec, 'completed', { finalAnswer: responseText });
+      exec.cancelled = true;
+      break;
     } else {
       // Legacy text-based JSON response (Ollama or fallback)
       const responseText = typeof llmResponse === 'string' ? llmResponse : '';
@@ -389,14 +551,50 @@ async function runExecutor() {
       }
     });
 
-    // 6. Execute tool
+    // 6. Execute tool (with permission check)
     const toolName = parsed.tool_use.name;
     const toolParams = parsed.tool_use.parameters || {};
     const context = { tabId: exec.tabId, exec, cdp };
 
-    // 6a. Execute the tool (no loop/stuck detection — model reasons from screenshots)
+    // 6a. Permission check before execution
     let toolResult;
-    toolResult = await executeTool(toolName, toolParams, context);
+    const currentDomain = _extractDomainFromTab(currentTab);
+
+    // Check permission via permission-manager
+    const permType = permissionManager.getToolPermType(toolName, toolParams);
+    const permCheck = await permissionManager.checkPermission(currentDomain, permType, toolUseId);
+
+    if (!permCheck.granted) {
+      // Permission denied — return error tool_result
+      toolResult = {
+        success: false,
+        error: `Permission denied: ${permCheck.reason || 'Action not allowed on this domain.'}`
+      };
+      sendToPanel({
+        type: 'execution_event',
+        state: 'PERMISSION_DENIED',
+        taskId: exec.taskId,
+        step: exec.step,
+        details: { tool: toolName, domain: currentDomain, permType, reason: permCheck.reason }
+      });
+    } else {
+      // URL verification for mutating actions (prevent cross-domain attacks)
+      const isMutating = ['CLICK', 'TYPE', 'UPLOAD_IMAGE'].includes(permType);
+      if (isMutating && currentDomain) {
+        const urlCheck = await permissionManager.verifyUrlDomain(exec.tabId, currentDomain);
+        if (!urlCheck.verified) {
+          toolResult = {
+            success: false,
+            error: urlCheck.reason || 'Domain changed during action execution.'
+          };
+        }
+      }
+
+      // Execute the tool if no permission/verification error
+      if (!toolResult) {
+        toolResult = await executeTool(toolName, toolParams, context);
+      }
+    }
 
     // Adaptive page settle — matches Claude's approach:
     // Wait minMs first, then poll up to maxMs checking page readiness
@@ -407,8 +605,10 @@ async function runExecutor() {
 
     if (exec.cancelled) break;
 
-    // 6b. Record action result (minimal — no state change tracking)
+    // 6b. Record action result and track action history for loop detection
     stateManager.recordActionResult(toolName, toolParams, toolResult.success, toolResult.message || toolResult.error || '');
+    exec.actionHistory.push({ tool: toolName, params: JSON.stringify(toolParams), step: exec.step });
+    if (exec.actionHistory.length > 10) exec.actionHistory.shift();
     finalizeRecordingStep(stepRecord, {
       outcome: toolResult.success ? 'success' : 'failed',
       success: toolResult.success,
@@ -470,7 +670,15 @@ async function runExecutor() {
       exec.messageManager.addMessage('user', `Tool result (${toolName}): ${resultSummary}`);
     }
 
-    // (No action history tracking — model relies on screenshots)
+    // Inject tab context as system-reminder if tabs changed (Claude-style)
+    if (tabGroupManager.hasTabContextChanged() && ['navigate', 'tabs_create', 'switch_tab', 'close_tab'].includes(toolName)) {
+      const tabReminder = await tabGroupManager.buildTabContextReminder();
+      if (tabReminder) {
+        exec.messageManager.addMessage('user', `<system-reminder>\n${tabReminder}\n</system-reminder>`);
+      }
+    }
+
+    // (Action history tracked above for loop detection)
   }
 
   // Max steps reached
@@ -481,6 +689,211 @@ async function runExecutor() {
       taskId: exec.taskId,
       details: { error: `Max steps (${exec.maxSteps}) reached` }
     });
+    await finalizeTaskRecording(exec, 'failed', { error: 'Max steps reached' });
+  }
+}
+
+// ========== Quick Mode Loop ==========
+
+async function _runQuickModeLoop(exec) {
+  const { sendToPanel } = exec;
+
+  // Get viewport for Quick Mode system prompt
+  const viewport = await cdp.getViewport(exec.tabId);
+  const quickSystemPrompt = getQuickModeSystemPrompt(viewport.width, viewport.height);
+
+  // Initialize message history with Quick Mode system prompt
+  exec.messageManager.initMessages(quickSystemPrompt, _getEffectiveTask(exec));
+
+  while (exec.step < exec.maxSteps && !exec.cancelled) {
+    // Handle pause
+    while (exec.paused && !exec.cancelled) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (exec.cancelled) break;
+
+    // Handle pending follow-ups
+    const hasUpdate = _flushFollowUps(exec);
+    if (hasUpdate) {
+      exec.messageManager.addMessage('user', `[USER UPDATE] ${exec.latestUserUpdate}`);
+    }
+
+    exec.step++;
+    sendToPanel({
+      type: 'execution_event',
+      state: 'STEP_START',
+      taskId: exec.taskId,
+      step: exec.step,
+      maxSteps: exec.maxSteps
+    });
+
+    // Wait for page stabilization
+    await _ensureContentScriptsReady(exec.tabId);
+    await new Promise(r => setTimeout(r, 200));
+
+    // Get current tab
+    let currentTab = await _getCurrentTab(exec);
+    if (!currentTab) {
+      exec.consecutiveFailures++;
+      if (exec.consecutiveFailures >= exec.maxFailures) {
+        sendToPanel({ type: 'execution_event', state: 'TASK_FAIL', taskId: exec.taskId, details: { error: 'Cannot access any tab' } });
+        await finalizeTaskRecording(exec, 'failed', { error: 'No accessible tab' });
+        break;
+      }
+      continue;
+    }
+
+    const tabUrl = currentTab.url || '';
+    if (!tabUrl.startsWith('http://') && !tabUrl.startsWith('https://')) {
+      sendToPanel({ type: 'execution_event', state: 'TASK_FAIL', taskId: exec.taskId, details: { error: `Cannot interact with ${tabUrl}` } });
+      exec.cancelled = true;
+      break;
+    }
+
+    // Take screenshot
+    const screenshot = await _takeScreenshot(exec.tabId);
+
+    // Build state message (compact)
+    const stateMessage = `[Tab ${exec.tabId}] ${tabUrl}\nStep ${exec.step}/${exec.maxSteps}`;
+    const images = [];
+    if (screenshot?.base64) {
+      images.push(`data:image/${screenshot.format || 'jpeg'};base64,${screenshot.base64}`);
+    }
+    exec.messageManager.addMessage('user', stateMessage, images);
+
+    // Proactive compaction
+    if (exec.step % 5 === 0) {
+      exec.messageManager.compactIfNeeded();
+    }
+
+    // Call LLM in Quick Mode (no tools, with stop sequence)
+    sendToPanel({
+      type: 'execution_event',
+      state: 'THINKING',
+      taskId: exec.taskId,
+      step: exec.step,
+      details: { message: 'Quick Mode thinking...' }
+    });
+
+    let llmResponse;
+    try {
+      let _lastThinkingEmit = 0;
+      llmResponse = await callLLM(
+        exec.messageManager.getMessages(),
+        exec.settings,
+        true, // useVision
+        null, // no tool schemas for Quick Mode
+        {
+          quickMode: true,
+          stream: !!exec.settings.enableStreaming,
+          onThinking: (delta, full) => {
+            if (exec.cancelled) return; // stop emitting after cancel
+            const now = Date.now();
+            if (now - _lastThinkingEmit < 1000) return;
+            _lastThinkingEmit = now;
+            sendToPanel({
+              type: 'execution_event',
+              state: 'THINKING',
+              taskId: exec.taskId,
+              step: exec.step,
+              details: { message: full.substring(0, 200) }
+            });
+          }
+        }
+      );
+    } catch (llmError) {
+      console.error('[AgentLoop/Quick] LLM call failed:', llmError.message);
+      exec.consecutiveFailures++;
+      if (exec.consecutiveFailures >= exec.maxFailures) {
+        sendToPanel({ type: 'execution_event', state: 'TASK_FAIL', taskId: exec.taskId, details: { error: llmError.message } });
+        await finalizeTaskRecording(exec, 'failed', { error: llmError.message });
+        exec.cancelled = true;
+        break;
+      }
+      continue;
+    }
+
+    if (exec.cancelled) break;
+    exec.consecutiveFailures = 0;
+
+    const responseText = llmResponse?.text || '';
+    exec.messageManager.addMessage('assistant', responseText);
+
+    // Parse Quick Mode commands
+    const { thinking, commands } = parseQuickModeResponse(responseText);
+
+    if (commands.length === 0) {
+      // No commands = model chose to end
+      const formatted = formatCrabResponse(responseText || 'Task completed.', 'success');
+      sendToPanel({ type: 'execution_event', state: 'TASK_OK', taskId: exec.taskId, details: { finalAnswer: formatted } });
+      await finalizeTaskRecording(exec, 'completed', { finalAnswer: formatted });
+      exec.cancelled = true;
+      break;
+    }
+
+    // Emit thought
+    if (thinking) {
+      sendToPanel({
+        type: 'execution_event',
+        state: 'THINKING',
+        taskId: exec.taskId,
+        step: exec.step,
+        details: { message: thinking }
+      });
+    }
+
+    // Execute commands sequentially
+    const context = { tabId: exec.tabId, exec, cdp };
+    const { results, isDone, isAsk, finalText } = await executeQuickModeCommands(
+      commands, executeTool, context
+    );
+
+    // Emit action events
+    for (const r of results) {
+      sendToPanel({
+        type: 'execution_event',
+        state: 'ACTION',
+        taskId: exec.taskId,
+        step: exec.step,
+        details: { tool: r.tool, params: r.args, message: r.message || r.error }
+      });
+      // Track action history
+      exec.actionHistory.push({ tool: r.tool, params: JSON.stringify(r.args || {}), step: exec.step });
+      if (exec.actionHistory.length > 10) exec.actionHistory.shift();
+    }
+
+    // Add results summary to conversation
+    const resultSummary = results.map(r =>
+      `${r.tool}: ${r.success !== false ? 'OK' : 'FAIL'} ${r.message || r.error || ''}`
+    ).join('\n');
+    exec.messageManager.addMessage('user', `Results:\n${resultSummary}`);
+
+    // Handle done/ask
+    if (isDone) {
+      const formatted = formatCrabResponse(finalText, 'success');
+      sendToPanel({ type: 'execution_event', state: 'TASK_OK', taskId: exec.taskId, details: { finalAnswer: formatted } });
+      await finalizeTaskRecording(exec, 'completed', { finalAnswer: formatted });
+      exec.cancelled = true;
+      break;
+    }
+
+    if (isAsk) {
+      const question = CrabPersonality.formatQuestion(finalText);
+      sendToPanel({ type: 'execution_event', state: 'ASK_USER', taskId: exec.taskId, details: { question } });
+      exec.paused = true;
+      while (exec.paused && !exec.cancelled) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      continue;
+    }
+
+    // Adaptive page settle after batch
+    await _adaptivePageSettle(exec.tabId, 200, 500);
+  }
+
+  // Max steps reached
+  if (exec.step >= exec.maxSteps && !exec.cancelled) {
+    exec.sendToPanel({ type: 'execution_event', state: 'TASK_FAIL', taskId: exec.taskId, details: { error: `Max steps (${exec.maxSteps}) reached` } });
     await finalizeTaskRecording(exec, 'failed', { error: 'Max steps reached' });
   }
 }
@@ -534,9 +947,14 @@ async function _getCurrentTab(exec) {
 
 async function _takeScreenshot(tabId) {
   try {
-    return await cdp.screenshot(tabId, { format: 'jpeg', quality: 80 });
+    // Hide overlay before screenshot (Claude-style) so agent doesn't see its own UI
+    try { await chrome.tabs.sendMessage(tabId, { type: 'HIDE_FOR_TOOL_USE' }); } catch(e) {}
+    const result = await cdp.screenshot(tabId, { format: 'jpeg', quality: 80 });
+    try { await chrome.tabs.sendMessage(tabId, { type: 'SHOW_AFTER_TOOL_USE' }); } catch(e) {}
+    return result;
   } catch (e) {
     console.warn('[AgentLoop] Screenshot failed:', e.message);
+    try { await chrome.tabs.sendMessage(tabId, { type: 'SHOW_AFTER_TOOL_USE' }); } catch(e2) {}
     return null;
   }
 }
@@ -548,7 +966,7 @@ async function _getPageInfo(tabId) {
       func: () => {
         // Quick page info without full a11y tree
         const interactiveCount = document.querySelectorAll(
-          'a, button, input, select, textarea, [role="button"], [role="link"], [tabindex]'
+          'a, button, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="listbox"], [role="menu"], [tabindex]'
         ).length;
 
         return {
@@ -566,50 +984,26 @@ async function _getPageInfo(tabId) {
   }
 }
 
-function _buildStateMessage(exec, pageInfo, screenshot, tab, nativeToolUse = false, hasPreviousScreenshot = false) {
+function _buildStateMessage(exec, pageInfo, screenshot, tab, nativeToolUse = false) {
   const parts = [];
 
-  parts.push(`<current_state>`);
-  parts.push(`URL: ${pageInfo.url || tab.url || 'unknown'}`);
-  parts.push(`Title: ${pageInfo.title || tab.title || 'unknown'}`);
-  parts.push(`Interactive elements: ${pageInfo.elementCount || 0}`);
-  parts.push(`Step: ${exec.step}/${exec.maxSteps}`);
+  // Compact state format (Claude-style)
+  parts.push(`[Tab ${exec.tabId}] ${pageInfo.url || tab.url || 'unknown'}`);
+  parts.push(`Step ${exec.step}/${exec.maxSteps}`);
 
-  // Describe screenshots attached
-  if (hasPreviousScreenshot && screenshot?.success) {
-    parts.push(`Screenshots: 2 images attached`);
-    parts.push(`  - Image 1: PREVIOUS screenshot (before your last action)`);
-    parts.push(`  - Image 2: CURRENT screenshot (after your last action)`);
-    parts.push(`Compare them to verify if your action worked!`);
-  } else if (screenshot?.success) {
-    parts.push(`Screenshot: 1 image attached (${screenshot.width}x${screenshot.height})`);
-  }
-
-  parts.push(`</current_state>`);
-
-  // Add visual comparison instruction when we have 2 screenshots
-  if (hasPreviousScreenshot) {
-    parts.push(`\n<visual_verification>`);
-    parts.push(`Compare Image 1 (BEFORE) with Image 2 (AFTER):`);
-    parts.push(`- If they look THE SAME → your action FAILED, try different approach`);
-    parts.push(`- If page changed → action likely succeeded, continue`);
-    parts.push(`- If error/popup appeared → handle it first`);
-    parts.push(`</visual_verification>`);
-  }
-
-  parts.push(`\n<user_request>${_getEffectiveTask(exec)}</user_request>`);
-
-  // Add efficiency hints based on step count
+  // Only include user_request on first step — after that it's already in conversation history
   if (exec.step <= 1) {
-    parts.push(`\nAnalyze the screenshot and take action immediately.`);
-    parts.push(`For messaging tasks: click the input area → type → press Enter. Be fast and direct.`);
-  } else if (exec.step >= 4) {
-    parts.push(`\nYou have used ${exec.step} steps already. Be more direct - take the action now instead of gathering more info.`);
+    parts.push(`\nTask: ${_getEffectiveTask(exec)}`);
+  }
+
+  // Only show warnings when actually needed (step > 15)
+  if (exec.step >= 15) {
+    parts.push(`\n⚠️ ${exec.step} steps used. Wrap up or call ask_user/done.`);
   }
 
   // Only add JSON format instruction for non-native-tool providers
   if (!nativeToolUse) {
-    parts.push(`Respond with JSON: {"thought": {...}, "tool_use": {"name": "...", "parameters": {...}}}`);
+    parts.push(`\nRespond with JSON: {"thought": {...}, "tool_use": {"name": "...", "parameters": {...}}}`);
   }
 
   return parts.join('\n');
@@ -785,6 +1179,56 @@ async function _adaptivePageSettle(tabId, minMs, maxMs) {
       break;
     }
     await new Promise(r => setTimeout(r, 50));
+  }
+}
+
+/**
+ * Detect repeated identical actions in recent history.
+ * Returns a warning string if 3+ similar actions found, null otherwise.
+ * For computer tool clicks, normalizes coordinates to 20px grid to catch "almost same" clicks.
+ */
+function _detectRepetition(history) {
+  if (history.length < 3) return null;
+  const last5 = history.slice(-5);
+  const keyCount = {};
+  for (const a of last5) {
+    // Normalize key: for computer clicks, use tool+action+ref as key
+    // For coordinate clicks, bucket to 50px grid (was 20px — too aggressive)
+    let key;
+    try {
+      const params = JSON.parse(a.params);
+      if (a.tool === 'computer' && params.ref) {
+        // Ref-based clicks: same ref + same action = repetition
+        key = `${a.tool}:${params.action}:${params.ref}`;
+      } else if (a.tool === 'computer' && params.coordinate && Array.isArray(params.coordinate)) {
+        // Coordinate clicks: 50px grid to catch truly identical clicks
+        const nx = Math.round(params.coordinate[0] / 50) * 50;
+        const ny = Math.round(params.coordinate[1] / 50) * 50;
+        key = `${a.tool}:${params.action}:[${nx},${ny}]`;
+      } else if (a.tool === 'find') {
+        key = `${a.tool}:${params.query || params.text || ''}`;
+      } else {
+        key = `${a.tool}:${a.params}`;
+      }
+    } catch {
+      key = `${a.tool}:${a.params}`;
+    }
+    keyCount[key] = (keyCount[key] || 0) + 1;
+    if (keyCount[key] >= 3) {
+      return `⚠️ LOOP DETECTED: You performed "${a.tool}" with similar parameters ${keyCount[key]} times in the last 5 actions. STOP repeating. Try a COMPLETELY DIFFERENT approach: use ref-based clicking (computer with ref parameter), javascript_tool, or call done/ask_user if you are stuck.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract domain from a tab object.
+ */
+function _extractDomainFromTab(tab) {
+  try {
+    return new URL(tab.url || '').hostname;
+  } catch {
+    return null;
   }
 }
 

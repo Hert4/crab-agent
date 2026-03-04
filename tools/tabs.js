@@ -1,28 +1,36 @@
 /**
  * Tabs Tools - Manage browser tabs: list context, create, switch, close.
+ * Uses TabGroupManager when available for session-scoped tab management.
  */
+
+import { tabGroupManager } from '../core/tab-group-manager.js';
 
 export const tabsContextTool = {
   name: 'tabs_context',
-  description: 'Get information about all open browser tabs. Returns tab IDs, URLs, titles, and which tab is active. Call this before any action that needs a tabId.',
-  parameters: {
-    windowId: {
-      type: 'number',
-      description: 'Optional window ID to filter tabs. Defaults to current window.'
-    }
-  },
+  description: 'Get context information about all tabs in the current session. Returns tab IDs, URLs, and titles.',
+  parameters: {},
 
   async execute(params, _context) {
     try {
-      const queryOpts = {};
-      if (params.windowId) {
-        queryOpts.windowId = params.windowId;
-      } else {
-        queryOpts.currentWindow = true;
+      // If tab group manager has an active session, use it (Claude-style)
+      if (tabGroupManager.getTabCount() > 0) {
+        const tabContext = await tabGroupManager.getTabContext();
+        const lines = tabContext.map(t =>
+          `${t.isMain ? '→ ' : '  '}[tab ${t.id}] "${t.title}" - ${t.url}`
+        );
+        const activeTab = tabContext.find(t => t.active);
+        return {
+          success: true,
+          content: `Session tabs (${tabContext.length}):\n${lines.join('\n')}`,
+          tabs: tabContext,
+          activeTabId: activeTab?.id || null,
+          count: tabContext.length,
+          message: `${tabContext.length} tabs in session. Active: tab ${activeTab?.id || 'none'}`
+        };
       }
 
-      const tabs = await chrome.tabs.query(queryOpts);
-
+      // Fallback: query all tabs in current window
+      const tabs = await chrome.tabs.query({ currentWindow: true });
       const tabInfos = tabs.map(tab => ({
         id: tab.id,
         url: tab.url || tab.pendingUrl || '',
@@ -33,11 +41,9 @@ export const tabsContextTool = {
         windowId: tab.windowId
       }));
 
-      // Build readable content for LLM
       const lines = tabInfos.map(t =>
         `${t.active ? '→ ' : '  '}[tab ${t.id}] "${t.title}" - ${t.url}${t.status === 'loading' ? ' (loading...)' : ''}`
       );
-
       const activeTab = tabInfos.find(t => t.active);
 
       return {
@@ -56,7 +62,7 @@ export const tabsContextTool = {
 
 export const tabsCreateTool = {
   name: 'tabs_create',
-  description: 'Create a new browser tab. Optionally specify a URL to open.',
+  description: 'Create a new empty tab in the current session.',
   parameters: {
     url: {
       type: 'string',
@@ -70,19 +76,25 @@ export const tabsCreateTool = {
 
   async execute(params, _context) {
     try {
-      const createOpts = {
-        active: params.active !== false
-      };
-      if (params.url) {
-        let url = params.url;
-        if (!url.startsWith('http') && !url.startsWith('chrome')) {
-          url = 'https://' + url;
-        }
-        createOpts.url = url;
+      // Use tab group manager if session is active
+      if (tabGroupManager.getTabCount() > 0) {
+        const result = await tabGroupManager.createTab(params.url || null);
+        return {
+          success: true,
+          tabId: result.tabId,
+          url: result.url,
+          message: `Created new tab ${result.tabId} in session${params.url ? ': ' + params.url : ''}`
+        };
       }
 
+      // Fallback: basic tab creation
+      const createOpts = { active: params.active !== false };
+      if (params.url) {
+        let url = params.url;
+        if (!url.startsWith('http') && !url.startsWith('chrome')) url = 'https://' + url;
+        createOpts.url = url;
+      }
       const tab = await chrome.tabs.create(createOpts);
-
       return {
         success: true,
         tabId: tab.id,

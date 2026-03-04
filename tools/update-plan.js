@@ -1,20 +1,37 @@
 /**
- * Update Plan Tool - Agent explicitly updates its execution plan.
- * Stored in execution state and displayed in UI.
+ * Update Plan Tool - Present plan to user for approval.
+ * Aligned with Claude spec:
+ *   - domains: array of domains to visit (auto-authorized on approval)
+ *   - approach: array of 3-7 high-level action descriptions
+ *   - Integrates with permission-manager for domain pre-authorization
+ *   - Also keeps legacy plan text + status + progress for backward compat
  */
+
+import { permissionManager } from '../core/permission-manager.js';
 
 export const updatePlanTool = {
   name: 'update_plan',
-  description: 'Update the execution plan for the current task. Use this to record your strategy, track progress, and communicate your approach. The plan is shown in the UI so the user can see your progress.',
+  description: 'Present a plan to the user for approval before taking actions. List the domains you will visit and your high-level approach. Once approved, listed domains are pre-authorized for navigation.',
   parameters: {
+    domains: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'List of domains to visit (approved when user accepts the plan).'
+    },
+    approach: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'High-level description of actions. 3-7 items.'
+    },
+    // Legacy params (backward compat)
     plan: {
       type: 'string',
-      description: 'The current plan text. Use markdown with checkboxes for steps: "- [x] Done step\\n- [ ] Next step".'
+      description: 'Legacy: plan text with markdown checkboxes.'
     },
     status: {
       type: 'string',
       enum: ['planning', 'executing', 'blocked', 'almost_done'],
-      description: 'Current phase of execution. Default "executing".'
+      description: 'Current phase of execution. Default "planning".'
     },
     progress: {
       type: 'number',
@@ -23,36 +40,83 @@ export const updatePlanTool = {
   },
 
   async execute(params, context) {
-    if (!params.plan) return { success: false, error: 'plan parameter required.' };
+    // Require at least domains+approach (Claude format) or plan (legacy format)
+    if (!params.domains && !params.approach && !params.plan) {
+      return { success: false, error: 'Either (domains + approach) or plan parameter required.' };
+    }
 
     const plan = {
-      text: params.plan,
-      status: params.status || 'executing',
+      domains: params.domains || [],
+      approach: params.approach || [],
+      // Legacy fields
+      text: params.plan || (params.approach ? params.approach.map((s, i) => `${i + 1}. ${s}`).join('\n') : ''),
+      status: params.status || 'planning',
       progress: typeof params.progress === 'number' ? Math.max(0, Math.min(100, params.progress)) : null,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      approved: false
     };
 
-    // Store in execution context if available
+    // Store in execution context
     if (context.exec) {
       context.exec.currentPlan = plan;
     }
 
-    // Notify sidepanel via message
+    // If in "follow_a_plan" permission mode, send plan for approval
+    // The sidepanel will show the plan and let user approve/reject
     try {
       await chrome.runtime.sendMessage({
         type: 'plan_updated',
-        plan
+        plan,
+        requiresApproval: permissionManager.mode === 'follow_a_plan'
       });
     } catch (e) {
-      // Sidepanel might not be open - that's fine
+      // Sidepanel might not be open
     }
+
+    // If in skip_all mode, auto-authorize domains immediately
+    if (permissionManager.mode === 'skip_all_permission_checks') {
+      for (const domain of plan.domains) {
+        permissionManager.grantPermission(domain, 'NAVIGATE', 'always');
+        permissionManager.grantPermission(domain, 'READ_PAGE_CONTENT', 'always');
+        permissionManager.grantPermission(domain, 'CLICK', 'always');
+        permissionManager.grantPermission(domain, 'TYPE', 'always');
+      }
+      plan.approved = true;
+    }
+
+    // Build readable summary
+    const domainList = plan.domains.length > 0
+      ? `\nDomains: ${plan.domains.join(', ')}`
+      : '';
+    const approachList = plan.approach.length > 0
+      ? `\nApproach:\n${plan.approach.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`
+      : '';
 
     return {
       success: true,
       plan,
-      message: `Plan updated (${plan.status}${plan.progress != null ? `, ${plan.progress}%` : ''})`
+      message: `Plan submitted for approval.${domainList}${approachList}`,
+      requiresApproval: permissionManager.mode === 'follow_a_plan'
     };
   }
 };
+
+/**
+ * Called when user approves the plan — pre-authorize all listed domains.
+ * Should be called from background.js when receiving plan_approved message.
+ */
+export function approvePlan(plan) {
+  if (!plan || !plan.domains) return;
+
+  for (const domain of plan.domains) {
+    permissionManager.grantPermission(domain, 'NAVIGATE', 'always');
+    permissionManager.grantPermission(domain, 'READ_PAGE_CONTENT', 'always');
+    permissionManager.grantPermission(domain, 'CLICK', 'always');
+    permissionManager.grantPermission(domain, 'TYPE', 'always');
+  }
+
+  plan.approved = true;
+  console.log(`[UpdatePlan] Plan approved. Pre-authorized ${plan.domains.length} domains:`, plan.domains);
+}
 
 export default updatePlanTool;

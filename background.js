@@ -21,6 +21,9 @@ import {
   getCurrentExecution
 } from './core/agent-loop.js';
 import { gifCreatorTool } from './tools/gif-creator.js';
+import { tabGroupManager } from './core/tab-group-manager.js';
+import { permissionManager } from './core/permission-manager.js';
+import { approvePlan } from './tools/update-plan.js';
 
 // ========== Side Panel Connection ==========
 
@@ -50,14 +53,28 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onMessage.addListener(async (message) => {
     try {
+      console.log('[Crab-Agent] Received message:', message.type, message.type === 'new_task' ? { task: message.task, provider: message.settings?.provider, model: message.settings?.model, baseUrl: message.settings?.baseUrl } : '');
       switch (message.type) {
         case 'new_task':
+          console.log('[Crab-Agent] Starting new_task handler...');
+          // Initialize tab group for this session
+          {
+            const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (activeTab) {
+              const sessionId = `session_${Date.now()}`;
+              await tabGroupManager.initSession(activeTab.id, sessionId);
+              tabGroupManager.showLoading();
+            }
+          }
           await handleNewTask(
             message.task,
             message.settings,
             message.images || [],
             sendToPanel
           );
+          // Update tab group indicator on completion
+          tabGroupManager.showDone();
+          console.log('[Crab-Agent] new_task handler completed');
           break;
 
         case 'follow_up_task':
@@ -81,6 +98,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
         case 'cancel_task':
           cancelExecution();
+          tabGroupManager.showError();
           sendToPanel({
             type: 'execution_event',
             state: 'TASK_CANCEL',
@@ -155,6 +173,41 @@ chrome.runtime.onConnect.addListener((port) => {
             resumeExecution();
           }
           break;
+
+        case 'plan_approved': {
+          // User approved the agent's plan — pre-authorize listed domains
+          const exec = getCurrentExecution();
+          if (exec?.currentPlan) {
+            approvePlan(exec.currentPlan);
+            permissionManager.approvePlan(exec.currentPlan.domains || []);
+          }
+          break;
+        }
+
+        case 'plan_rejected': {
+          // User rejected the plan — cancel execution
+          cancelExecution();
+          tabGroupManager.showError();
+          sendToPanel({
+            type: 'execution_event',
+            state: 'TASK_CANCEL',
+            taskId: getCurrentExecution()?.taskId,
+            details: { message: 'Plan rejected by user' }
+          });
+          break;
+        }
+
+        case 'set_permission_mode': {
+          // User changed permission mode in settings
+          permissionManager.setMode(message.mode);
+          break;
+        }
+
+        case 'permission_response': {
+          // User granted/denied a specific permission prompt
+          // This is handled via the askUser callback set in agent-loop
+          break;
+        }
       }
     } catch (error) {
       console.error('[Crab-Agent] Message handler error:', error);
@@ -206,6 +259,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   cdp.release(tabId);
+  tabGroupManager.removeTab(tabId);
 });
 
 // ========== Helper Functions ==========
@@ -256,5 +310,13 @@ async function _handleScreenshot() {
 
 // ========== Startup ==========
 
-console.log('[Crab-Agent] Background service worker loaded (Claude-style architecture v2.2)');
-console.log('[Crab-Agent] Modules: agent-loop, cdp-manager, tools(19)');
+// Restore tab group session if service worker restarted
+tabGroupManager.restoreSession().then(restored => {
+  if (restored) console.log('[Crab-Agent] Restored tab group session');
+});
+
+// Load domain rules for permission manager
+permissionManager.loadDomainRules();
+
+console.log('[Crab-Agent] Background service worker loaded (Claude-style architecture v2.3)');
+console.log('[Crab-Agent] Modules: agent-loop, cdp-manager, permission-manager, tab-group-manager, tools(21)');

@@ -5,7 +5,7 @@
  */
 
 const DEFAULT_TIMEOUT_MS = 120000;
-const DEFAULT_MAX_TOKENS = 4096;
+const DEFAULT_MAX_TOKENS = 10000;
 
 let currentAbortController = null;
 
@@ -15,9 +15,10 @@ let currentAbortController = null;
  * @param {Object} settings - Provider settings
  * @param {boolean} useVision - Whether to include images
  * @param {Array} toolSchemas - Tool schemas for native tool_use (optional)
+ * @param {Object} extraOptions - { quickMode: boolean } for Quick Mode support
  * @returns {Object} { text, toolUse } - text response and/or structured tool_use
  */
-export async function callLLM(messages, settings, useVision = false, toolSchemas = null) {
+export async function callLLM(messages, settings, useVision = false, toolSchemas = null, extraOptions = {}) {
   let { provider, apiKey, model, baseUrl } = settings;
   const configuredTimeout = Number(settings?.llmTimeoutMs);
   const llmTimeoutMs = Number.isFinite(configuredTimeout)
@@ -43,7 +44,8 @@ export async function callLLM(messages, settings, useVision = false, toolSchemas
 
   // Determine if we should use native tool_use/function calling
   const hasTools = toolSchemas && toolSchemas.length > 0;
-  const useNativeTools = hasTools; // All providers that support it will use native tools
+  const isQuickMode = !!extraOptions.quickMode;
+  const useNativeTools = hasTools && !isQuickMode; // Quick Mode sends no tools
 
   switch (provider) {
     case 'openai':
@@ -95,9 +97,29 @@ export async function callLLM(messages, settings, useVision = false, toolSchemas
       throw new Error(`Unknown provider: ${provider}`);
   }
 
-  console.log('[LLM] Request:', { endpoint: endpoint?.substring(0, 80), provider, model, timeout: llmTimeoutMs, nativeTools: useNativeTools });
+  // Quick Mode: override tools with empty array and add stop sequences
+  if (isQuickMode) {
+    if (body.tools) delete body.tools;
+    if (body.tool_choice) delete body.tool_choice;
+    body.stop = ['\n<<END>>'];
+  }
 
-  // Execute request with timeout
+  console.log('[LLM] Request:', { endpoint: endpoint?.substring(0, 120), provider, model, timeout: llmTimeoutMs, nativeTools: useNativeTools, quickMode: isQuickMode, bodyKeys: Object.keys(body) });
+
+  // Determine if we should use streaming
+  const enableStreaming = !!extraOptions.stream && _isStreamableProvider(provider);
+  const onThinking = extraOptions.onThinking; // callback for partial text
+
+  if (enableStreaming) {
+    try {
+      return await _callLLMStreaming(endpoint, headers, body, provider, useNativeTools, isQuickMode, llmTimeoutMs, onThinking);
+    } catch (streamError) {
+      console.warn('[LLM] Streaming failed, falling back to non-streaming:', streamError.message);
+      // Fall through to non-streaming
+    }
+  }
+
+  // Execute request with timeout (non-streaming)
   let response;
   let abortedByTimeout = false;
   currentAbortController = new AbortController();
@@ -124,6 +146,7 @@ export async function callLLM(messages, settings, useVision = false, toolSchemas
   }
 
   const responseText = await response.text();
+  console.log('[LLM] Response status:', response.status, 'length:', responseText.length, 'preview:', responseText.substring(0, 200));
   if (!response.ok) {
     throw new Error(`LLM API error: ${response.status} - ${responseText.substring(0, 500)}`);
   }
@@ -140,6 +163,14 @@ export async function callLLM(messages, settings, useVision = false, toolSchemas
     throw new Error(`LLM provider error: ${errMsg}`);
   }
 
+  // Quick Mode: return raw text response (no tool parsing)
+  if (isQuickMode) {
+    const textContent = data.choices?.[0]?.message?.content
+      || (Array.isArray(data.content) ? data.content.filter(b => b.type === 'text').map(b => b.text).join('') : '')
+      || '';
+    return { text: textContent, toolUse: null, thinking: '', quickMode: true, _raw: data };
+  }
+
   // For native tool use: return structured result based on provider
   if (useNativeTools) {
     if (provider === 'anthropic' || provider === '_anthropic_via_openai_compat') {
@@ -148,13 +179,22 @@ export async function callLLM(messages, settings, useVision = false, toolSchemas
     if (provider === 'google') {
       const googleTool = _extractGoogleToolCall(data);
       if (googleTool) return googleTool;
-      // Fallback to text if no function call in response
+      // No function call in response (model chose end_turn with tool_config:AUTO)
+      const googleText = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+      if (googleText) {
+        return { text: googleText, toolUse: null, thinking: '', _raw: data };
+      }
     }
     // OpenAI / OpenRouter / openai-compatible
     if (['openai', 'openai-compatible', 'openrouter'].includes(provider)) {
       const openaiTool = _extractOpenAIToolCall(data);
       if (openaiTool) return openaiTool;
-      // Fallback to text if no tool_calls in response
+      // No tool_calls in response (model chose end_turn with tool_choice:auto)
+      // Return structured object so agent-loop can handle it properly
+      const textContent = data.choices?.[0]?.message?.content || '';
+      if (textContent) {
+        return { text: textContent, toolUse: null, thinking: '', _raw: data };
+      }
     }
   }
 
@@ -170,6 +210,152 @@ export function cancelLLMRequest() {
     currentAbortController.abort();
     currentAbortController = null;
   }
+}
+
+// ========== Streaming Support ==========
+
+/**
+ * Check if a provider supports SSE streaming.
+ */
+function _isStreamableProvider(provider) {
+  return ['openai', 'openai-compatible', 'openrouter'].includes(provider);
+}
+
+/**
+ * Call LLM with SSE streaming. Accumulates text and tool_calls from chunks.
+ * Emits partial text via onThinking callback for real-time UI updates.
+ * @returns {Object} Same format as non-streaming: { text, toolUse, thinking, _raw }
+ */
+async function _callLLMStreaming(endpoint, headers, body, provider, useNativeTools, isQuickMode, timeoutMs, onThinking) {
+  // Enable streaming in the request body
+  const streamBody = { ...body, stream: true };
+
+  currentAbortController = new AbortController();
+  let abortedByTimeout = false;
+  const timeoutId = setTimeout(() => {
+    abortedByTimeout = true;
+    currentAbortController?.abort();
+  }, timeoutMs);
+
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(streamBody),
+      signal: currentAbortController.signal
+    });
+  } catch (fetchError) {
+    clearTimeout(timeoutId);
+    currentAbortController = null;
+    if (fetchError.name === 'AbortError') {
+      throw new Error(abortedByTimeout ? `Stream timed out after ${Math.round(timeoutMs / 1000)}s` : 'Stream cancelled');
+    }
+    throw new Error(`Stream network error: ${fetchError.message}`);
+  }
+
+  if (!response.ok) {
+    clearTimeout(timeoutId);
+    currentAbortController = null;
+    const errText = await response.text();
+    throw new Error(`Stream API error: ${response.status} - ${errText.substring(0, 500)}`);
+  }
+
+  // Parse SSE stream
+  let accumulatedText = '';
+  let toolCallId = null;
+  let toolCallName = '';
+  let toolCallArgs = '';
+  let finishReason = null;
+
+  try {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process complete SSE lines
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete last line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.substring(6).trim();
+        if (data === '[DONE]') continue;
+
+        let chunk;
+        try {
+          chunk = JSON.parse(data);
+        } catch {
+          continue; // Skip malformed chunks
+        }
+
+        const delta = chunk.choices?.[0]?.delta;
+        if (!delta) continue;
+
+        // Accumulate text content
+        if (delta.content) {
+          accumulatedText += delta.content;
+          // Emit partial text for real-time UI
+          if (onThinking && typeof onThinking === 'function') {
+            try { onThinking(delta.content, accumulatedText); } catch(e) {}
+          }
+        }
+
+        // Accumulate tool calls
+        if (delta.tool_calls && delta.tool_calls.length > 0) {
+          const tc = delta.tool_calls[0];
+          if (tc.id) toolCallId = tc.id;
+          if (tc.function?.name) toolCallName = tc.function.name;
+          if (tc.function?.arguments) toolCallArgs += tc.function.arguments;
+        }
+
+        // Track finish reason
+        if (chunk.choices?.[0]?.finish_reason) {
+          finishReason = chunk.choices[0].finish_reason;
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    currentAbortController = null;
+  }
+
+  // Build response in same format as non-streaming
+  if (isQuickMode) {
+    return { text: accumulatedText, toolUse: null, thinking: '', quickMode: true };
+  }
+
+  if (useNativeTools && toolCallName) {
+    let parsedArgs = {};
+    try {
+      parsedArgs = JSON.parse(toolCallArgs || '{}');
+    } catch (e) {
+      console.warn('[LLM/Stream] Failed to parse tool_calls arguments:', e.message);
+    }
+    return {
+      text: accumulatedText,
+      toolUse: {
+        id: toolCallId || `call_${Date.now()}`,
+        name: toolCallName,
+        parameters: parsedArgs
+      },
+      thinking: ''
+    };
+  }
+
+  // No tool call — return text (may signal end of task)
+  if (useNativeTools) {
+    return { text: accumulatedText, toolUse: null, thinking: '' };
+  }
+
+  // Legacy text mode
+  return accumulatedText;
 }
 
 // ========== Provider-specific request builders ==========
@@ -381,12 +567,15 @@ function _buildOpenAIRequest(messages, model, apiKey, baseUrl, useVision, claude
   // Add function calling tools
   if (toolSchemas) {
     body.tools = _buildOpenAITools(toolSchemas);
-    body.tool_choice = 'required'; // Force tool use
+    body.tool_choice = 'auto'; // Let model decide (matches Claude 1.0.56)
   }
 
-  if (claudeThinking) {
-    body.thinking = { type: 'enabled', budget_tokens: thinkingBudget };
-  }
+  // Only send thinking parameter when the endpoint actually supports it.
+  // OpenAI-compatible gateways (non-Anthropic) typically don't understand the thinking field.
+  // Note: this function is only called for non-Anthropic OpenAI-compatible endpoints.
+  // Anthropic-endpoint detection routes to _buildAnthropicRequest instead.
+  // Skip thinking here — gateway will ignore or error on unknown field.
+  // (Thinking is properly handled in _buildAnthropicRequest for direct Anthropic API)
 
   return {
     endpoint,
@@ -400,22 +589,26 @@ function _buildAnthropicRequest(messages, model, apiKey, baseUrl, useVision, cla
   const sysMsg = messages.find(m => m.role === 'system');
   const nonSysMsgs = messages.filter(m => m.role !== 'system');
 
+  // Determine if thinking will actually be used
+  const effectiveThinking = claudeThinking;
+
   const body = {
     model,
     system: sysMsg?.content || '',
     messages: _formatMessagesWithImages(nonSysMsgs, useVision, 'anthropic'),
-    temperature: claudeThinking ? 1 : 0.1,
+    temperature: effectiveThinking ? 1 : 0.1,
     max_tokens: DEFAULT_MAX_TOKENS
   };
 
   // Add native tools if provided
   if (toolSchemas) {
     body.tools = _buildAnthropicTools(toolSchemas);
-    // Force tool use - the model must call a tool
-    body.tool_choice = { type: 'any' };
+    // Let model decide — matches Claude 1.0.56 behavior
+    body.tool_choice = { type: 'auto' };
   }
 
-  if (claudeThinking) {
+  // With tool_choice='auto', thinking is compatible with tools
+  if (effectiveThinking) {
     body.thinking = { type: 'enabled', budget_tokens: thinkingBudget };
     body.max_tokens = Math.max(body.max_tokens, thinkingBudget + 512);
   }
@@ -449,7 +642,7 @@ function _buildGoogleRequest(messages, model, apiKey, useVision, toolSchemas = n
   // Add function declarations
   if (toolSchemas) {
     body.tools = _buildGoogleTools(toolSchemas);
-    body.tool_config = { function_calling_config: { mode: 'ANY' } };
+    body.tool_config = { function_calling_config: { mode: 'AUTO' } };
   }
 
   return { endpoint, headers: { 'Content-Type': 'application/json' }, body };
@@ -467,7 +660,7 @@ function _buildOpenRouterRequest(messages, model, apiKey, useVision, toolSchemas
   // Add function calling tools (OpenRouter uses OpenAI format)
   if (toolSchemas) {
     body.tools = _buildOpenAITools(toolSchemas);
-    body.tool_choice = 'required';
+    body.tool_choice = 'auto';
   }
 
   return {

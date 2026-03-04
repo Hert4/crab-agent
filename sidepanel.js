@@ -252,6 +252,7 @@ const elements = {
   visionToggle: document.getElementById('visionToggle'),
   autoScrollToggle: document.getElementById('autoScrollToggle'),
   thinkingToggle: document.getElementById('thinkingToggle'),
+  quickModeToggle: document.getElementById('quickModeToggle'),
   recordingToggle: document.getElementById('recordingToggle'),
   recordingNote: document.getElementById('recordingNote'),
   thinkingBudgetInput: document.getElementById('thinkingBudgetInput'),
@@ -386,12 +387,20 @@ async function init() {
  * Connect to background service worker
  */
 function connectToBackground() {
-  port = chrome.runtime.connect({ name: 'side-panel' });
+  try {
+    port = chrome.runtime.connect({ name: 'side-panel' });
+  } catch (e) {
+    console.error('Failed to connect to background:', e);
+    addSystemMessage(`Cannot connect to background service worker: ${e.message}. Try reloading the extension.`, 'error');
+    return;
+  }
 
   port.onMessage.addListener(handleBackgroundMessage);
 
   port.onDisconnect.addListener(() => {
-    console.log('Disconnected from background');
+    const lastError = chrome.runtime.lastError?.message || 'unknown reason';
+    console.log('Disconnected from background:', lastError);
+    addSystemMessage(`Background disconnected (${lastError}). Reconnecting...`, 'error');
     setTimeout(connectToBackground, 1000);
   });
 }
@@ -859,6 +868,14 @@ function setupEventListeners() {
     saveSettings();
   });
 
+  if (elements.quickModeToggle) {
+    elements.quickModeToggle.addEventListener('click', () => {
+      elements.quickModeToggle.classList.toggle('active');
+      settings.quickMode = elements.quickModeToggle.classList.contains('active');
+      saveSettings();
+    });
+  }
+
   if (elements.recordingToggle) {
     elements.recordingToggle.addEventListener('click', () => {
       elements.recordingToggle.classList.toggle('active');
@@ -886,6 +903,7 @@ function setupEventListeners() {
     settings.provider = elements.providerSelect.value;
     updateModelOptions();
     updateCustomModelVisibility();
+    updateThinkingControls();
     saveSettings();
   });
 
@@ -900,12 +918,14 @@ function setupEventListeners() {
     settings.model = elements.modelSelect.value;
     updateModelButton();
     updateCustomModelVisibility();
+    updateThinkingControls();
     saveSettings();
   });
 
   // Custom model change
   elements.customModelInput.addEventListener('change', () => {
     settings.customModel = elements.customModelInput.value;
+    updateThinkingControls();
     saveSettings();
   });
 
@@ -2386,6 +2406,9 @@ async function saveSettings() {
   settings.useVision = elements.visionToggle.classList.contains('active');
   settings.autoScroll = elements.autoScrollToggle.classList.contains('active');
   settings.enableThinking = elements.thinkingToggle.classList.contains('active');
+  if (elements.quickModeToggle) {
+    settings.quickMode = elements.quickModeToggle.classList.contains('active');
+  }
   if (elements.recordingToggle) {
     settings.enableTaskRecording = elements.recordingToggle.classList.contains('active');
   }
@@ -2417,6 +2440,9 @@ function updateSettingsUI() {
   elements.visionToggle.classList.toggle('active', settings.useVision);
   elements.autoScrollToggle.classList.toggle('active', settings.autoScroll);
   elements.thinkingToggle.classList.toggle('active', !!settings.enableThinking);
+  if (elements.quickModeToggle) {
+    elements.quickModeToggle.classList.toggle('active', !!settings.quickMode);
+  }
   if (elements.recordingToggle) {
     elements.recordingToggle.classList.toggle('active', settings.enableTaskRecording !== false);
   }
@@ -2461,6 +2487,13 @@ function updateThinkingControls() {
   const enabled = !!settings.enableThinking;
   if (elements.thinkingBudgetInput) {
     elements.thinkingBudgetInput.disabled = !enabled;
+  }
+  // Show warning when thinking is enabled with a Claude model
+  const thinkingNote = document.getElementById('thinkingNote');
+  if (thinkingNote) {
+    const model = settings.customModel || settings.model || '';
+    const isClaudeModel = /claude/i.test(model);
+    thinkingNote.style.display = (enabled && isClaudeModel) ? 'block' : 'none';
   }
 }
 

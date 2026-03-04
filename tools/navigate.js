@@ -1,27 +1,35 @@
 /**
  * Navigate Tool - URL navigation, go back/forward, Google search.
+ * Aligned with Claude extension spec:
+ *   - url + tabId params (Claude-style: "back"/"forward" as url values)
+ *   - Domain safety classification check
+ *   - Auto-prepends https://
+ *   - Also supports search_google as extra feature (via action param)
  */
+
+import { permissionManager } from '../core/permission-manager.js';
 
 export const navigateTool = {
   name: 'navigate',
-  description: 'Navigate to a URL, go back/forward in browser history, or search Google. Use tabs_context first if you need a valid tab ID.',
+  description: 'Navigate to a URL, or go forward/back in browser history. Use "back"/"forward" as the url value for history navigation. Supports Google search via action="search_google".',
   parameters: {
+    url: {
+      type: 'string',
+      description: 'URL to navigate to. Use "forward"/"back" for history navigation.'
+    },
+    tabId: {
+      type: 'number',
+      description: 'Tab ID to navigate. Required.'
+    },
+    // Keep search_google as extended feature beyond Claude spec
     action: {
       type: 'string',
       enum: ['go_to_url', 'go_back', 'go_forward', 'search_google'],
-      description: 'Navigation action to perform.'
-    },
-    url: {
-      type: 'string',
-      description: 'URL to navigate to. Required for "go_to_url".'
+      description: 'Navigation action. Usually inferred from url. Use "search_google" for web searches.'
     },
     query: {
       type: 'string',
       description: 'Search query. Required for "search_google".'
-    },
-    tabId: {
-      type: 'number',
-      description: 'Tab ID to navigate. Use tabs_context to get valid IDs.'
     }
   },
 
@@ -29,13 +37,43 @@ export const navigateTool = {
     const tabId = params.tabId || context.tabId;
     if (!tabId) return { success: false, error: 'No tabId. Use tabs_context first.' };
 
-    const action = params.action || (params.url ? 'go_to_url' : params.query ? 'search_google' : 'go_to_url');
+    // Claude-style: detect action from url value
+    let action = params.action;
+    const urlVal = (params.url || '').trim().toLowerCase();
+
+    if (!action) {
+      if (urlVal === 'back') action = 'go_back';
+      else if (urlVal === 'forward') action = 'go_forward';
+      else if (params.query) action = 'search_google';
+      else action = 'go_to_url';
+    }
 
     switch (action) {
       case 'go_to_url': {
         let url = params.url;
-        if (!url) return { success: false, error: 'url parameter required for go_to_url' };
-        if (!url.startsWith('http')) url = 'https://' + url;
+        if (!url) return { success: false, error: 'url parameter required' };
+        if (url === 'back' || url === 'forward') {
+          // Handle misrouted back/forward
+          return action === 'back'
+            ? await _goBack(tabId)
+            : await _goForward(tabId);
+        }
+        if (!url.startsWith('http') && !url.startsWith('chrome')) url = 'https://' + url;
+
+        // Domain safety check
+        try {
+          const domain = new URL(url).hostname;
+          const safety = permissionManager.checkDomainAccess(domain);
+          if (!safety.allowed) {
+            return {
+              success: false,
+              error: `Navigation blocked: domain "${domain}" is classified as ${safety.category}. ${safety.reason || ''}`
+            };
+          }
+        } catch (e) {
+          // URL parsing failed - let it try anyway
+        }
+
         try {
           await chrome.tabs.update(tabId, { url });
           await _waitForPageLoad(tabId);
@@ -45,25 +83,11 @@ export const navigateTool = {
         }
       }
 
-      case 'go_back': {
-        try {
-          await chrome.tabs.goBack(tabId);
-          await _waitForPageLoad(tabId);
-          return { success: true, message: 'Navigated back' };
-        } catch (e) {
-          return { success: false, error: `Go back failed: ${e.message}` };
-        }
-      }
+      case 'go_back':
+        return await _goBack(tabId);
 
-      case 'go_forward': {
-        try {
-          await chrome.tabs.goForward(tabId);
-          await _waitForPageLoad(tabId);
-          return { success: true, message: 'Navigated forward' };
-        } catch (e) {
-          return { success: false, error: `Go forward failed: ${e.message}` };
-        }
-      }
+      case 'go_forward':
+        return await _goForward(tabId);
 
       case 'search_google': {
         const query = params.query;
@@ -83,6 +107,26 @@ export const navigateTool = {
     }
   }
 };
+
+async function _goBack(tabId) {
+  try {
+    await chrome.tabs.goBack(tabId);
+    await _waitForPageLoad(tabId);
+    return { success: true, message: 'Navigated back' };
+  } catch (e) {
+    return { success: false, error: `Go back failed: ${e.message}` };
+  }
+}
+
+async function _goForward(tabId) {
+  try {
+    await chrome.tabs.goForward(tabId);
+    await _waitForPageLoad(tabId);
+    return { success: true, message: 'Navigated forward' };
+  } catch (e) {
+    return { success: false, error: `Go forward failed: ${e.message}` };
+  }
+}
 
 async function _waitForPageLoad(tabId, timeoutMs = 15000) {
   const start = Date.now();

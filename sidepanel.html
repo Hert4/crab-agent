@@ -208,6 +208,16 @@
             <span>Enable Thinking</span>
             <div class="toggle-switch" id="thinkingToggle"></div>
           </div>
+          <div class="settings-note" id="thinkingNote" style="display: none; color: var(--warning-color, #e8a838);">
+            ⚠ Thinking is auto-disabled during agent execution because Claude API does not allow thinking + forced tool use simultaneously. Thinking only works for simple chat without tools.
+          </div>
+          <div class="settings-toggle">
+            <span>Quick Mode</span>
+            <div class="toggle-switch" id="quickModeToggle"></div>
+          </div>
+          <div class="settings-note" id="quickModeNote">
+            Uses compact single-letter commands instead of tool_use protocol for lower latency. Auto-enabled for Claude models if not set.
+          </div>
           <div class="settings-toggle">
             <span>Task Recording</span>
             <div class="toggle-switch active" id="recordingToggle"></div>

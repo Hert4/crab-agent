@@ -8,6 +8,9 @@ export class MessageManager {
   constructor(maxTokens = 128000) {
     this.messages = [];
     this.maxTokens = maxTokens;
+    this._compactionThreshold = 25 * 1024 * 1024; // 25MB
+    this._tokensSaved = 0;
+    this._compactedCount = 0;
   }
 
   /**
@@ -123,10 +126,174 @@ export class MessageManager {
   }
 
   /**
+   * Estimate the total byte size of all messages (for compaction threshold check).
+   * @returns {number} Approximate byte size
+   */
+  _estimateTotalBytes() {
+    let total = 0;
+    for (const msg of this.messages) {
+      total += this._estimateMsgBytes(msg);
+    }
+    return total;
+  }
+
+  /**
+   * Estimate byte size of a single message.
+   */
+  _estimateMsgBytes(msg) {
+    let bytes = 0;
+    const content = msg.content;
+    if (typeof content === 'string') {
+      bytes += content.length;
+    } else if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block.type === 'text') bytes += (block.text || '').length;
+        else if (block.type === 'image') bytes += (block.source?.data || '').length;
+        else if (block.type === 'tool_use') bytes += JSON.stringify(block.input || {}).length;
+        else if (block.type === 'tool_result') bytes += (typeof block.content === 'string' ? block.content.length : JSON.stringify(block.content || '').length);
+        else bytes += JSON.stringify(block).length;
+      }
+    } else if (content) {
+      bytes += JSON.stringify(content).length;
+    }
+    // base64 images in .images array are ~1.37x the raw image size
+    if (msg.images) {
+      for (const img of msg.images) {
+        if (typeof img === 'string') bytes += img.length;
+        else if (img?.data) bytes += img.data.length;
+        else bytes += JSON.stringify(img).length;
+      }
+    }
+    return bytes;
+  }
+
+  /**
+   * Compact messages when total size exceeds threshold (~25MB).
+   * Extracts base64 images from older messages and replaces with placeholders.
+   * Keeps the most recent 6 messages untouched.
+   * Claude-style: only strips images, preserves text/tool_use/tool_result content.
+   */
+  compactIfNeeded() {
+    const totalBytes = this._estimateTotalBytes();
+    if (totalBytes < this._compactionThreshold) return false;
+
+    console.log(`[MessageManager] Compacting: ${(totalBytes / 1024 / 1024).toFixed(1)}MB exceeds ${(this._compactionThreshold / 1024 / 1024).toFixed(0)}MB threshold`);
+
+    const KEEP_RECENT = 6;
+    const protectedStart = 0; // system prompt
+    const protectedEnd = Math.max(0, this.messages.length - KEEP_RECENT);
+    let saved = 0;
+
+    // Walk messages from oldest to newest (skip system + recent)
+    for (let i = 1; i < protectedEnd; i++) {
+      const msg = this.messages[i];
+      saved += this._compactMessage(msg);
+    }
+
+    if (saved > 0) {
+      this._tokensSaved += Math.ceil(saved / 4); // rough token estimate
+      this._compactedCount++;
+      console.log(`[MessageManager] Compaction #${this._compactedCount}: removed ~${(saved / 1024).toFixed(0)}KB of base64 data (${this._tokensSaved} tokens saved total)`);
+    }
+
+    return saved > 0;
+  }
+
+  /**
+   * Compact a single message: strip base64 images, replace with placeholders.
+   * @returns {number} Bytes saved
+   */
+  _compactMessage(msg) {
+    let saved = 0;
+
+    // 1. Handle .images array (our custom format for screenshots)
+    if (msg.images && msg.images.length > 0) {
+      for (const img of msg.images) {
+        if (typeof img === 'string' && img.length > 1000) {
+          saved += img.length;
+        } else if (img?.data && img.data.length > 1000) {
+          saved += img.data.length;
+        }
+      }
+      const count = msg.images.length;
+      msg.images = [];
+      // Append placeholder to content
+      const placeholder = `[${count} image(s) removed for space]`;
+      if (typeof msg.content === 'string') {
+        if (!msg.content.includes('[image(s) removed')) {
+          msg.content += `\n${placeholder}`;
+        }
+      }
+    }
+
+    // 2. Handle structured content blocks (Anthropic format)
+    if (Array.isArray(msg.content)) {
+      const newContent = [];
+      for (const block of msg.content) {
+        if (block.type === 'image') {
+          // base64 image block - replace with text placeholder
+          const dataLen = (block.source?.data || '').length;
+          saved += dataLen;
+          newContent.push({
+            type: 'text',
+            text: '[screenshot removed for space]'
+          });
+        } else if (block.type === 'tool_result' && typeof block.content === 'string') {
+          // Check if tool_result contains embedded base64
+          const b64Regex = /data:image\/[a-z]+;base64,[A-Za-z0-9+/=]{1000,}/g;
+          const matches = block.content.match(b64Regex);
+          if (matches) {
+            let cleaned = block.content;
+            for (const match of matches) {
+              saved += match.length;
+              cleaned = cleaned.replace(match, '[base64 image removed for space]');
+            }
+            newContent.push({ ...block, content: cleaned });
+          } else {
+            newContent.push(block);
+          }
+        } else {
+          newContent.push(block);
+        }
+      }
+      msg.content = newContent;
+    }
+
+    // 3. Handle string content with embedded base64
+    if (typeof msg.content === 'string') {
+      const b64Regex = /data:image\/[a-z]+;base64,[A-Za-z0-9+/=]{1000,}/g;
+      const matches = msg.content.match(b64Regex);
+      if (matches) {
+        for (const match of matches) {
+          saved += match.length;
+          msg.content = msg.content.replace(match, '[base64 image removed for space]');
+        }
+      }
+    }
+
+    return saved;
+  }
+
+  /**
+   * Get compaction stats.
+   */
+  get compactionStats() {
+    return {
+      tokensSaved: this._tokensSaved,
+      compactedCount: this._compactedCount,
+      currentBytes: this._estimateTotalBytes(),
+      threshold: this._compactionThreshold
+    };
+  }
+
+  /**
    * Trim conversation to fit within token budget.
    * Keeps system prompt and recent messages.
    */
   trimToFit() {
+    // First try compaction (strip images) before dropping messages entirely
+    this.compactIfNeeded();
+
     // Rough estimate: 1 token ≈ 4 chars
     const estimateTokens = (msg) => {
       const content = msg.content;
