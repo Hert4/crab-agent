@@ -236,8 +236,7 @@ crab-agent/
 │   ├── permission-manager.js  # Domain-based permission system
 │   ├── tab-group-manager.js   # Tab group session management
 │   ├── quick-mode.js          # Compact text-based mode (opt-in)
-│   ├── reasoning-engine.js    # Reasoning/planning engine
-│   └── tool-executor.js       # Tool execution helper
+│   └── state-manager.js       # Action tracking + loop detection
 │
 ├── tools/                     # Tool modules (21 external + 2 internal)
 │   ├── index.js               # Registry + dispatcher
