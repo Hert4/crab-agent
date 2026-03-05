@@ -227,8 +227,8 @@ async function _handleClick(action, params, tabId, context) {
 async function _handleType(params, tabId) {
   if (!params.text) return { success: false, error: 'text parameter is required for type action' };
 
-  // If typing into a field, ensure it's focused first by clicking it
-  // Check if there's an active element, if not warn the caller
+  // Check if an input element is focused
+  let focusOk = false;
   try {
     const focusCheck = await chrome.scripting.executeScript({
       target: { tabId },
@@ -242,16 +242,41 @@ async function _handleType(params, tabId) {
       }
     });
     const focus = focusCheck?.[0]?.result;
-    if (!focus?.hasFocus) {
+    if (focus?.hasFocus) {
+      focusOk = true;
+    } else if (focus?.activeTag === 'iframe') {
       // iframe is a valid focus target for canvas apps (Google Docs, Sheets, etc.)
-      // CDP Input.dispatchKeyEvent works at browser level and reaches inside iframes
-      if (focus?.activeTag === 'iframe') {
-        console.log('[Computer] Active element is iframe (canvas/doc app) - CDP type will work via hardware-level events');
-      } else {
-        console.warn('[Computer] No input element is focused, type may fail. Active element:', focus?.activeTag);
+      console.log('[Computer] Active element is iframe (canvas/doc app) - CDP type will work via hardware-level events');
+      focusOk = true;
+    } else {
+      console.warn('[Computer] No input element is focused, active element:', focus?.activeTag);
+
+      // Auto-focus: if ref or coordinate provided, click it first to gain focus
+      if (params.ref || (params.coordinate && params.coordinate.length >= 2)) {
+        console.log('[Computer] Auto-clicking to focus before typing...');
+        if (params.ref) {
+          const resolved = await cdp.resolveRef(tabId, params.ref);
+          if (resolved) {
+            await cdp.click(tabId, resolved.x, resolved.y);
+            await new Promise(r => setTimeout(r, 200));
+            focusOk = true;
+          }
+        } else if (params.coordinate) {
+          await cdp.click(tabId, params.coordinate[0], params.coordinate[1]);
+          await new Promise(r => setTimeout(r, 200));
+          focusOk = true;
+        }
+      }
+
+      // If still no focus, return explicit error so model knows to click first
+      if (!focusOk) {
+        return {
+          success: false,
+          error: 'No input element is focused. Click on the target input/textarea first before typing, or provide ref/coordinate with the type action.'
+        };
       }
     }
-  } catch (e) { /* ignore focus check errors */ }
+  } catch (e) { /* ignore focus check errors, proceed anyway */ }
 
   return await cdp.type(tabId, params.text);
 }

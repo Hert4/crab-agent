@@ -43,6 +43,26 @@ export const javascriptTool = {
     // Ops mode params
     operations: {
       type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          op: { type: 'string', enum: ['click', 'dblclick', 'type', 'key', 'shortcut', 'drag', 'scroll', 'hover', 'move', 'wait'], description: 'Operation name.' },
+          x: { type: 'number', description: 'X coordinate.' },
+          y: { type: 'number', description: 'Y coordinate.' },
+          text: { type: 'string', description: '(type) Text to type.' },
+          keys: { type: 'string', description: '(key/shortcut) Key combo e.g. "Enter", "Control+a".' },
+          key: { type: 'string', description: '(key) Alias for keys.' },
+          combo: { type: 'string', description: '(shortcut) Alias for keys.' },
+          ms: { type: 'number', description: '(wait) Milliseconds to wait.' },
+          from: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, description: '(drag) Start point.' },
+          to: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, description: '(drag) End point.' },
+          direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: '(scroll) Scroll direction.' },
+          amount: { type: 'number', description: '(scroll) Scroll amount.' },
+          enter: { type: 'boolean', description: '(type) Press Enter after typing.' },
+          submit: { type: 'boolean', description: '(type) Alias for enter.' }
+        },
+        required: ['op']
+      },
       description: '(ops mode) Array of operations: [{op:"click", x, y}, {op:"type", text}, {op:"key", keys}, {op:"wait", ms}, {op:"drag", from:{x,y}, to:{x,y}}]'
     },
     // Common

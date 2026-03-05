@@ -52,6 +52,26 @@ Content blocks:
     },
     content: {
       type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['heading', 'paragraph', 'list', 'table', 'pagebreak', 'divider', 'code', 'chart'], description: 'Block type.' },
+          text: { type: 'string', description: 'Text content (heading, paragraph, code).' },
+          level: { type: 'number', description: '(heading) Heading level 1-3.' },
+          bold: { type: 'boolean', description: '(paragraph) Bold text.' },
+          italic: { type: 'boolean', description: '(paragraph) Italic text.' },
+          align: { type: 'string', enum: ['left', 'center', 'right'], description: '(paragraph) Text alignment.' },
+          style: { type: 'string', enum: ['bullet', 'number'], description: '(list) List style.' },
+          items: { type: 'array', items: { type: 'string' }, description: '(list) List items.' },
+          headers: { type: 'array', items: { type: 'string' }, description: '(table) Column headers.' },
+          rows: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: '(table) Table rows.' },
+          language: { type: 'string', description: '(code) Code language.' },
+          chartType: { type: 'string', enum: ['bar', 'line', 'pie', 'donut', 'horizontal_bar', 'stacked_bar', 'grouped_bar', 'area', 'radar'], description: '(chart) Chart type.' },
+          title: { type: 'string', description: '(chart) Chart title.' },
+          data: { type: 'object', description: '(chart) Chart data with labels and datasets.' }
+        },
+        required: ['type']
+      },
       description: 'Array of content blocks to render. Each block has a "type" field.',
       required: true
     },

@@ -85,10 +85,6 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
     currentPlan: null,
     recorder: null,
     actionHistory: [],
-    loopWarningCount: 0,
-    stagnationCount: 0,
-    lastDomHash: null,
-    lastUrl: null,
     sendToPanel
   };
 
@@ -290,39 +286,6 @@ async function runExecutor() {
     // 3. Get page accessibility tree (lightweight)
     const pageInfo = await _getPageInfo(exec.tabId);
 
-    // 3b. Track stagnation via DOM hash + URL (more reliable than screenshot base64 length)
-    if (exec.step > 1 && pageInfo.domHash) {
-      const lastAction = exec.actionHistory.length > 0 ? exec.actionHistory[exec.actionHistory.length - 1] : null;
-      const lastTool = lastAction?.tool || null;
-      // Tools that don't change the page DOM — stagnation check doesn't apply after these
-      const readOnlyTools = ['read_page', 'find', 'tabs_context', 'read_console_messages', 'read_network_requests', 'get_page_text', 'document_generator', 'update_plan', 'shortcuts_list'];
-      // Scroll actions just change viewport position, not DOM content
-      let wasScroll = false;
-      if (lastTool === 'computer' && lastAction?.params) {
-        try {
-          const lp = JSON.parse(lastAction.params);
-          if (lp.action === 'scroll' || lp.action === 'scroll_to') wasScroll = true;
-        } catch {}
-      }
-      const wasMutating = lastTool && !readOnlyTools.includes(lastTool) && !wasScroll;
-
-      const currentDomHash = pageInfo.domHash;
-      const currentUrl = pageInfo.url || tabUrl;
-
-      if (wasMutating && exec.lastDomHash !== null &&
-          currentDomHash === exec.lastDomHash && currentUrl === exec.lastUrl) {
-        exec.stagnationCount++;
-      } else if (wasMutating) {
-        exec.stagnationCount = 0; // Page changed after a mutating action, reset
-      }
-      // Scroll resets stagnation if viewport content is changing (DOM hash changes)
-      if (wasScroll && exec.lastDomHash !== null && currentDomHash !== exec.lastDomHash) {
-        exec.stagnationCount = 0;
-      }
-      exec.lastDomHash = currentDomHash;
-      exec.lastUrl = currentUrl;
-    }
-
     // Begin recording step
     const stepRecord = await beginRecordingStep(exec, {
       step: exec.step,
@@ -350,59 +313,10 @@ async function runExecutor() {
       exec.messageManager.compactIfNeeded();
     }
 
-    // Check for loops: parameter repetition, screenshot stagnation, and step budget
-    const repetitionWarning = _detectRepetition(exec.actionHistory);
-    const isStagnant = exec.stagnationCount >= 3;
-    const isOverBudget = exec.step >= 20;
-
-    // Only count as a real warning if page is stagnant or over budget
-    // Repetition alone is a soft hint (the page might still be changing)
-    const isHardWarning = isStagnant || isOverBudget;
-    const isSoftWarning = repetitionWarning && !isHardWarning;
-    const needsWarning = isHardWarning || isSoftWarning;
-
-    if (needsWarning) {
-      if (isHardWarning) {
-        exec.loopWarningCount++;
-      }
-      // Soft warnings don't increment the counter but still advise the agent
-
-      const warningParts = [];
-      if (repetitionWarning) warningParts.push(repetitionWarning);
-      if (isStagnant) warningParts.push(`⚠️ STAGNATION: The page has NOT changed for ${exec.stagnationCount} consecutive steps. Your actions are not having any effect.`);
-      if (isOverBudget) warningParts.push(`⚠️ STEP BUDGET: You have used ${exec.step}/${exec.maxSteps} steps. This task should take at most 10-15 steps. You are wasting steps.`);
-
-      console.warn(`[AgentLoop] Warning #${exec.loopWarningCount} (${isHardWarning ? 'HARD' : 'soft'}) at step ${exec.step}:`, warningParts.join(' | '));
-
-      if (exec.loopWarningCount >= 5 || exec.step >= 30) {
-        // Hard stop — force fail the task
-        console.error('[AgentLoop] Force-stopping task: too many warnings or step limit.');
-        sendToPanel({
-          type: 'execution_event',
-          state: 'TASK_FAIL',
-          taskId: exec.taskId,
-          details: { error: 'Agent stuck — unable to complete this task. Please try a more specific instruction or complete this step manually.' }
-        });
-        await finalizeTaskRecording(exec, 'failed', { error: `Stuck after ${exec.step} steps, ${exec.loopWarningCount} warnings` });
-        exec.cancelled = true;
-        break;
-      }
-
-      const warningText = warningParts.join('\n');
-      if (exec.loopWarningCount >= 3) {
-        exec.messageManager.addMessage('user', `${warningText}\n\n🛑 CRITICAL: You have been warned ${exec.loopWarningCount} times. You MUST call the "ask_user" tool NOW to ask the user for help. Explain what you've tried and ask the user to guide you. Do NOT attempt another click or find.`);
-      } else if (isHardWarning) {
-        exec.messageManager.addMessage('user', `${warningText}\n\nYou MUST try a COMPLETELY different approach:\n- If coordinate clicks don't work, use computer tool with "ref" parameter instead (e.g. ref: "ref_36"). Ref-based clicks resolve live coordinates and are more reliable.\n- If ref clicks also fail, use javascript_tool to click programmatically: document.querySelector(...).click()\n- If you've tried 3+ different approaches, call ask_user.`);
-      } else {
-        // Soft warning: repetition detected but page is still changing — gentle hint
-        exec.messageManager.addMessage('user', `${warningText}\n\nHint: Try using ref-based clicking (computer with ref parameter) instead of coordinates, or try a different element.`);
-      }
-    } else if (exec.loopWarningCount > 0 && !isStagnant) {
-      // Reset warning count only if page is actually changing
-      exec.loopWarningCount = 0;
-    }
-
     // 4. Call LLM (with native tool_use for Anthropic providers)
+    // NOTE: No force-stop or stuck detection here. Following Claude extension's
+    // architecture: the model decides when it's done (no tool_calls = done) or
+    // calls ask_user when it needs help. maxSteps is the only safety net.
     console.log('[AgentLoop] Calling LLM with settings:', { provider: exec.settings.provider, model: exec.settings.model, baseUrl: exec.settings.baseUrl, enableThinking: exec.settings.enableThinking, messageCount: exec.messageManager.length, imageCount: images.length });
     sendToPanel({
       type: 'execution_event',
@@ -623,7 +537,7 @@ async function runExecutor() {
 
     if (exec.cancelled) break;
 
-    // 6b. Record action result and track action history for loop detection
+    // 6b. Record action result and track action history
     stateManager.recordActionResult(toolName, toolParams, toolResult.success, toolResult.message || toolResult.error || '');
     exec.actionHistory.push({ tool: toolName, params: JSON.stringify(toolParams), step: exec.step });
     if (exec.actionHistory.length > 10) exec.actionHistory.shift();
@@ -751,7 +665,7 @@ async function runExecutor() {
       }
     }
 
-    // (Action history tracked above for loop detection)
+    // (Action history tracked above)
   }
 
   // Max steps reached
@@ -1268,53 +1182,6 @@ async function _adaptivePageSettle(tabId, minMs, maxMs) {
     }
     await new Promise(r => setTimeout(r, 50));
   }
-}
-
-/**
- * Detect repeated identical actions in recent history.
- * Returns a warning string if 3+ similar actions found, null otherwise.
- * For computer tool clicks, normalizes coordinates to 20px grid to catch "almost same" clicks.
- * Scroll actions are exempt — scrolling multiple times is normal behavior for reading long pages.
- */
-function _detectRepetition(history) {
-  if (history.length < 3) return null;
-  const last5 = history.slice(-5);
-  const keyCount = {};
-  for (const a of last5) {
-    // Normalize key: for computer clicks, use tool+action+ref as key
-    // For coordinate clicks, bucket to 50px grid (was 20px — too aggressive)
-    let key;
-    try {
-      const params = JSON.parse(a.params);
-
-      // Skip scroll/scroll_to actions — scrolling repeatedly is normal behavior
-      // when reading long pages or collecting data before document generation
-      if (a.tool === 'computer' && (params.action === 'scroll' || params.action === 'scroll_to')) {
-        continue;
-      }
-
-      if (a.tool === 'computer' && params.ref) {
-        // Ref-based clicks: same ref + same action = repetition
-        key = `${a.tool}:${params.action}:${params.ref}`;
-      } else if (a.tool === 'computer' && params.coordinate && Array.isArray(params.coordinate)) {
-        // Coordinate clicks: 50px grid to catch truly identical clicks
-        const nx = Math.round(params.coordinate[0] / 50) * 50;
-        const ny = Math.round(params.coordinate[1] / 50) * 50;
-        key = `${a.tool}:${params.action}:[${nx},${ny}]`;
-      } else if (a.tool === 'find') {
-        key = `${a.tool}:${params.query || params.text || ''}`;
-      } else {
-        key = `${a.tool}:${a.params}`;
-      }
-    } catch {
-      key = `${a.tool}:${a.params}`;
-    }
-    keyCount[key] = (keyCount[key] || 0) + 1;
-    if (keyCount[key] >= 3) {
-      return `⚠️ LOOP DETECTED: You performed "${a.tool}" with similar parameters ${keyCount[key]} times in the last 5 actions. STOP repeating. Try a COMPLETELY DIFFERENT approach: use ref-based clicking (computer with ref parameter), javascript_tool, or call done/ask_user if you are stuck.`;
-    }
-  }
-  return null;
 }
 
 /**

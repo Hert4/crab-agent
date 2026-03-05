@@ -434,6 +434,7 @@ function _formatMessagesWithImages(messages, useVision, imageFormat = 'openai') 
 /**
  * Convert tool schemas to Anthropic tools format.
  * Maps crab-agent tool definitions → Anthropic API tool schema.
+ * Also ensures array types have 'items' for cross-provider compatibility.
  */
 function _buildAnthropicTools(toolSchemas) {
   return toolSchemas.map(tool => {
@@ -460,10 +461,19 @@ function _buildAnthropicTools(toolSchemas) {
       if (spec.maximum !== undefined) prop.maximum = spec.maximum;
       if (spec.minItems !== undefined) prop.minItems = spec.minItems;
       if (spec.maxItems !== undefined) prop.maxItems = spec.maxItems;
+      // Copy nested properties for object types
+      if (spec.properties) prop.properties = spec.properties;
+      if (spec.required && typeof spec.required !== 'boolean') prop.required = spec.required;
+
+      // Safety: array type should have 'items'
+      if (prop.type === 'array' && !prop.items) {
+        prop.items = { type: 'object' };
+      }
+
       properties[name] = prop;
 
       // Mark as required if spec says so, or if it's the primary action/command parameter
-      if (spec.required || name === 'action') {
+      if (spec.required === true || name === 'action') {
         required.push(name);
       }
     }
@@ -482,6 +492,7 @@ function _buildAnthropicTools(toolSchemas) {
 /**
  * Convert tool schemas to OpenAI function calling format.
  * Used by OpenAI, OpenRouter, and openai-compatible providers.
+ * Ensures all array types have 'items' (required by OpenAI strict schema validation).
  */
 function _buildOpenAITools(toolSchemas) {
   return toolSchemas.map(tool => {
@@ -496,9 +507,20 @@ function _buildOpenAITools(toolSchemas) {
       if (spec.items) prop.items = spec.items;
       if (spec.minimum !== undefined) prop.minimum = spec.minimum;
       if (spec.maximum !== undefined) prop.maximum = spec.maximum;
+      // Copy nested properties for object types
+      if (spec.properties) prop.properties = spec.properties;
+      if (spec.required && typeof spec.required !== 'boolean') prop.required = spec.required;
+      if (spec.minItems !== undefined) prop.minItems = spec.minItems;
+      if (spec.maxItems !== undefined) prop.maxItems = spec.maxItems;
+
+      // OpenAI strict validation: array type MUST have 'items'. Auto-fix if missing.
+      if (prop.type === 'array' && !prop.items) {
+        prop.items = { type: 'object' };
+      }
+
       properties[name] = prop;
 
-      if (spec.required || name === 'action') {
+      if (spec.required === true || name === 'action') {
         required.push(name);
       }
     }

@@ -26,16 +26,34 @@ Uses clipboard paste (Ctrl/Cmd+V) for reliable injection into canvas editors.`,
     // paste_table
     data: {
       type: 'array',
+      items: { type: 'array', items: { type: 'string' } },
       description: '(paste_table) 2D array of cell values. First row = headers if options.headers=true.'
     },
     options: { type: 'object', description: '(paste_table) Options: { headers: boolean, border: boolean }' },
     // paste_flowchart
     nodes: {
       type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'Node label text.' },
+          type: { type: 'string', enum: ['start', 'end', 'process', 'decision', 'diamond', 'circle', 'database', 'io', 'document'], description: 'Node shape type.' }
+        },
+        required: ['label']
+      },
       description: '(paste_flowchart) Array of { label, type }. Types: start, end, process, decision, diamond, circle, database, io, document.'
     },
     edges: {
       type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          from: { type: 'number', description: 'Source node index.' },
+          to: { type: 'number', description: 'Target node index.' },
+          label: { type: 'string', description: 'Optional edge label.' }
+        },
+        required: ['from', 'to']
+      },
       description: '(paste_flowchart) Array of { from: index, to: index, label? }.'
     },
     // smart_paste
