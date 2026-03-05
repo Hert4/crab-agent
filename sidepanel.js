@@ -379,19 +379,29 @@ async function init() {
   // Start with a new task ready
   startNewTask();
 
-  // Start heartbeat
-  setInterval(sendHeartbeat, 30000);
+  // Start heartbeat — send every 20s to keep service worker alive.
+  // Chrome MV3 kills idle service workers after ~30s, so 20s gives safe margin.
+  setInterval(sendHeartbeat, 20000);
 }
 
 /**
  * Connect to background service worker
  */
+let _reconnectAttempts = 0;
 function connectToBackground() {
   try {
     port = chrome.runtime.connect({ name: 'side-panel' });
+    _reconnectAttempts = 0; // Reset on successful connect
   } catch (e) {
     console.error('Failed to connect to background:', e);
-    addSystemMessage(`Cannot connect to background service worker: ${e.message}. Try reloading the extension.`, 'error');
+    _reconnectAttempts++;
+    if (_reconnectAttempts <= 5) {
+      const delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 10000);
+      addSystemMessage(`Cannot connect to background. Retrying in ${delay / 1000}s... (attempt ${_reconnectAttempts}/5)`, 'error');
+      setTimeout(connectToBackground, delay);
+    } else {
+      addSystemMessage(`Cannot connect to background service worker: ${e.message}. Try reloading the extension.`, 'error');
+    }
     return;
   }
 
@@ -3183,11 +3193,17 @@ function formatFileSize(bytes) {
 }
 
 /**
- * Send heartbeat to keep connection alive
+ * Send heartbeat to keep connection alive.
+ * Also acts as a keep-alive ping to prevent Chrome from killing the service worker.
  */
 function sendHeartbeat() {
   if (port) {
-    port.postMessage({ type: 'heartbeat' });
+    try {
+      port.postMessage({ type: 'heartbeat' });
+    } catch (e) {
+      // Port may have disconnected, onDisconnect handler will reconnect
+      console.warn('Heartbeat failed:', e.message);
+    }
   }
 }
 

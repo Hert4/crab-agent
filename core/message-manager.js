@@ -115,10 +115,17 @@ export class MessageManager {
 
   /**
    * Remove the last user state message (for re-prompting).
+   * Skips tool_result messages (role=user with tool_result blocks, or role=tool)
+   * to avoid breaking tool_calls/tool_response pairing.
    */
   removeLastStateMessage() {
     for (let i = this.messages.length - 1; i >= 0; i--) {
-      if (this.messages[i].role === 'user') {
+      const msg = this.messages[i];
+      if (msg.role === 'user') {
+        // Skip if this is a tool_result message (Anthropic format)
+        if (Array.isArray(msg.content) && msg.content.some(b => b.type === 'tool_result')) {
+          continue;
+        }
         this.messages.splice(i, 1);
         break;
       }
@@ -180,7 +187,6 @@ export class MessageManager {
     console.log(`[MessageManager] Compacting: ${(totalBytes / 1024 / 1024).toFixed(1)}MB exceeds ${(this._compactionThreshold / 1024 / 1024).toFixed(0)}MB threshold`);
 
     const KEEP_RECENT = 6;
-    const protectedStart = 0; // system prompt
     const protectedEnd = Math.max(0, this.messages.length - KEEP_RECENT);
     let saved = 0;
 
@@ -317,11 +323,75 @@ export class MessageManager {
 
     let totalTokens = this.messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
 
-    // Keep first (system) and last 6 messages, trim middle
+    // Keep first (system) and last 6 messages, trim middle.
+    // IMPORTANT: Remove tool_calls + tool_response pairs together to avoid
+    // "tool_call_id not found" errors from OpenAI-compatible APIs.
     while (totalTokens > this.maxTokens && this.messages.length > 8) {
       const removeIdx = 1; // After system prompt
-      totalTokens -= estimateTokens(this.messages[removeIdx]);
-      this.messages.splice(removeIdx, 1);
+      const msg = this.messages[removeIdx];
+
+      // Check if this is an assistant message with tool_calls (OpenAI format)
+      const hasToolCalls = msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0;
+
+      // Check if this is an assistant message with tool_use content blocks (Anthropic format)
+      const hasToolUseBlocks = msg.role === 'assistant' && Array.isArray(msg.content) &&
+        msg.content.some(b => b.type === 'tool_use');
+
+      if (hasToolCalls || hasToolUseBlocks) {
+        // Count how many follow-up tool response messages to remove together
+        let pairCount = 1; // Start with the assistant message itself
+        const toolCallIds = new Set();
+
+        if (hasToolCalls) {
+          for (const tc of msg.tool_calls) {
+            if (tc.id) toolCallIds.add(tc.id);
+          }
+        } else if (hasToolUseBlocks) {
+          for (const block of msg.content) {
+            if (block.type === 'tool_use' && block.id) toolCallIds.add(block.id);
+          }
+        }
+
+        // Look ahead for matching tool response messages
+        for (let j = removeIdx + 1; j < this.messages.length && toolCallIds.size > 0; j++) {
+          const next = this.messages[j];
+          // OpenAI format: role=tool with tool_call_id
+          if (next.role === 'tool' && next.tool_call_id && toolCallIds.has(next.tool_call_id)) {
+            toolCallIds.delete(next.tool_call_id);
+            pairCount++;
+            continue;
+          }
+          // Anthropic format: role=user with tool_result content blocks
+          if (next.role === 'user' && Array.isArray(next.content)) {
+            let found = false;
+            for (const block of next.content) {
+              if (block.type === 'tool_result' && block.tool_use_id && toolCallIds.has(block.tool_use_id)) {
+                toolCallIds.delete(block.tool_use_id);
+                found = true;
+              }
+            }
+            if (found) {
+              pairCount++;
+              continue;
+            }
+          }
+          break; // Stop if next message is not a matching tool response
+        }
+
+        // Remove the entire pair (assistant + tool responses) together
+        for (let k = 0; k < pairCount; k++) {
+          totalTokens -= estimateTokens(this.messages[removeIdx]);
+          this.messages.splice(removeIdx, 1);
+        }
+      } else if (msg.role === 'tool' || (msg.role === 'user' && Array.isArray(msg.content) && msg.content.some(b => b.type === 'tool_result'))) {
+        // Orphan tool response without a preceding assistant tool_calls — remove it
+        totalTokens -= estimateTokens(msg);
+        this.messages.splice(removeIdx, 1);
+      } else {
+        // Regular message (user text, assistant text) — safe to remove individually
+        totalTokens -= estimateTokens(this.messages[removeIdx]);
+        this.messages.splice(removeIdx, 1);
+      }
     }
   }
 

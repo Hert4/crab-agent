@@ -66,12 +66,14 @@ chrome.runtime.onConnect.addListener((port) => {
               tabGroupManager.showLoading();
             }
           }
+          startKeepAlive(); // Keep service worker alive during task
           await handleNewTask(
             message.task,
             message.settings,
             message.images || [],
             sendToPanel
           );
+          stopKeepAlive();
           // Update tab group indicator on completion
           tabGroupManager.showDone();
           console.log('[Crab-Agent] new_task handler completed');
@@ -87,18 +89,21 @@ chrome.runtime.onConnect.addListener((port) => {
             }
           } else {
             // Start new task
+            startKeepAlive();
             await handleNewTask(
               message.task,
               message.settings || {},
               message.images || [],
               sendToPanel
             );
+            stopKeepAlive();
           }
           break;
 
         case 'cancel_task': {
           const cancelledExec = getCurrentExecution();
           cancelExecution();
+          stopKeepAlive();
           tabGroupManager.showError();
           sendToPanel({
             type: 'execution_event',
@@ -315,6 +320,28 @@ async function _handleScreenshot() {
 }
 
 // ========== Startup ==========
+
+// Keep-alive mechanism: prevent Chrome from killing service worker during task execution.
+// Chrome MV3 kills idle service workers after ~30s. During long LLM calls (30-60s+),
+// the worker may appear idle. This self-ping keeps it alive.
+let _keepAliveInterval = null;
+function startKeepAlive() {
+  if (_keepAliveInterval) return;
+  _keepAliveInterval = setInterval(() => {
+    if (isRunning()) {
+      // Self-ping to keep the service worker alive during task execution
+      chrome.runtime.getPlatformInfo(() => {});
+    } else {
+      stopKeepAlive();
+    }
+  }, 20000);
+}
+function stopKeepAlive() {
+  if (_keepAliveInterval) {
+    clearInterval(_keepAliveInterval);
+    _keepAliveInterval = null;
+  }
+}
 
 // Restore tab group session if service worker restarted
 tabGroupManager.restoreSession().then(restored => {

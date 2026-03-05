@@ -621,6 +621,17 @@ async function runExecutor() {
 
     // 7. Handle result
     if (toolResult.isDone) {
+      // Add tool response before ending (prevents orphan tool_calls if conversation is ever reused)
+      if (isNativeToolUse && toolUseId) {
+        const providerType = _getProviderType(exec.settings);
+        const doneSummary = toolResult.message || 'Task completed';
+        if (providerType === 'anthropic') {
+          exec.messageManager.addToolResult(toolUseId, doneSummary, !toolResult.success);
+        } else if (providerType === 'openai') {
+          exec.messageManager.addMessage('tool', doneSummary, [], { tool_call_id: toolUseId });
+        }
+      }
+
       const answer = toolResult.message || 'Task completed';
       const mood = toolResult.success !== false ? 'success' : 'failed';
       const formatted = formatCrabResponse(answer, mood);
@@ -637,6 +648,19 @@ async function runExecutor() {
     }
 
     if (toolResult.isAskUser) {
+      // IMPORTANT: Add tool response BEFORE pausing, otherwise the conversation
+      // will have an assistant message with tool_calls but no matching tool response,
+      // causing "tool_call_id not found" errors on the next LLM call.
+      if (isNativeToolUse && toolUseId) {
+        const askResultSummary = `User was asked: ${toolResult.question || 'Waiting for user input...'}`;
+        const providerType = _getProviderType(exec.settings);
+        if (providerType === 'anthropic') {
+          exec.messageManager.addToolResult(toolUseId, askResultSummary, false);
+        } else if (providerType === 'openai') {
+          exec.messageManager.addMessage('tool', askResultSummary, [], { tool_call_id: toolUseId });
+        }
+      }
+
       const question = CrabPersonality.formatQuestion(toolResult.question, toolResult.options);
       sendToPanel({
         type: 'execution_event',
