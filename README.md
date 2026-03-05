@@ -1,4 +1,4 @@
-# Crab-Agent v2.3
+# Crab-Agent v2.1.0
 
 ```
      ████████
@@ -222,7 +222,7 @@ user:      'Tool result (computer): Clicked at (350, 200)'
 
 ```
 crab-agent/
-├── manifest.json              # Chrome MV3 manifest (v2.0.0)
+├── manifest.json              # Chrome MV3 manifest (v2.1.0)
 ├── background.js              # Orchestrator (~300 lines)
 ├── content.js                 # Page-level message bridge
 ├── sidepanel.html/.js         # Chat UI
