@@ -1,5 +1,5 @@
 /**
- * Tool Registry - Central dispatcher for all Crab-Agent tools (21 external + 2 internal).
+ * Tool Registry - Central dispatcher for all Crab-Agent tools (22 external + 2 internal).
  * Each tool has: name, description, parameters schema, execute function.
  */
 
@@ -20,6 +20,7 @@ import { shortcutsListTool, shortcutsExecuteTool } from './shortcuts.js';
 import { javascriptTool } from './javascript-tool.js';
 import { canvasToolkitTool } from './canvas-toolkit.js';
 import { codeEditorTool } from './code-editor.js';
+import { documentGeneratorTool } from './document-generator.js';
 
 /**
  * All registered tools.
@@ -46,7 +47,8 @@ export const TOOLS = {
   shortcuts_execute: shortcutsExecuteTool,
   javascript_tool: javascriptTool,
   canvas_toolkit: canvasToolkitTool,
-  code_editor: codeEditorTool
+  code_editor: codeEditorTool,
+  document_generator: documentGeneratorTool
 };
 
 /**

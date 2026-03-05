@@ -292,9 +292,19 @@ async function runExecutor() {
 
     // 3b. Track stagnation via DOM hash + URL (more reliable than screenshot base64 length)
     if (exec.step > 1 && pageInfo.domHash) {
-      const lastTool = exec.actionHistory.length > 0 ? exec.actionHistory[exec.actionHistory.length - 1]?.tool : null;
-      const readOnlyTools = ['read_page', 'find', 'tabs_context', 'read_console_messages', 'read_network_requests', 'get_page_text'];
-      const wasMutating = lastTool && !readOnlyTools.includes(lastTool);
+      const lastAction = exec.actionHistory.length > 0 ? exec.actionHistory[exec.actionHistory.length - 1] : null;
+      const lastTool = lastAction?.tool || null;
+      // Tools that don't change the page DOM — stagnation check doesn't apply after these
+      const readOnlyTools = ['read_page', 'find', 'tabs_context', 'read_console_messages', 'read_network_requests', 'get_page_text', 'document_generator', 'update_plan', 'shortcuts_list'];
+      // Scroll actions just change viewport position, not DOM content
+      let wasScroll = false;
+      if (lastTool === 'computer' && lastAction?.params) {
+        try {
+          const lp = JSON.parse(lastAction.params);
+          if (lp.action === 'scroll' || lp.action === 'scroll_to') wasScroll = true;
+        } catch {}
+      }
+      const wasMutating = lastTool && !readOnlyTools.includes(lastTool) && !wasScroll;
 
       const currentDomHash = pageInfo.domHash;
       const currentUrl = pageInfo.url || tabUrl;
@@ -304,6 +314,10 @@ async function runExecutor() {
         exec.stagnationCount++;
       } else if (wasMutating) {
         exec.stagnationCount = 0; // Page changed after a mutating action, reset
+      }
+      // Scroll resets stagnation if viewport content is changing (DOM hash changes)
+      if (wasScroll && exec.lastDomHash !== null && currentDomHash !== exec.lastDomHash) {
+        exec.stagnationCount = 0;
       }
       exec.lastDomHash = currentDomHash;
       exec.lastUrl = currentUrl;
@@ -620,6 +634,37 @@ async function runExecutor() {
     });
 
     // 7. Handle result
+    if (toolResult.isDocument) {
+      // Document generated - send to sidepanel for preview + download
+      // Also add tool response to prevent orphan tool_calls
+      if (isNativeToolUse && toolUseId) {
+        const providerType = _getProviderType(exec.settings);
+        const docSummary = toolResult.message || `${toolResult.format?.toUpperCase()} document generated`;
+        if (providerType === 'anthropic') {
+          exec.messageManager.addToolResult(toolUseId, docSummary, false);
+        } else if (providerType === 'openai') {
+          exec.messageManager.addMessage('tool', docSummary, [], { tool_call_id: toolUseId });
+        }
+      }
+
+      sendToPanel({
+        type: 'execution_event',
+        state: 'DOCUMENT_GENERATED',
+        taskId: exec.taskId,
+        details: {
+          format: toolResult.format,
+          filename: toolResult.filename,
+          htmlPreview: toolResult.htmlPreview,
+          documentData: toolResult.documentData,
+          htmlForPdf: toolResult.htmlForPdf
+        }
+      });
+
+      // After sending document, add to conversation and continue (model may want to do done)
+      exec.messageManager.addMessage('user', `Document "${toolResult.filename}" has been generated and shown to the user with preview and download options. The user can now view and download it. Call done to finish.`);
+      continue;
+    }
+
     if (toolResult.isDone) {
       // Add tool response before ending (prevents orphan tool_calls if conversation is ever reused)
       if (isNativeToolUse && toolUseId) {
@@ -1214,6 +1259,7 @@ async function _adaptivePageSettle(tabId, minMs, maxMs) {
  * Detect repeated identical actions in recent history.
  * Returns a warning string if 3+ similar actions found, null otherwise.
  * For computer tool clicks, normalizes coordinates to 20px grid to catch "almost same" clicks.
+ * Scroll actions are exempt — scrolling multiple times is normal behavior for reading long pages.
  */
 function _detectRepetition(history) {
   if (history.length < 3) return null;
@@ -1225,6 +1271,13 @@ function _detectRepetition(history) {
     let key;
     try {
       const params = JSON.parse(a.params);
+
+      // Skip scroll/scroll_to actions — scrolling repeatedly is normal behavior
+      // when reading long pages or collecting data before document generation
+      if (a.tool === 'computer' && (params.action === 'scroll' || params.action === 'scroll_to')) {
+        continue;
+      }
+
       if (a.tool === 'computer' && params.ref) {
         // Ref-based clicks: same ref + same action = repetition
         key = `${a.tool}:${params.action}:${params.ref}`;

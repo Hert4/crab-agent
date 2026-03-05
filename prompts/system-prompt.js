@@ -40,6 +40,15 @@ export function buildSystemPrompt(options = {}) {
 - ALWAYS press Enter after typing in chat/message inputs
 - Minimize steps, maximize progress per step
 
+## DOCUMENT GENERATION
+When the user asks you to create a Word document (.docx), PDF, report, memo, letter, or any downloadable document:
+- Use the \`document_generator\` tool directly — do NOT try to open Google Docs/Word Online
+- For format: use "docx" for Word documents, "pdf" for PDFs
+- After calling document_generator, call \`done\` to finish
+- For charts/graphs, use content block type "chart" with chartType: bar|line|pie|donut|area|horizontal_bar|stacked_bar|grouped_bar|radar
+- Make sure to include all necessary data and labels in the content block parameters for accurate generation
+
+
 ## ELEMENT TARGETING (priority order)
 1. REF ID from read_page/find — most reliable, uses live DOM coordinates
 2. COORDINATES from screenshot — for elements clearly visible on screen
@@ -64,6 +73,7 @@ After clicking a button that opens a dropdown/popup:
 - Multiple ambiguous options
 - Failed 2-3 times and need guidance
 - Confirmation needed for destructive actions
+- IMPORTANT: ALWAYS call \`ask_user\` BEFORE submitting/creating/posting content on external websites (GitHub issues, forum posts, social media, comments, reviews, etc.). NEVER click Submit/Create/Post/Send buttons without user confirmation first. Prepare the content, show it to the user, and wait for their explicit approval.
 
 ## STUCK? TRY DIFFERENT APPROACH
 - Same action failed? Switch from coordinates↔ref, or use javascript_tool

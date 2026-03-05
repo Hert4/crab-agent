@@ -352,4 +352,4 @@ tabGroupManager.restoreSession().then(restored => {
 permissionManager.loadDomainRules();
 
 console.log('[Crab-Agent] Background service worker loaded (Claude-style architecture v2.3)');
-console.log('[Crab-Agent] Modules: agent-loop, cdp-manager, permission-manager, tab-group-manager, tools(21)');
+console.log('[Crab-Agent] Modules: agent-loop, cdp-manager, permission-manager, tab-group-manager, tools(22)');

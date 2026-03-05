@@ -674,6 +674,13 @@ function handleExecutionEvent(event) {
       notifyCrabActivity('happy', 'suggesting rule');
       addSuggestRuleMessage(details?.message, details?.rule, details?.reason);
       break;
+
+    case 'DOCUMENT_GENERATED':
+      // Agent generated a document (DOCX/PDF)
+      setExecutionText('Document ready!');
+      registerCrabSuccess('document generated');
+      addDocumentMessage(details);
+      break;
   }
 }
 
@@ -1138,7 +1145,13 @@ function openTask(task) {
     if (msg.role === 'user') {
       addUserMessage(msg.content, false, msg.images || []);
     } else if (msg.role === 'assistant') {
-      addAssistantMessage(msg.content, false);
+      if (msg.type === 'document') {
+        // Render a simple document reference (no interactive preview for history)
+        const icon = msg.format === 'docx' ? '📄' : '📑';
+        addSystemMessage(`${icon} ${msg.format?.toUpperCase() || 'Document'}: ${msg.filename || 'document'}`, 'success', false);
+      } else {
+        addAssistantMessage(msg.content, false);
+      }
     } else if (msg.role === 'system') {
       addSystemMessage(msg.content, msg.type || 'info', false);
     }
@@ -1509,6 +1522,486 @@ function addSuggestRuleMessage(message, rule, reason = '') {
   if (currentTask) {
     currentTask.messages.push({ role: 'assistant', content: message, type: 'suggest_rule', rule, reason, timestamp: Date.now() });
   }
+}
+
+/**
+ * Add a document preview message with preview + download buttons.
+ * Supports PDF (via print-friendly HTML) and DOCX (via JSZip builder).
+ */
+function addDocumentMessage(details) {
+  const { format, filename, htmlPreview, documentData, htmlForPdf } = details;
+  const formatUpper = (format || 'pdf').toUpperCase();
+  const icon = format === 'docx' ? '📄' : '📑';
+
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'message assistant document-message';
+
+  // Header
+  const headerDiv = document.createElement('div');
+  headerDiv.className = 'doc-msg-header';
+  headerDiv.innerHTML = `
+    <span class="doc-msg-icon">${icon}</span>
+    <div class="doc-msg-info">
+      <span class="doc-msg-filename">${escapeHtml(filename || 'document')}</span>
+      <span class="doc-msg-format">${formatUpper} Document</span>
+    </div>
+  `;
+  messageDiv.appendChild(headerDiv);
+
+  // Preview container (iframe)
+  const previewContainer = document.createElement('div');
+  previewContainer.className = 'doc-preview-container';
+  previewContainer.style.display = 'none'; // Hidden by default
+
+  const iframe = document.createElement('iframe');
+  iframe.className = 'doc-preview-iframe';
+  iframe.setAttribute('sandbox', 'allow-same-origin');
+  iframe.setAttribute('loading', 'lazy');
+  previewContainer.appendChild(iframe);
+  messageDiv.appendChild(previewContainer);
+
+  // Action buttons
+  const actionsDiv = document.createElement('div');
+  actionsDiv.className = 'doc-msg-actions';
+
+  // Preview toggle button
+  const previewBtn = document.createElement('button');
+  previewBtn.className = 'doc-action-btn preview';
+  previewBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Preview`;
+  let previewLoaded = false;
+  previewBtn.addEventListener('click', () => {
+    const isVisible = previewContainer.style.display !== 'none';
+    if (!isVisible) {
+      previewContainer.style.display = 'block';
+      previewBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg> Hide`;
+      if (!previewLoaded && htmlPreview) {
+        iframe.srcdoc = htmlPreview;
+        previewLoaded = true;
+      }
+    } else {
+      previewContainer.style.display = 'none';
+      previewBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Preview`;
+    }
+    scrollToBottom();
+  });
+  actionsDiv.appendChild(previewBtn);
+
+  // Download button
+  const downloadBtn = document.createElement('button');
+  downloadBtn.className = 'doc-action-btn download';
+
+  if (format === 'docx') {
+    downloadBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download DOCX`;
+    downloadBtn.addEventListener('click', async () => {
+      downloadBtn.disabled = true;
+      downloadBtn.textContent = 'Generating...';
+      try {
+        const blob = await _buildDocxFromData(documentData);
+        _downloadBlob(blob, filename || 'document.docx');
+        downloadBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Downloaded!`;
+        addSystemMessage(`${icon} ${filename} downloaded!`, 'success', false);
+      } catch (err) {
+        console.error('[Document] DOCX generation error:', err);
+        downloadBtn.textContent = 'Error - try again';
+        downloadBtn.disabled = false;
+        addSystemMessage(`DOCX generation failed: ${err.message}`, 'error', false);
+      }
+    });
+  } else {
+    // PDF download - open HTML in new tab for print-to-PDF
+    downloadBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download PDF`;
+    downloadBtn.addEventListener('click', () => {
+      // Open HTML in new tab - user can Ctrl+P to save as PDF
+      const pdfHtml = htmlForPdf || htmlPreview;
+      if (pdfHtml) {
+        const blob = new Blob([pdfHtml], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        // Open in new tab with print hint
+        const printHtml = pdfHtml.replace('</body>', `
+          <script>
+            // Auto-trigger print dialog for PDF save
+            window.onload = function() {
+              const hint = document.createElement('div');
+              hint.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:12px 20px;background:#0f172a;color:white;font-family:system-ui;font-size:14px;text-align:center;z-index:99999;';
+              hint.innerHTML = '🦀 Press <strong>Ctrl+P</strong> (or ⌘+P) and select <strong>"Save as PDF"</strong> to download &nbsp;|&nbsp; <button onclick="this.parentElement.remove()" style="background:none;border:1px solid #fff;color:white;padding:4px 12px;border-radius:4px;cursor:pointer;">Dismiss</button>';
+              document.body.prepend(hint);
+            };
+          <\/script>
+        </body>`);
+        const printBlob = new Blob([printHtml], { type: 'text/html' });
+        const printUrl = URL.createObjectURL(printBlob);
+        chrome.tabs.create({ url: printUrl });
+        downloadBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Opened!`;
+        addSystemMessage(`${icon} ${filename} opened in new tab - use Ctrl+P to save as PDF`, 'success', false);
+      }
+    });
+  }
+  actionsDiv.appendChild(downloadBtn);
+
+  // Open in tab button (for both formats)
+  const openBtn = document.createElement('button');
+  openBtn.className = 'doc-action-btn open-tab';
+  openBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg> Open`;
+  openBtn.addEventListener('click', () => {
+    if (htmlPreview) {
+      const blob = new Blob([htmlPreview], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      chrome.tabs.create({ url });
+    }
+  });
+  actionsDiv.appendChild(openBtn);
+
+  messageDiv.appendChild(actionsDiv);
+
+  triggerAnimation(messageDiv, 'message-enter');
+  elements.chatMessages.appendChild(messageDiv);
+  scrollToBottom();
+
+  if (currentTask) {
+    currentTask.messages.push({
+      role: 'assistant',
+      content: `${icon} Generated ${formatUpper}: ${filename}`,
+      type: 'document',
+      format,
+      filename,
+      timestamp: Date.now()
+    });
+  }
+}
+
+/**
+ * Build DOCX blob from structured data using JSZip (inline minimal builder).
+ * Mirrors lib/docx-builder.js logic but runs in sidepanel context.
+ * Supports chart rendering as embedded PNG images via SVG → Canvas → PNG.
+ */
+async function _buildDocxFromData(data) {
+  if (typeof JSZip === 'undefined') {
+    throw new Error('JSZip not loaded. Cannot generate DOCX.');
+  }
+
+  const { title = '', subtitle = '', author = 'Crab-Agent', content = [], pageSize = 'a4', orientation = 'portrait' } = data || {};
+
+  const SIZES = { a4: { w: 11906, h: 16838 }, letter: { w: 12240, h: 15840 } };
+  const size = SIZES[pageSize] || SIZES.a4;
+  const w = orientation === 'landscape' ? size.h : size.w;
+  const h = orientation === 'landscape' ? size.w : size.h;
+  const margin = 1440;
+  const contentWidth = w - margin * 2;
+  const EMU_PER_INCH = 914400;
+  const DXA_PER_INCH = 1440;
+
+  const CCOLS = ['#3b82f6','#ef4444','#22c55e','#f59e0b','#8b5cf6','#06b6d4','#ec4899','#f97316','#14b8a6','#6366f1','#84cc16','#e11d48','#0ea5e9','#a855f7','#10b981'];
+
+  const ex = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  // Collect chart images for embedding: { rId, filename, pngBase64 }
+  const chartImages = [];
+
+  // --- Chart SVG generation helpers (inline, mirrors document-generator.js) ---
+  function _niceMax(val) {
+    if (val <= 0) return 1;
+    const mag = Math.pow(10, Math.floor(Math.log10(val)));
+    const norm = val / mag;
+    return (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  }
+
+  function _normDs(cdata, labels) {
+    if (Array.isArray(cdata.datasets) && cdata.datasets.length > 0) {
+      return cdata.datasets.map((ds, i) => ({ label: ds.label || `Series ${i+1}`, values: Array.isArray(ds.values) ? ds.values.map(Number) : [], color: ds.color || CCOLS[i % CCOLS.length] }));
+    }
+    if (Array.isArray(cdata.values)) return [{ label: cdata.label || '', values: cdata.values.map(Number), color: cdata.color || CCOLS[0] }];
+    return [{ label: '', values: labels.map(() => 0), color: CCOLS[0] }];
+  }
+
+  function _yAxisSvg(maxV, plotH, pad, totalW) {
+    const steps = 5; const stepV = maxV / steps; let gl = '', yl = '';
+    for (let i = 0; i <= steps; i++) {
+      const v = stepV * i, y = pad.t + plotH - (v / maxV) * plotH;
+      gl += `<line x1="${pad.l}" y1="${y}" x2="${totalW-pad.r}" y2="${y}" stroke="#f1f5f9" stroke-width="1"/>`;
+      const fmt = v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : Math.round(v*10)/10;
+      yl += `<text x="${pad.l-8}" y="${y+3}" text-anchor="end" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">${fmt}</text>`;
+    }
+    return { gridLines: gl, yLabels: yl };
+  }
+
+  function _svgBar(labels, ds, stacked, grouped) {
+    const W=560,H=300,pad={t:20,r:20,b:60,l:55},plotW=W-pad.l-pad.r,plotH=H-pad.t-pad.b,n=labels.length||1;
+    let maxV=0;
+    if(stacked){for(let i=0;i<n;i++){let s=0;ds.forEach(d=>{s+=Math.abs(d.values[i]||0);});maxV=Math.max(maxV,s);}}
+    else ds.forEach(d=>d.values.forEach(v=>{maxV=Math.max(maxV,Math.abs(v));}));
+    if(!maxV)maxV=1; const nm=_niceMax(maxV);
+    const bgW=plotW/n,dsc=grouped?ds.length:1,bW=Math.min(Math.max(bgW*0.7/dsc,8),50),gap=(bgW-bW*dsc)/2;
+    let bars='';
+    for(let i=0;i<n;i++){const gx=pad.l+i*bgW;
+      if(stacked){let yo=0;ds.forEach(d=>{const v=d.values[i]||0,bH=(v/nm)*plotH,y=pad.t+plotH-yo-bH;bars+=`<rect x="${gx+gap}" y="${y}" width="${bW}" height="${bH}" fill="${d.color}" rx="2"/>`;yo+=bH;});}
+      else if(grouped){ds.forEach((d,di)=>{const v=d.values[i]||0,bH=(v/nm)*plotH,x=gx+gap+di*bW,y=pad.t+plotH-bH;bars+=`<rect x="${x}" y="${y}" width="${bW}" height="${bH}" fill="${d.color}" rx="2"/>`;});}
+      else{const d=ds[0]||{values:[],color:CCOLS[0]},v=d.values[i]||0,bH=(v/nm)*plotH,y=pad.t+plotH-bH,c=ds.length===1?CCOLS[i%CCOLS.length]:d.color;bars+=`<rect x="${gx+gap}" y="${y}" width="${bW}" height="${bH}" fill="${c}" rx="2"/>`;}}
+    const{gridLines,yLabels}=_yAxisSvg(nm,plotH,pad,W);
+    const xl=labels.map((l,i)=>{const x=pad.l+i*bgW+bgW/2,t=String(l).length>12?String(l).substring(0,11)+'\u2026':String(l);return`<text x="${x}" y="${H-pad.b+16}" text-anchor="middle" font-size="9" fill="#64748b" font-family="Arial,sans-serif">${ex(t)}</text>`;}).join('');
+    return`${gridLines}${yLabels}${bars}${xl}<line x1="${pad.l}" y1="${pad.t+plotH}" x2="${W-pad.r}" y2="${pad.t+plotH}" stroke="#cbd5e1" stroke-width="1"/>`;
+  }
+
+  function _svgHBar(labels, ds) {
+    const n=labels.length||1,bH=Math.min(28,200/n),rH=bH+8,W=560,pad={t:20,r:20,b:20,l:120},H=pad.t+n*rH+pad.b,plotW=W-pad.l-pad.r;
+    const d=ds[0]||{values:[],color:CCOLS[0]};let maxV=0;d.values.forEach(v=>{maxV=Math.max(maxV,Math.abs(v));});if(!maxV)maxV=1;const nm=_niceMax(maxV);
+    let bars='';
+    for(let i=0;i<n;i++){const v=d.values[i]||0,bW=(v/nm)*plotW,y=pad.t+i*rH,c=CCOLS[i%CCOLS.length],tl=String(labels[i]).length>18?String(labels[i]).substring(0,17)+'\u2026':String(labels[i]);
+      bars+=`<text x="${pad.l-8}" y="${y+bH/2+4}" text-anchor="end" font-size="9" fill="#475569" font-family="Arial,sans-serif">${ex(tl)}</text>`;
+      bars+=`<rect x="${pad.l}" y="${y}" width="${bW}" height="${bH}" fill="${c}" rx="3"/>`;
+      bars+=`<text x="${pad.l+bW+6}" y="${y+bH/2+4}" font-size="9" fill="#64748b" font-family="Arial,sans-serif">${v}</text>`;}
+    return`<line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${H-pad.b}" stroke="#cbd5e1" stroke-width="1"/>${bars}`;
+  }
+
+  function _svgLine(labels, ds, isArea) {
+    const W=560,H=300,pad={t:20,r:20,b:60,l:55},plotW=W-pad.l-pad.r,plotH=H-pad.t-pad.b,n=labels.length||1;
+    let maxV=0;ds.forEach(d=>d.values.forEach(v=>{maxV=Math.max(maxV,Math.abs(v));}));if(!maxV)maxV=1;const nm=_niceMax(maxV);
+    const sX=n>1?plotW/(n-1):plotW;let paths='';
+    ds.forEach(d=>{const pts=d.values.map((v,i)=>{const x=pad.l+(n>1?i*sX:plotW/2),y=pad.t+plotH-((v||0)/nm)*plotH;return`${x},${y}`;});
+      if(isArea){const fX=pad.l,lX=pad.l+(n>1?(n-1)*sX:plotW/2),bl=pad.t+plotH;paths+=`<polygon points="${fX},${bl} ${pts.join(' ')} ${lX},${bl}" fill="${d.color}" fill-opacity="0.15"/>`;}
+      paths+=`<polyline points="${pts.join(' ')}" fill="none" stroke="${d.color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+      d.values.forEach((v,i)=>{const x=pad.l+(n>1?i*sX:plotW/2),y=pad.t+plotH-((v||0)/nm)*plotH;paths+=`<circle cx="${x}" cy="${y}" r="3.5" fill="white" stroke="${d.color}" stroke-width="2"/>`;});});
+    const{gridLines,yLabels}=_yAxisSvg(nm,plotH,pad,W);
+    const xl=labels.map((l,i)=>{const x=pad.l+(n>1?i*sX:plotW/2),t=String(l).length>12?String(l).substring(0,11)+'\u2026':String(l);return`<text x="${x}" y="${H-pad.b+16}" text-anchor="middle" font-size="9" fill="#64748b" font-family="Arial,sans-serif">${ex(t)}</text>`;}).join('');
+    return`${gridLines}${yLabels}${paths}${xl}<line x1="${pad.l}" y1="${pad.t+plotH}" x2="${W-pad.r}" y2="${pad.t+plotH}" stroke="#cbd5e1" stroke-width="1"/>`;
+  }
+
+  function _svgPie(labels, ds, isDnt) {
+    const W=360,H=300,cx=W/2,cy=H/2-10,R=110,iR=isDnt?R*0.55:0;
+    const d=ds[0]||{values:[],color:CCOLS[0]};const vals=d.values.map(v=>Math.max(0,v||0));const tot=vals.reduce((a,b)=>a+b,0)||1;
+    let slices='',ang=-90;
+    vals.forEach((v,i)=>{const sa=(v/tot)*360,sr=(ang*Math.PI)/180,er=((ang+sa)*Math.PI)/180,la=sa>180?1:0,c=CCOLS[i%CCOLS.length];
+      const x1=cx+R*Math.cos(sr),y1=cy+R*Math.sin(sr),x2=cx+R*Math.cos(er),y2=cy+R*Math.sin(er);
+      if(isDnt){const ix1=cx+iR*Math.cos(sr),iy1=cy+iR*Math.sin(sr),ix2=cx+iR*Math.cos(er),iy2=cy+iR*Math.sin(er);slices+=`<path d="M ${x1} ${y1} A ${R} ${R} 0 ${la} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${iR} ${iR} 0 ${la} 0 ${ix1} ${iy1} Z" fill="${c}"/>`;}
+      else slices+=`<path d="M ${cx} ${cy} L ${x1} ${y1} A ${R} ${R} 0 ${la} 1 ${x2} ${y2} Z" fill="${c}"/>`;
+      const pct=(v/tot)*100;if(pct>=5){const mr=(ang+sa/2)*Math.PI/180,lr=isDnt?(R+iR)/2:R*0.65;slices+=`<text x="${cx+lr*Math.cos(mr)}" y="${cy+lr*Math.sin(mr)+3}" text-anchor="middle" font-size="9" font-weight="600" fill="white" font-family="Arial,sans-serif">${pct.toFixed(0)}%</text>`;}
+      ang+=sa;});
+    return slices;
+  }
+
+  function _svgRadar(labels, ds) {
+    const W=360,H=320,cx=W/2,cy=H/2,R=120,n=labels.length||3;
+    let maxV=0;ds.forEach(d=>d.values.forEach(v=>{maxV=Math.max(maxV,Math.abs(v));}));if(!maxV)maxV=1;const nm=_niceMax(maxV);
+    const aS=(2*Math.PI)/n;const gp=(i,v)=>{const a=i*aS-Math.PI/2,r=(v/nm)*R;return{x:cx+r*Math.cos(a),y:cy+r*Math.sin(a)};};
+    let grid='';for(let ring=1;ring<=4;ring++){const rR=(ring/4)*R;const pts=[];for(let i=0;i<n;i++){const a=i*aS-Math.PI/2;pts.push(`${cx+rR*Math.cos(a)},${cy+rR*Math.sin(a)}`);}grid+=`<polygon points="${pts.join(' ')}" fill="none" stroke="#e2e8f0" stroke-width="1"/>`;}
+    let axes='';for(let i=0;i<n;i++){const a=i*aS-Math.PI/2,exx=cx+R*Math.cos(a),ey=cy+R*Math.sin(a);axes+=`<line x1="${cx}" y1="${cy}" x2="${exx}" y2="${ey}" stroke="#e2e8f0" stroke-width="1"/>`;const lx=cx+(R+14)*Math.cos(a),ly=cy+(R+14)*Math.sin(a),anc=Math.abs(lx-cx)<5?'middle':lx>cx?'start':'end',t=String(labels[i]).length>10?String(labels[i]).substring(0,9)+'\u2026':String(labels[i]);axes+=`<text x="${lx}" y="${ly+3}" text-anchor="${anc}" font-size="8.5" fill="#64748b" font-family="Arial,sans-serif">${ex(t)}</text>`;}
+    let polys='';ds.forEach(d=>{const pts=d.values.map((v,i)=>{const p=gp(i,v||0);return`${p.x},${p.y}`;}).join(' ');polys+=`<polygon points="${pts}" fill="${d.color}" fill-opacity="0.2" stroke="${d.color}" stroke-width="2"/>`;d.values.forEach((v,i)=>{const p=gp(i,v||0);polys+=`<circle cx="${p.x}" cy="${p.y}" r="3" fill="white" stroke="${d.color}" stroke-width="1.5"/>`;});});
+    return`${grid}${axes}${polys}`;
+  }
+
+  function _buildChartSvg(chartType, labels, datasets, title) {
+    let inner = '';
+    switch (chartType) {
+      case 'bar': inner = _svgBar(labels, datasets, false, false); break;
+      case 'horizontal_bar': inner = _svgHBar(labels, datasets); break;
+      case 'stacked_bar': inner = _svgBar(labels, datasets, true, false); break;
+      case 'grouped_bar': inner = _svgBar(labels, datasets, false, true); break;
+      case 'line': inner = _svgLine(labels, datasets, false); break;
+      case 'area': inner = _svgLine(labels, datasets, true); break;
+      case 'pie': inner = _svgPie(labels, datasets, false); break;
+      case 'donut': inner = _svgPie(labels, datasets, true); break;
+      case 'radar': inner = _svgRadar(labels, datasets); break;
+      default: inner = _svgBar(labels, datasets, false, false);
+    }
+    const isPie = chartType === 'pie' || chartType === 'donut';
+    const isRadar = chartType === 'radar';
+    const isHB = chartType === 'horizontal_bar';
+    const n = labels.length || 1;
+    const bW = isPie || isRadar ? 360 : 560;
+    const bH = isPie ? 320 : isRadar ? 320 : isHB ? (40 + n * 36 + 40) : 300;
+    const tH = title ? 30 : 0;
+    const lH = (datasets.length > 1 || (datasets.length === 1 && datasets[0].label)) ? 28 : 0;
+    const totH = bH + tH + lH + 20;
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${bW}" height="${totH}" viewBox="0 0 ${bW} ${totH}">`;
+    svg += `<rect width="${bW}" height="${totH}" fill="white" rx="4"/>`;
+    if (title) svg += `<text x="${bW/2}" y="22" text-anchor="middle" font-size="13" font-weight="600" fill="#1e293b" font-family="Arial,sans-serif">${ex(title)}</text>`;
+    svg += `<g transform="translate(0,${tH})">${inner}</g>`;
+    if (lH > 0) { const ly = tH + bH + 6; let lx = bW / 2 - (datasets.length * 70) / 2;
+      datasets.forEach(d => { svg += `<rect x="${lx}" y="${ly}" width="10" height="10" rx="2" fill="${d.color}"/>`; svg += `<text x="${lx+14}" y="${ly+9}" font-size="9" fill="#475569" font-family="Arial,sans-serif">${ex(d.label||'')}</text>`; lx += Math.max(70, (d.label||'').length * 6 + 24); }); }
+    svg += '</svg>';
+    return svg;
+  }
+
+  function _svgToPngBase64(svgString) {
+    return new Promise(resolve => {
+      try {
+        const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => { try { const sc = 2; const c = document.createElement('canvas'); c.width = img.naturalWidth * sc; c.height = img.naturalHeight * sc; const ctx = c.getContext('2d'); ctx.scale(sc, sc); ctx.drawImage(img, 0, 0); const du = c.toDataURL('image/png'); URL.revokeObjectURL(url); resolve(du.split(',')[1] || null); } catch(e) { URL.revokeObjectURL(url); resolve(null); } };
+        img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+        img.src = url;
+      } catch(e) { resolve(null); }
+    });
+  }
+
+  // Build body paragraphs
+  const parts = [];
+  if (title) parts.push(`<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="48"/><w:szCs w:val="48"/></w:rPr><w:t xml:space="preserve">${ex(title)}</w:t></w:r></w:p>`);
+  if (subtitle) parts.push(`<w:p><w:pPr><w:pStyle w:val="Subtitle"/></w:pPr><w:r><w:rPr><w:color w:val="666666"/><w:sz w:val="28"/></w:rPr><w:t xml:space="preserve">${ex(subtitle)}</w:t></w:r></w:p>`);
+  parts.push(`<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="8" w:color="E2E8F0"/></w:pBdr></w:pPr><w:r><w:rPr><w:color w:val="999999"/><w:sz w:val="18"/></w:rPr><w:t xml:space="preserve">${ex(author)} - ${ex(new Date().toLocaleDateString('vi-VN'))}</w:t></w:r></w:p>`);
+
+  for (const block of content) {
+    if (!block?.type) continue;
+    switch (block.type) {
+      case 'heading': {
+        const lv = Math.min(3, Math.max(1, block.level || 1));
+        const sz = { 1: 36, 2: 28, 3: 24 }[lv];
+        parts.push(`<w:p><w:pPr><w:pStyle w:val="Heading${lv}"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="${sz}"/></w:rPr><w:t xml:space="preserve">${ex(block.text)}</w:t></w:r></w:p>`);
+        break;
+      }
+      case 'paragraph': {
+        const rPr = (block.bold ? '<w:b/>' : '') + (block.italic ? '<w:i/>' : '');
+        const jc = block.align === 'center' ? '<w:jc w:val="center"/>' : block.align === 'right' ? '<w:jc w:val="right"/>' : '';
+        parts.push(`<w:p><w:pPr>${jc}</w:pPr><w:r>${rPr ? `<w:rPr>${rPr}</w:rPr>` : ''}<w:t xml:space="preserve">${ex(block.text)}</w:t></w:r></w:p>`);
+        break;
+      }
+      case 'list': {
+        const items = Array.isArray(block.items) ? block.items : [];
+        const isBullet = block.style !== 'number';
+        items.forEach((item, i) => {
+          const prefix = isBullet ? '\u2022 ' : `${i + 1}. `;
+          parts.push(`<w:p><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr><w:r><w:t xml:space="preserve">${ex(prefix + item)}</w:t></w:r></w:p>`);
+        });
+        break;
+      }
+      case 'table': {
+        const headers = Array.isArray(block.headers) ? block.headers : [];
+        const rows = Array.isArray(block.rows) ? block.rows : [];
+        const cols = Math.max(headers.length, rows[0]?.length || 1);
+        const colW = Math.floor(contentWidth / cols);
+        const bd = `<w:tcBorders><w:top w:val="single" w:sz="4" w:color="CCCCCC"/><w:bottom w:val="single" w:sz="4" w:color="CCCCCC"/><w:left w:val="single" w:sz="4" w:color="CCCCCC"/><w:right w:val="single" w:sz="4" w:color="CCCCCC"/></w:tcBorders>`;
+        let tbl = `<w:tbl><w:tblPr><w:tblW w:w="${contentWidth}" w:type="dxa"/></w:tblPr>`;
+        if (headers.length) {
+          tbl += '<w:tr>' + headers.map(hdr => `<w:tc><w:tcPr><w:tcW w:w="${colW}" w:type="dxa"/>${bd}<w:shd w:val="clear" w:fill="F1F5F9"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${ex(hdr)}</w:t></w:r></w:p></w:tc>`).join('') + '</w:tr>';
+        }
+        rows.forEach(row => {
+          const cells = Array.isArray(row) ? row : [];
+          tbl += '<w:tr>' + cells.map(c => `<w:tc><w:tcPr><w:tcW w:w="${colW}" w:type="dxa"/>${bd}</w:tcPr><w:p><w:r><w:t xml:space="preserve">${ex(c)}</w:t></w:r></w:p></w:tc>`).join('') + '</w:tr>';
+        });
+        tbl += '</w:tbl><w:p/>';
+        parts.push(tbl);
+        break;
+      }
+      case 'code':
+        parts.push(`<w:p><w:pPr><w:shd w:val="clear" w:fill="F1F5F9"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/><w:sz w:val="18"/><w:color w:val="1E293B"/></w:rPr><w:t xml:space="preserve">${ex((block.language ? '[' + block.language + ']\n' : '') + block.text)}</w:t></w:r></w:p>`);
+        break;
+      case 'pagebreak':
+        parts.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>');
+        break;
+      case 'divider':
+        parts.push('<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="E2E8F0"/></w:pBdr></w:pPr></w:p>');
+        break;
+      case 'chart':
+      case 'chart_placeholder': {
+        const chartTitle = block.title || '';
+        const chartData = block.data || {};
+        const chartLabels = Array.isArray(chartData.labels) ? chartData.labels : [];
+        const chartDatasets = _normDs(chartData, chartLabels);
+
+        // Try to render as embedded PNG image
+        let chartRendered = false;
+        if (chartLabels.length > 0 || chartDatasets.length > 0) {
+          try {
+            const chartType = (block.chartType || 'bar').toLowerCase();
+            const svgStr = _buildChartSvg(chartType, chartLabels, chartDatasets, chartTitle);
+            const pngB64 = await _svgToPngBase64(svgStr);
+            if (pngB64) {
+              const idx = chartImages.length + 1;
+              const rId = `rIdChart${idx}`;
+              const fn = `chart${idx}.png`;
+              chartImages.push({ rId, filename: fn, pngBase64: pngB64 });
+
+              const isPie = chartType === 'pie' || chartType === 'donut';
+              const svgW = isPie ? 360 : 560;
+              const svgH = isPie ? 320 : 300;
+              const maxWIn = contentWidth / DXA_PER_INCH;
+              const imgWIn = Math.min(maxWIn, 5.5);
+              const imgHIn = imgWIn / (svgW / svgH);
+              const emuW = Math.round(imgWIn * EMU_PER_INCH);
+              const emuH = Math.round(imgHIn * EMU_PER_INCH);
+
+              if (chartTitle) {
+                parts.push(`<w:p><w:pPr><w:spacing w:before="200" w:after="80"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t xml:space="preserve">${ex(chartTitle)}</w:t></w:r></w:p>`);
+              }
+              parts.push(`<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="120"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${emuW}" cy="${emuH}"/><wp:docPr id="${idx}" name="Chart ${idx}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${idx}" name="${fn}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${emuW}" cy="${emuH}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`);
+
+              chartRendered = true;
+            }
+          } catch (e) { console.warn('[DocxBuilder] Chart image failed:', e.message); }
+        }
+
+        // Fallback: render chart as data table
+        if (!chartRendered) {
+          const fallbackDs = Array.isArray(chartData.datasets) ? chartData.datasets : (Array.isArray(chartData.values) ? [{ label: '', values: chartData.values }] : []);
+          parts.push(`<w:p><w:pPr><w:spacing w:before="200" w:after="80"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="22"/></w:rPr><w:t xml:space="preserve">[Chart] ${ex(chartTitle || 'Chart')}</w:t></w:r></w:p>`);
+          if (chartLabels.length > 0 && fallbackDs.length > 0) {
+            const cc = 1 + fallbackDs.length, cW = Math.floor(contentWidth / cc);
+            const chBd = `<w:tcBorders><w:top w:val="single" w:sz="4" w:color="CCCCCC"/><w:bottom w:val="single" w:sz="4" w:color="CCCCCC"/><w:left w:val="single" w:sz="4" w:color="CCCCCC"/><w:right w:val="single" w:sz="4" w:color="CCCCCC"/></w:tcBorders>`;
+            let ct = `<w:tbl><w:tblPr><w:tblW w:w="${contentWidth}" w:type="dxa"/></w:tblPr><w:tr><w:tc><w:tcPr><w:tcW w:w="${cW}" w:type="dxa"/>${chBd}<w:shd w:val="clear" w:fill="F1F5F9"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Label</w:t></w:r></w:p></w:tc>`;
+            fallbackDs.forEach(d => { ct += `<w:tc><w:tcPr><w:tcW w:w="${cW}" w:type="dxa"/>${chBd}<w:shd w:val="clear" w:fill="F1F5F9"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${ex(d.label||'Value')}</w:t></w:r></w:p></w:tc>`; });
+            ct += '</w:tr>';
+            chartLabels.forEach((cl, ci) => { ct += '<w:tr>'; ct += `<w:tc><w:tcPr><w:tcW w:w="${cW}" w:type="dxa"/>${chBd}</w:tcPr><w:p><w:r><w:t xml:space="preserve">${ex(cl)}</w:t></w:r></w:p></w:tc>`;
+              fallbackDs.forEach(d => { const cv = (Array.isArray(d.values) ? d.values[ci] : '') || ''; ct += `<w:tc><w:tcPr><w:tcW w:w="${cW}" w:type="dxa"/>${chBd}</w:tcPr><w:p><w:r><w:t xml:space="preserve">${ex(String(cv))}</w:t></w:r></w:p></w:tc>`; }); ct += '</w:tr>'; });
+            ct += '</w:tbl><w:p/>';
+            parts.push(ct);
+          }
+        }
+        break;
+      }
+      default:
+        parts.push(`<w:p><w:r><w:t xml:space="preserve">${ex(block.text || JSON.stringify(block))}</w:t></w:r></w:p>`);
+    }
+  }
+
+  const orientAttr = orientation === 'landscape' ? ' w:orient="landscape"' : '';
+  // Add extra namespaces for DrawingML image embedding
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+<w:body>
+${parts.join('\n')}
+<w:sectPr><w:pgSz w:w="${w}" w:h="${h}"${orientAttr}/><w:pgMar w:top="${margin}" w:right="${margin}" w:bottom="${margin}" w:left="${margin}" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>
+</w:body></w:document>`;
+
+  // Build image relationship entries
+  let imgRels = '';
+  chartImages.forEach(img => { imgRels += `<Relationship Id="${img.rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${img.filename}"/>`; });
+  const pngContentType = chartImages.length > 0 ? '<Default Extension="png" ContentType="image/png"/>' : '';
+
+  const now = new Date().toISOString();
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${pngContentType}<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>`);
+  zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>`);
+  zip.file('word/document.xml', docXml);
+  zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${imgRels}</Relationships>`);
+  zip.file('word/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:rPr><w:b/><w:sz w:val="48"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Subtitle"><w:name w:val="Subtitle"/><w:rPr><w:color w:val="666666"/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="36"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:pPr><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/></w:rPr></w:style></w:styles>`);
+  zip.file('docProps/core.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${ex(title)}</dc:title><dc:creator>${ex(author)}</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created></cp:coreProperties>`);
+
+  // Add chart PNG images to word/media/
+  for (const img of chartImages) {
+    const bin = atob(img.pngBase64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    zip.file(`word/media/${img.filename}`, bytes);
+  }
+
+  return await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+}
+
+/**
+ * Download a Blob as a file
+ */
+function _downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    a.remove();
+  }, 1000);
 }
 
 /**
