@@ -1046,7 +1046,22 @@ async function _getPageInfo(tabId) {
           url: location.href,
           title: document.title,
           elementCount: interactiveCount,
-          domHash: document.body ? String(document.body.innerHTML.length) : '0',
+          domHash: (() => {
+            if (!document.body) return '0';
+            // Include form input values in the hash so typing into inputs
+            // is detected as a page change (innerHTML.length alone misses
+            // input/textarea .value changes and select/checkbox state).
+            let formSig = '';
+            try {
+              const fields = document.querySelectorAll('input, textarea, select');
+              for (let i = 0; i < fields.length; i++) {
+                const f = fields[i];
+                const v = f.type === 'checkbox' || f.type === 'radio' ? String(f.checked) : (f.value || '');
+                formSig += v + '|';
+              }
+            } catch (_) {}
+            return String(document.body.innerHTML.length) + ':' + String(formSig.length) + ':' + formSig.substring(0, 200);
+          })(),
           readyState: document.readyState
         };
       }
