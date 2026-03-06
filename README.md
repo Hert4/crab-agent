@@ -421,6 +421,8 @@ javascript_tool({
 | `system.display` | Viewport/display info for coordinate mapping |
 | `host_permissions: <all_urls>` | Allow actions on any website |
 
-## Licence
+## License
 
-MIT License
+This project is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/).
+
+You are free to share and adapt this work for non-commercial purposes with appropriate attribution.
