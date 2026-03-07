@@ -177,9 +177,19 @@ async function _handleClick(action, params, tabId, context) {
   const coords = await _resolveCoordinates(params, tabId, context);
   if (coords.error) return { success: false, error: coords.error };
 
-  // If resolved from ref, wait for scrollIntoView to settle
-  if (params.ref && coords.resolved) {
-    await new Promise(r => setTimeout(r, 150));
+  // If resolved from ref and scrolled, wait for scrollIntoView to settle
+  if (params.ref && coords.resolved?.scrolled) {
+    await new Promise(r => setTimeout(r, 200));
+  } else if (params.ref && coords.resolved) {
+    await new Promise(r => setTimeout(r, 80));  // Small delay for DOM stability
+  }
+
+  // Verify domain hasn't changed (security check)
+  if (context?.expectedOrigin) {
+    const domainCheck = await cdp.verifyDomain(tabId, context.expectedOrigin);
+    if (!domainCheck.valid) {
+      return { success: false, error: `Security: ${domainCheck.error}. Aborting click.` };
+    }
   }
 
   // --- Execute CDP click ---

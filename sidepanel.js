@@ -545,6 +545,10 @@ function handleExecutionEvent(event) {
       stopTimer();
       removeThinkingIndicator();
       addAssistantMessage(details?.finalAnswer || 'Task completed successfully!');
+      // Save LLM history for conversation memory (model remembers previous context)
+      if (currentTask && details?.llmHistory) {
+        currentTask.llmHistory = details.llmHistory;
+      }
       currentTaskId = null;
       saveCurrentTask();
       playNotificationSound('success');
@@ -557,6 +561,10 @@ function handleExecutionEvent(event) {
       // Show the actual error/answer message
       const errorMsg = details?.error || details?.finalAnswer || 'Unknown error';
       addSystemMessage(errorMsg, 'error');
+      // Save LLM history for conversation memory even on failure
+      if (currentTask && details?.llmHistory) {
+        currentTask.llmHistory = details.llmHistory;
+      }
       currentTaskId = null;
       saveCurrentTask();
       playNotificationSound('error');
@@ -680,6 +688,16 @@ function handleExecutionEvent(event) {
       setExecutionText('Document ready!');
       registerCrabSuccess('document generated');
       addDocumentMessage(details);
+      break;
+
+    case 'COMPACTION':
+      // Claude-style message compaction occurred
+      if (details?.tokensSaved > 0) {
+        const savedKB = Math.round((details.bytesSaved || 0) / 1024);
+        const hint = `Memory optimized: -${savedKB}KB (${details.imagesRemoved || 0} images)`;
+        setLiveActivityHint(hint);
+        console.log(`[Compaction] ${details.level}: ${hint}, messages: ${details.messageCount}`);
+      }
       break;
   }
 }
@@ -1230,11 +1248,17 @@ async function sendMessage() {
   const useCustom = ['openai-compatible', 'ollama'].includes(settings.provider) && settings.customModel?.trim();
   const effectiveModel = useCustom ? settings.customModel.trim() : settings.model;
 
+  // Include stored LLM history for conversation memory (model remembers previous context)
+  const llmHistoryToSend = (!isExecutionActive && isFollowUp && currentTask?.llmHistory)
+    ? currentTask.llmHistory
+    : null;
+
   port.postMessage({
     type: isFollowUp ? 'follow_up_task' : 'new_task',
     task: taskText,
     images,
     followUpContext,
+    llmHistory: llmHistoryToSend,  // Conversation memory: restore previous LLM context
     settings: {
       ...settings,
       useVision: settings.useVision || images.length > 0,

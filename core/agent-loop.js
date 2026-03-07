@@ -37,8 +37,13 @@ const visualTracker = new VisualStateTracker();
 
 /**
  * Start a new task.
+ * @param {string} task - Task description
+ * @param {Object} settings - Settings object
+ * @param {Array} images - Optional images
+ * @param {Function} sendToPanel - Callback to send messages to sidepanel
+ * @param {Array} llmHistory - Optional: previous LLM history to restore (for conversation memory)
  */
-export async function handleNewTask(task, settings, images = [], sendToPanel) {
+export async function handleNewTask(task, settings, images = [], sendToPanel, llmHistory = null) {
   // Cancel any existing execution
   if (currentExecution) {
     currentExecution.cancelled = true;
@@ -61,6 +66,31 @@ export async function handleNewTask(task, settings, images = [], sendToPanel) {
 
   const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   const messageManager = new MessageManager(settings.maxInputTokens || 128000);
+
+  // Set up compaction callback to notify panel (Claude-style)
+  messageManager.onCompaction((stats) => {
+    sendToPanel({
+      type: 'execution_event',
+      state: 'COMPACTION',
+      taskId,
+      details: {
+        tokensSaved: stats.tokensSaved,
+        bytesSaved: stats.bytesSaved,
+        imagesRemoved: stats.imagesRemoved,
+        level: stats.level,
+        currentSize: `${(stats.currentSize / 1024 / 1024).toFixed(1)}MB`,
+        messageCount: stats.messageCount
+      }
+    });
+  });
+
+  // Restore previous conversation history if provided (conversation memory feature)
+  const hasRestoredHistory = llmHistory && Array.isArray(llmHistory) && llmHistory.length > 0;
+  if (hasRestoredHistory) {
+    // Will be restored after system prompt is built in runExecutor
+    messageManager._pendingHistoryRestore = llmHistory;
+    console.log(`[AgentLoop] Conversation memory: ${llmHistory.length} messages to restore`);
+  }
 
   currentExecution = {
     taskId,
@@ -197,8 +227,25 @@ async function runExecutor() {
     nativeToolUse: useNativeTools
   });
 
-  // Initialize message history
-  exec.messageManager.initMessages(systemPrompt, _getEffectiveTask(exec));
+  // Check if we need to restore previous conversation history (conversation memory)
+  if (exec.messageManager._pendingHistoryRestore) {
+    const restored = exec.messageManager.importFromStorage(
+      exec.messageManager._pendingHistoryRestore,
+      systemPrompt
+    );
+    if (restored) {
+      // Add the new follow-up task as a user message
+      exec.messageManager.addMessage('user', `[Follow-up] ${_getEffectiveTask(exec)}`);
+      console.log(`[AgentLoop] Restored ${exec.messageManager.length} messages from conversation memory`);
+    } else {
+      // Fallback to fresh initialization
+      exec.messageManager.initMessages(systemPrompt, _getEffectiveTask(exec));
+    }
+    delete exec.messageManager._pendingHistoryRestore;
+  } else {
+    // Initialize fresh message history
+    exec.messageManager.initMessages(systemPrompt, _getEffectiveTask(exec));
+  }
 
   while (exec.step < exec.maxSteps && !exec.cancelled) {
     // Handle pause
@@ -443,11 +490,14 @@ async function runExecutor() {
       const responseText = llmResponse.text || 'Task completed.';
       exec.messageManager.addMessage('assistant', responseText);
 
+      // Export LLM history for conversation memory
+      const llmHistory = exec.messageManager.exportForStorage();
+
       sendToPanel({
         type: 'execution_event',
         state: 'TASK_OK',
         taskId: exec.taskId,
-        details: { finalAnswer: responseText }
+        details: { finalAnswer: responseText, llmHistory }
       });
       await finalizeTaskRecording(exec, 'completed', { finalAnswer: responseText });
       exec.cancelled = true;
@@ -595,11 +645,14 @@ async function runExecutor() {
       const mood = toolResult.success !== false ? 'success' : 'failed';
       const formatted = formatCrabResponse(answer, mood);
 
+      // Export LLM history for conversation memory
+      const llmHistory = exec.messageManager.exportForStorage();
+
       sendToPanel({
         type: 'execution_event',
         state: toolResult.success !== false ? 'TASK_OK' : 'TASK_FAIL',
         taskId: exec.taskId,
-        details: { finalAnswer: formatted }
+        details: { finalAnswer: formatted, llmHistory }
       });
       await finalizeTaskRecording(exec, toolResult.success !== false ? 'completed' : 'failed', { finalAnswer: formatted });
       exec.cancelled = true;
@@ -670,11 +723,14 @@ async function runExecutor() {
 
   // Max steps reached
   if (exec.step >= exec.maxSteps && !exec.cancelled) {
+    // Export LLM history for conversation memory even on failure
+    const llmHistory = exec.messageManager.exportForStorage();
+
     exec.sendToPanel({
       type: 'execution_event',
       state: 'TASK_FAIL',
       taskId: exec.taskId,
-      details: { error: `Max steps (${exec.maxSteps}) reached` }
+      details: { error: `Max steps (${exec.maxSteps}) reached`, llmHistory }
     });
     await finalizeTaskRecording(exec, 'failed', { error: 'Max steps reached' });
   }
@@ -812,7 +868,8 @@ async function _runQuickModeLoop(exec) {
     if (commands.length === 0) {
       // No commands = model chose to end
       const formatted = formatCrabResponse(responseText || 'Task completed.', 'success');
-      sendToPanel({ type: 'execution_event', state: 'TASK_OK', taskId: exec.taskId, details: { finalAnswer: formatted } });
+      const llmHistory = exec.messageManager.exportForStorage();
+      sendToPanel({ type: 'execution_event', state: 'TASK_OK', taskId: exec.taskId, details: { finalAnswer: formatted, llmHistory } });
       await finalizeTaskRecording(exec, 'completed', { finalAnswer: formatted });
       exec.cancelled = true;
       break;
@@ -858,7 +915,8 @@ async function _runQuickModeLoop(exec) {
     // Handle done/ask
     if (isDone) {
       const formatted = formatCrabResponse(finalText, 'success');
-      sendToPanel({ type: 'execution_event', state: 'TASK_OK', taskId: exec.taskId, details: { finalAnswer: formatted } });
+      const llmHistory = exec.messageManager.exportForStorage();
+      sendToPanel({ type: 'execution_event', state: 'TASK_OK', taskId: exec.taskId, details: { finalAnswer: formatted, llmHistory } });
       await finalizeTaskRecording(exec, 'completed', { finalAnswer: formatted });
       exec.cancelled = true;
       break;
@@ -880,7 +938,8 @@ async function _runQuickModeLoop(exec) {
 
   // Max steps reached
   if (exec.step >= exec.maxSteps && !exec.cancelled) {
-    exec.sendToPanel({ type: 'execution_event', state: 'TASK_FAIL', taskId: exec.taskId, details: { error: `Max steps (${exec.maxSteps}) reached` } });
+    const llmHistory = exec.messageManager.exportForStorage();
+    exec.sendToPanel({ type: 'execution_event', state: 'TASK_FAIL', taskId: exec.taskId, details: { error: `Max steps (${exec.maxSteps}) reached`, llmHistory } });
     await finalizeTaskRecording(exec, 'failed', { error: 'Max steps reached' });
   }
 }

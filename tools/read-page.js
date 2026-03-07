@@ -53,26 +53,20 @@ export const readPageTool = {
 
       const payload = result?.[0]?.result;
       if (!payload) return { success: false, error: 'Failed to generate accessibility tree' };
-      if (payload.error) return { success: false, error: payload.error };
+      if (!payload.success && payload.error) return { success: false, error: payload.error };
 
       const lines = payload.lines || [];
       const treeText = lines.join('\n');
 
-      if (treeText.length > maxChars) {
-        return {
-          success: false,
-          error: `Output exceeds ${maxChars} chars (${treeText.length}). Use a smaller depth or specify ref_id to focus on a subtree.`
-        };
-      }
-
-      const header = `[Page: ${await _getPageUrl(tabId)}]\n[Filter: ${filter}] [Nodes: ${payload.nodeCount}]${payload.truncated ? ' [TRUNCATED]' : ''}\n`;
+      // Note: truncation is already handled in the injected function
+      const header = `[Page: ${await _getPageUrl(tabId)}]\n[Filter: ${filter}] [Nodes: ${payload.nodeCount}]${payload.truncated ? ' [TRUNCATED - use depth or ref_id to narrow]' : ''}\n`;
 
       return {
         success: true,
         content: header + treeText,
         nodeCount: payload.nodeCount,
-        truncated: payload.truncated,
-        message: `Accessibility tree: ${payload.nodeCount} nodes (${filter})`
+        truncated: payload.truncated || false,
+        message: `Accessibility tree: ${payload.nodeCount} nodes (${filter})${payload.truncated ? ' [truncated]' : ''}`
       };
     } catch (e) {
       return { success: false, error: `read_page failed: ${e.message}` };

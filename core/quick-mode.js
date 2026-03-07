@@ -45,9 +45,13 @@ T text       - type text (multi-line: all lines until next command letter)
 K keys       - press key(s), space-separated combos: K Enter, K ctrl+a, K Tab
 S dir amt x y - scroll: dir=up|down|left|right, amt=1-10, at (x,y)
 D x1 y1 x2 y2 - drag from (x1,y1) to (x2,y2)
+Z x0 y0 x1 y1 - zoom/crop screenshot to region
 N url        - navigate to URL (also: N back, N forward)
 J code       - run JavaScript in page
 W            - wait 1s for page to settle
+ST tabId     - switch to tab by ID
+NT url       - open new tab with URL
+LT           - list all open tabs
 DONE text    - task complete, include summary
 ASK text     - ask user a question
 
@@ -281,6 +285,52 @@ function _parseCommandLine(line, allLines, currentIndex) {
     };
   }
 
+  // Z x0 y0 x1 y1 — zoom/crop screenshot
+  const zoomMatch = line.match(/^Z\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/);
+  if (zoomMatch) {
+    return {
+      command: {
+        type: 'computer',
+        args: {
+          action: 'zoom',
+          region: [
+            parseInt(zoomMatch[1]),
+            parseInt(zoomMatch[2]),
+            parseInt(zoomMatch[3]),
+            parseInt(zoomMatch[4])
+          ]
+        }
+      },
+      nextIndex: currentIndex + 1
+    };
+  }
+
+  // ST tabId — switch tab
+  const stMatch = line.match(/^ST\s+(\d+)\s*$/);
+  if (stMatch) {
+    return {
+      command: { type: 'switch_tab', args: { tabId: parseInt(stMatch[1]) } },
+      nextIndex: currentIndex + 1
+    };
+  }
+
+  // NT url — new tab
+  if (/^NT\s/.test(line)) {
+    const url = line.substring(3).trim();
+    return {
+      command: { type: 'tabs_create', args: { url } },
+      nextIndex: currentIndex + 1
+    };
+  }
+
+  // LT — list tabs
+  if (/^LT\s*$/i.test(line)) {
+    return {
+      command: { type: 'tabs_context', args: {} },
+      nextIndex: currentIndex + 1
+    };
+  }
+
   return null; // Unknown line, skip
 }
 
@@ -289,8 +339,8 @@ function _parseCommandLine(line, allLines, currentIndex) {
  */
 function _isCommandStart(line) {
   if (!line) return false;
-  return /^(C|RC|DC|TC|H|T|K|S|D|N|J|W|DONE|ASK)\s/i.test(line) ||
-         /^W\s*$/i.test(line);
+  return /^(C|RC|DC|TC|H|T|K|S|D|Z|N|J|W|ST|NT|LT|DONE|ASK)\s/i.test(line) ||
+         /^(W|LT)\s*$/i.test(line);
 }
 
 /**

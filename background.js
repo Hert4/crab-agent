@@ -88,13 +88,14 @@ chrome.runtime.onConnect.addListener((port) => {
               resumeExecution();
             }
           } else {
-            // Start new task
+            // Start new task with optional conversation memory
             startKeepAlive();
             await handleNewTask(
               message.task,
               message.settings || {},
               message.images || [],
-              sendToPanel
+              sendToPanel,
+              message.llmHistory || null  // Pass stored LLM history for conversation memory
             );
             stopKeepAlive();
           }

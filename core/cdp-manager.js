@@ -5,8 +5,9 @@
  */
 
 const CDP_VERSION = '1.3';
-const MOUSE_MOVE_STEPS = 3;
-const DEFAULT_CLICK_DELAY = 50;
+const MOUSE_MOVE_STEPS = 5;  // Increased for smoother movement (Claude uses ~5 steps)
+const DEFAULT_CLICK_DELAY = 80;  // Increased delay for better click registration
+const MOUSE_MOVE_DELAY = 100;  // Delay before click after mouse move (matching Claude)
 const SCREENSHOT_QUALITY = {
   INITIAL_JPEG_QUALITY: 80,
   JPEG_QUALITY_STEP: 10,
@@ -25,6 +26,9 @@ class CDPManager {
     this.consoleTracking = new Map();
     /** @type {Map<number, { width: number, height: number, devicePixelRatio: number }>} */
     this.viewportCache = new Map();
+    /** @type {Map<string, { x: number, y: number, ts: number, tabId: number }>} */
+    this.refCache = new Map();  // Cache resolved ref coordinates (TTL 2s)
+    this.refCacheTTL = 2000;  // 2 second cache TTL
   }
 
   // ========== Connection Management ==========
@@ -157,6 +161,7 @@ class CDPManager {
   /**
    * Move mouse smoothly to target position with intermediate steps
    * for better hover detection on modern web frameworks.
+   * Matches Claude extension behavior with proper delays.
    */
   async _moveMouse(tabId, x, y) {
     const steps = MOUSE_MOVE_STEPS;
@@ -164,10 +169,16 @@ class CDPManager {
     const cx = this._lastMouseX ?? Math.round(x * 0.8);
     const cy = this._lastMouseY ?? Math.round(y * 0.8);
 
+    // Calculate distance for adaptive timing
+    const distance = Math.sqrt(Math.pow(x - cx, 2) + Math.pow(y - cy, 2));
+    const stepDelay = distance > 200 ? 15 : 10;  // Slower for long movements
+
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
-      const mx = Math.round(cx + (x - cx) * t);
-      const my = Math.round(cy + (y - cy) * t);
+      // Use easeOutQuad for natural movement
+      const eased = 1 - Math.pow(1 - t, 2);
+      const mx = Math.round(cx + (x - cx) * eased);
+      const my = Math.round(cy + (y - cy) * eased);
       await this.sendCommand(tabId, 'Input.dispatchMouseEvent', {
         type: 'mouseMoved',
         x: mx,
@@ -176,10 +187,14 @@ class CDPManager {
         buttons: 0,
         pointerType: 'mouse'
       });
+      if (i < steps) await new Promise(r => setTimeout(r, stepDelay));
     }
 
     this._lastMouseX = x;
     this._lastMouseY = y;
+
+    // Delay after move before click (Claude-style)
+    await new Promise(r => setTimeout(r, MOUSE_MOVE_DELAY));
   }
 
   /**
@@ -1050,8 +1065,18 @@ class CDPManager {
 
   /**
    * Resolve a ref_id to coordinates by looking up __crabElementMap in the page.
+   * Uses caching with TTL to avoid repeated DOM queries.
    */
-  async resolveRef(tabId, refId) {
+  async resolveRef(tabId, refId, useCache = true) {
+    // Check cache first
+    if (useCache) {
+      const cacheKey = `${tabId}:${refId}`;
+      const cached = this.refCache.get(cacheKey);
+      if (cached && Date.now() - cached.ts < this.refCacheTTL) {
+        return cached;
+      }
+    }
+
     const result = await chrome.scripting.executeScript({
       target: { tabId },
       func: (ref) => {
@@ -1083,13 +1108,65 @@ class CDPManager {
           width: Math.round(finalRect.width),
           height: Math.round(finalRect.height),
           tag: (el.tagName || '').toLowerCase(),
-          text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 80)
+          text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 80),
+          scrolled: !inViewport
         };
       },
       args: [refId]
     });
 
-    return result?.[0]?.result || null;
+    const resolved = result?.[0]?.result || null;
+
+    // Cache the result
+    if (resolved) {
+      const cacheKey = `${tabId}:${refId}`;
+      this.refCache.set(cacheKey, { ...resolved, ts: Date.now(), tabId });
+
+      // Cleanup old cache entries (keep last 100)
+      if (this.refCache.size > 100) {
+        const entries = [...this.refCache.entries()];
+        entries.sort((a, b) => a[1].ts - b[1].ts);
+        for (let i = 0; i < entries.length - 100; i++) {
+          this.refCache.delete(entries[i][0]);
+        }
+      }
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Invalidate ref cache for a tab (call after page navigation).
+   */
+  invalidateRefCache(tabId) {
+    for (const key of this.refCache.keys()) {
+      if (key.startsWith(`${tabId}:`)) {
+        this.refCache.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Verify the tab's current URL matches expected domain.
+   * Use this before mutating actions to prevent cross-domain attacks.
+   */
+  async verifyDomain(tabId, expectedOrigin) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (!tab?.url) return { valid: false, error: 'No URL' };
+
+      const currentOrigin = new URL(tab.url).origin;
+      if (expectedOrigin && currentOrigin !== expectedOrigin) {
+        return {
+          valid: false,
+          error: `Domain changed: expected ${expectedOrigin}, got ${currentOrigin}`,
+          currentOrigin
+        };
+      }
+      return { valid: true, currentOrigin };
+    } catch (e) {
+      return { valid: false, error: e.message };
+    }
   }
 
   // ========== File Upload ==========
